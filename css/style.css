@@ -1,0 +1,1262 @@
+@import url('https://fonts.googleapis.com/css2?family=Black+Ops+One&family=Chakra+Petch:wght@400;500;600;700&family=Press+Start+2P&family=Teko:wght@400;500;600;700&display=swap');
+
+:root {
+    --sand-100: #f5d89e;
+    --sand-200: #e0b870;
+    --sand-300: #c08840;
+    --sand-400: #8a5828;
+    --sand-500: #4a2810;
+    --steel-100: #d7e1e0;
+    --steel-200: #94a2a3;
+    --steel-300: #546064;
+    --steel-400: #283038;
+    --steel-500: #11161a;
+    --olive-200: #aab580;
+    --olive-300: #788850;
+    --olive-400: #445030;
+    --alert-200: #ffc040;
+    --alert-300: #ff6820;
+    --alert-400: #ff3010;
+    --danger-300: #ff3830;
+    --cyan-300: #55ddff;
+    --ms-blue: #3388ff;
+    --ms-green: #44ee66;
+    --ms-orange: #ff8833;
+    --panel-bg: rgba(10, 8, 6, 0.75);
+    --panel-edge: rgba(255, 180, 60, 0.5);
+    --panel-inner: rgba(255, 255, 255, 0.1);
+    --shadow-lg: 0 18px 38px rgba(0, 0, 0, 0.45);
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    overflow: hidden;
+    background:
+        radial-gradient(circle at top, rgba(255, 160, 50, 0.22), transparent 34%),
+        linear-gradient(180deg, #1a1810 0%, #080808 100%);
+    color: #fff;
+    cursor: crosshair;
+    font-family: 'Chakra Petch', sans-serif;
+    image-rendering: auto;
+}
+
+#game-container {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+}
+
+#game-container::before,
+#game-container::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+#game-container::before {
+    background:
+        radial-gradient(circle at left center, rgba(255, 124, 59, 0.1), transparent 28%),
+        radial-gradient(circle at right center, rgba(120, 216, 245, 0.08), transparent 26%);
+    z-index: 1;
+}
+
+#game-container::after {
+    border: 18px solid rgba(0, 0, 0, 0.14);
+    box-shadow: inset 0 0 0 1px rgba(255, 213, 142, 0.08);
+    z-index: 2;
+}
+
+#game-canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+#ui-overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 10;
+}
+
+.hud-panel,
+.hud-wing-card,
+#ms-hud-top {
+    position: relative;
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent 44%),
+        linear-gradient(180deg, rgba(46, 37, 24, 0.88), rgba(13, 12, 11, 0.8));
+    border: 1px solid var(--panel-edge);
+    box-shadow: var(--shadow-lg), inset 0 0 0 1px var(--panel-inner);
+    backdrop-filter: blur(10px);
+}
+
+.hud-panel::before,
+.hud-wing-card::before,
+#ms-hud-top::before {
+    content: '';
+    position: absolute;
+    inset: 5px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    pointer-events: none;
+}
+
+.hud-panel {
+    padding: 14px;
+    clip-path: polygon(0 10px, 10px 0, calc(100% - 24px) 0, 100% 24px, 100% 100%, 0 100%);
+}
+
+.hud-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.hud-panel-title,
+.wing-label,
+.ms-label,
+.resource-title,
+#boss-label,
+.stat-label {
+    font-family: 'Chakra Petch', sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+}
+
+.hud-panel-title,
+.wing-label {
+    color: rgba(244, 220, 179, 0.72);
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.hud-chip {
+    padding: 2px 8px;
+    border: 1px solid rgba(255, 194, 98, 0.3);
+    background: rgba(255, 126, 59, 0.12);
+    color: var(--alert-200);
+    font-family: 'Teko', sans-serif;
+    font-size: 14px;
+    letter-spacing: 0.14em;
+}
+
+#hud-top-shell {
+    position: absolute;
+    top: 16px;
+    left: 18px;
+    right: 18px;
+    display: grid;
+    grid-template-columns: minmax(200px, 1fr) minmax(480px, 1.3fr) minmax(200px, 1fr);
+    gap: 14px;
+    z-index: 30;
+}
+
+.hud-wing-card {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-height: 82px;
+    padding: 12px 16px;
+    clip-path: polygon(0 16px, 14px 0, 100% 0, 100% calc(100% - 14px), calc(100% - 14px) 100%, 0 100%);
+}
+
+.wing-value {
+    color: var(--sand-100);
+    font-family: 'Black Ops One', cursive;
+    font-size: clamp(18px, 1.8vw, 28px);
+    letter-spacing: 0.08em;
+    text-shadow: 0 4px 14px rgba(255, 123, 42, 0.24);
+}
+
+.wing-sub {
+    margin-top: 4px;
+    color: rgba(219, 231, 234, 0.72);
+    font-size: 12px;
+    letter-spacing: 0.14em;
+}
+
+#ms-hud-top {
+    display: flex;
+    align-items: stretch;
+    justify-content: space-between;
+    gap: 18px;
+    padding: 12px 18px;
+    clip-path: polygon(0 18px, 18px 0, calc(100% - 18px) 0, 100% 18px, 100% calc(100% - 18px), calc(100% - 18px) 100%, 18px 100%, 0 calc(100% - 18px));
+}
+
+#ms-hud-left,
+#ms-hud-center,
+#ms-hud-right {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.ms-hud-item {
+    min-width: 96px;
+    padding: 4px 10px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(0, 0, 0, 0.16));
+}
+
+.ms-label {
+    color: rgba(235, 219, 183, 0.68);
+    font-size: 10px;
+    font-weight: 700;
+}
+
+.ms-value,
+.resource-value,
+.stat-value,
+#aim-angle-text {
+    font-family: 'Teko', sans-serif;
+    line-height: 1;
+}
+
+.ms-value {
+    display: block;
+    margin-top: 4px;
+    color: #fff5da;
+    font-size: clamp(28px, 2.3vw, 38px);
+    letter-spacing: 0.08em;
+    text-shadow: 0 2px 0 rgba(0, 0, 0, 0.55), 0 0 14px rgba(255, 196, 104, 0.18);
+}
+
+#score {
+    color: #ffcc22;
+    text-shadow: 0 0 10px rgba(255, 200, 30, 0.3);
+}
+
+.ms-time {
+    color: #55ff77;
+    text-shadow: 0 0 8px rgba(80, 255, 100, 0.2);
+}
+
+.ms-wave {
+    color: #ff7733;
+    text-shadow: 0 0 8px rgba(255, 100, 40, 0.3);
+}
+
+.ms-kills {
+    color: var(--cyan-300);
+    text-shadow: 0 0 8px rgba(80, 220, 255, 0.25);
+}
+
+#hud-left-rail,
+#hud-right-rail {
+    position: absolute;
+    top: 114px;
+    bottom: 96px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    width: min(330px, 29vw);
+}
+
+#hud-left-rail {
+    left: 18px;
+}
+
+#hud-right-rail {
+    right: 18px;
+}
+
+#status-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+#hp-bar-container {
+    position: static;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+#hp-icons {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+#hp-label {
+    color: var(--alert-200);
+    font-family: 'Teko', sans-serif;
+    font-size: 24px;
+    letter-spacing: 0.16em;
+    text-shadow: 0 0 6px rgba(255, 180, 50, 0.2);
+}
+
+#hp-pips {
+    display: flex;
+    gap: 4px;
+}
+
+.hp-pip {
+    width: 14px;
+    height: 14px;
+    border: 1px solid rgba(255, 214, 149, 0.28);
+    background: linear-gradient(180deg, rgba(58, 67, 35, 0.9), rgba(26, 31, 18, 0.9));
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.hp-pip.active {
+    background: linear-gradient(180deg, #88ff55, #44cc33);
+    box-shadow: 0 0 16px rgba(80, 255, 80, 0.35);
+}
+
+.hp-pip.low {
+    background: linear-gradient(180deg, #ff8844, #dd3322);
+    box-shadow: 0 0 14px rgba(255, 80, 50, 0.35);
+    animation: hpBlink 0.6s ease-in-out infinite;
+}
+
+#hp-bar-bg {
+    width: 100%;
+    height: 16px;
+    padding: 2px;
+    background: rgba(0, 0, 0, 0.55);
+    border: 1px solid rgba(255, 200, 100, 0.28);
+    box-shadow: inset 0 0 4px rgba(0, 0, 0, 0.4);
+}
+
+#hp-bar-fill {
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, #88ff55, #33bb44);
+    box-shadow: 0 0 8px rgba(80, 255, 80, 0.25);
+    transition: width 0.15s ease;
+}
+
+@keyframes hpBlink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+
+#resource-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.resource-card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 74px;
+    padding: 10px 12px;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(0, 0, 0, 0.2));
+    border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.resource-card-wide {
+    grid-column: span 2;
+}
+
+.resource-title {
+    color: rgba(224, 210, 182, 0.74);
+    font-size: 10px;
+    font-weight: 700;
+}
+
+.resource-value {
+    color: #fff8d8;
+    font-size: 30px;
+    letter-spacing: 0.06em;
+    text-shadow: 0 0 6px rgba(255, 230, 150, 0.15);
+}
+
+.resource-caption {
+    color: rgba(167, 186, 195, 0.72);
+    font-size: 12px;
+    letter-spacing: 0.1em;
+}
+
+.resource-meter {
+    height: 12px;
+    background: rgba(10, 10, 10, 0.66);
+    border: 1px solid rgba(255, 214, 149, 0.18);
+    overflow: hidden;
+}
+
+.resource-meter-fill {
+    height: 100%;
+    width: 100%;
+    background: linear-gradient(90deg, #74d6ff, #1e8edf);
+    transform-origin: left center;
+}
+
+.charge-fill {
+    background: linear-gradient(90deg, #ffd05c, #ff682c);
+}
+
+#weapon-display {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.weapon-item {
+    display: grid;
+    grid-template-columns: 42px 1fr auto;
+    align-items: center;
+    gap: 12px;
+    min-height: 58px;
+    padding: 8px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(0, 0, 0, 0.18));
+    transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.weapon-item.active {
+    border-color: rgba(255, 179, 89, 0.45);
+    box-shadow: 0 0 18px rgba(255, 123, 42, 0.18);
+    transform: translateX(4px);
+}
+
+.weapon-icon {
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    border: 1px solid rgba(255, 214, 149, 0.22);
+    color: var(--alert-200);
+    font-family: 'Black Ops One', cursive;
+    font-size: 18px;
+}
+
+.weapon-name {
+    font-family: 'Teko', sans-serif;
+    font-size: 26px;
+    letter-spacing: 0.08em;
+    color: #fff4cf;
+}
+
+.weapon-ammo {
+    color: rgba(235, 220, 188, 0.78);
+    font-size: 12px;
+    letter-spacing: 0.14em;
+}
+
+#aim-indicator {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+#aim-gauge {
+    width: 100%;
+    min-height: 140px;
+    display: grid;
+    place-items: center;
+    background:
+        radial-gradient(circle at 50% 30%, rgba(255, 169, 84, 0.12), transparent 44%),
+        rgba(0, 0, 0, 0.28);
+    border: 1px solid rgba(255, 190, 103, 0.22);
+}
+
+#aim-svg {
+    width: 100%;
+    height: 130px;
+}
+
+#aim-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+#aim-angle-text {
+    color: #fff2d3;
+    font-size: 30px;
+    letter-spacing: 0.05em;
+}
+
+#aim-mode-text {
+    padding: 0;
+}
+
+#aim-indicator.active-keyboard .hud-chip,
+#aim-indicator.active-keyboard #aim-angle-text {
+    color: #ffe069;
+    border-color: rgba(255, 224, 105, 0.35);
+}
+
+#feed-panel {
+    flex: 1;
+    min-height: 200px;
+}
+
+#kill-feed {
+    position: static;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 100%;
+    overflow: hidden;
+}
+
+.kill-feed-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 10px;
+    background: rgba(255, 255, 255, 0.05);
+    border-left: 3px solid var(--alert-300);
+    animation: kfSlide 0.22s ease-out;
+    transition: opacity 0.3s ease;
+}
+
+.kf-name {
+    color: #f2e3c7;
+    font-family: 'Teko', sans-serif;
+    font-size: 20px;
+    letter-spacing: 0.06em;
+}
+
+.kf-score {
+    color: #ffd45b;
+    font-size: 12px;
+    letter-spacing: 0.14em;
+}
+
+@keyframes kfSlide {
+    from {
+        opacity: 0;
+        transform: translateX(24px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+#controls-hint {
+    min-height: 168px;
+}
+
+.controls-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 10px;
+    color: rgba(235, 229, 215, 0.78);
+    font-size: 12px;
+    letter-spacing: 0.1em;
+}
+
+#combo-display {
+    display: none;
+    position: absolute;
+    top: 116px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 45;
+    padding: 10px 18px;
+    background: linear-gradient(180deg, rgba(0, 0, 0, 0.78), rgba(62, 21, 8, 0.8));
+    border: 1px solid rgba(255, 187, 99, 0.34);
+    box-shadow: var(--shadow-lg);
+}
+
+#combo-display .combo-count {
+    color: #ffd85f;
+    font-family: 'Teko', sans-serif;
+    font-size: 54px;
+    letter-spacing: 0.04em;
+}
+
+#combo-display .combo-label {
+    margin-left: 8px;
+    color: #ff8745;
+    font-family: 'Black Ops One', cursive;
+    font-size: 24px;
+    letter-spacing: 0.08em;
+}
+
+#combo-display .combo-multi {
+    display: block;
+    color: #ffcc8f;
+    font-size: 14px;
+    letter-spacing: 0.16em;
+    text-align: right;
+}
+
+.combo-pulse {
+    animation: comboPop 0.2s ease-out;
+}
+
+@keyframes comboPop {
+    0% { transform: translateX(-50%) scale(1.2); }
+    100% { transform: translateX(-50%) scale(1); }
+}
+
+#mission-start,
+#wave-announce {
+    display: none;
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    text-align: center;
+    z-index: 60;
+    pointer-events: none;
+}
+
+#mission-start {
+    inset: 0;
+    background: radial-gradient(circle, rgba(255, 120, 40, 0.18), transparent 42%);
+}
+
+#mission-start-text,
+#wave-announce-text,
+#game-over-title {
+    font-family: 'Black Ops One', cursive;
+    text-transform: uppercase;
+}
+
+#mission-start-text {
+    color: #fff8e0;
+    font-size: clamp(44px, 6vw, 88px);
+    letter-spacing: 0.14em;
+    text-shadow: 0 4px 0 rgba(0, 0, 0, 0.65), 0 0 40px rgba(255, 100, 30, 0.4);
+}
+
+#mission-start-sub,
+#wave-announce-desc {
+    margin-top: 10px;
+    color: #ffbb55;
+    font-size: clamp(16px, 2vw, 24px);
+    letter-spacing: 0.3em;
+    text-shadow: 0 1px 0 rgba(0, 0, 0, 0.5);
+}
+
+.mission-animate {
+    animation: missionSlam 2.4s ease-out forwards;
+}
+
+@keyframes missionSlam {
+    0% { opacity: 0; transform: translateX(-50%) scale(1.5) translateY(-26px); }
+    14% { opacity: 1; transform: translateX(-50%) scale(1) translateY(0); }
+    72% { opacity: 1; transform: translateX(-50%) scale(1); }
+    100% { opacity: 0; transform: translateX(-50%) scale(1.06) translateY(-14px); }
+}
+
+#wave-announce {
+    top: 26%;
+}
+
+#wave-announce-text {
+    color: #ff8833;
+    font-size: clamp(36px, 5vw, 72px);
+    letter-spacing: 0.18em;
+    text-shadow: 0 4px 0 rgba(0, 0, 0, 0.65), 0 0 32px rgba(255, 100, 30, 0.35);
+}
+
+.wave-slide {
+    animation: waveSlide 3s ease-in-out;
+}
+
+@keyframes waveSlide {
+    0% { opacity: 0; transform: translateX(-50%) translateY(28px) scale(0.92); }
+    12% { opacity: 1; transform: translateX(-50%) translateY(0) scale(1.02); }
+    70% { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+    100% { opacity: 0; transform: translateX(-50%) translateY(-24px) scale(1.02); }
+}
+
+#score-popups {
+    position: absolute;
+    inset: 0;
+    z-index: 25;
+}
+
+.score-popup {
+    position: absolute;
+    color: #ffdd44;
+    font-family: 'Teko', sans-serif;
+    font-size: 32px;
+    letter-spacing: 0.06em;
+    text-shadow: 0 2px 0 rgba(0, 0, 0, 0.7), 0 0 16px rgba(255, 200, 50, 0.3);
+    transform: translate(-50%, 0);
+    animation: scoreFloat 1.15s ease-out forwards;
+}
+
+.score-popup.combo {
+    color: #ff7733;
+    text-shadow: 0 2px 0 rgba(0, 0, 0, 0.7), 0 0 18px rgba(255, 100, 30, 0.35);
+}
+
+@keyframes scoreFloat {
+    0% { opacity: 1; transform: translate(-50%, 0) scale(1.18); }
+    100% { opacity: 0; transform: translate(-50%, -74px) scale(0.82); }
+}
+
+#boss-hp-container {
+    display: none;
+    position: absolute;
+    top: 108px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(520px, 54vw);
+    z-index: 45;
+}
+
+#boss-label {
+    color: #ff8b7b;
+    font-size: 12px;
+    font-weight: 700;
+    text-align: center;
+    margin-bottom: 6px;
+    animation: bossWarning 0.5s ease-in-out infinite alternate;
+}
+
+@keyframes bossWarning {
+    from { color: #ff6655; }
+    to { color: #ffcc44; }
+}
+
+#boss-hp-bar-bg {
+    padding: 4px;
+    background: rgba(0, 0, 0, 0.7);
+    border: 1px solid rgba(255, 114, 96, 0.45);
+    box-shadow: var(--shadow-lg);
+}
+
+#boss-hp-bar {
+    height: 14px;
+    width: 100%;
+    background: linear-gradient(90deg, #ff3322, #ffaa33);
+    box-shadow: 0 0 10px rgba(255, 60, 30, 0.25);
+    transition: width 0.18s ease;
+}
+
+#scroll-plate {
+    position: absolute;
+    bottom: 18px;
+    left: 50%;
+    width: min(460px, 54vw);
+    transform: translateX(-50%);
+    z-index: 35;
+}
+
+#scroll-progress {
+    position: static;
+    width: 100%;
+    height: 14px;
+    background: rgba(0, 0, 0, 0.58);
+    border: 1px solid rgba(255, 215, 148, 0.2);
+    overflow: hidden;
+}
+
+#scroll-progress-fill {
+    width: 0%;
+    height: 100%;
+    background: linear-gradient(90deg, #44bbff, #66ffaa);
+    box-shadow: 0 0 6px rgba(80, 200, 255, 0.25);
+    transition: width 0.25s ease;
+}
+
+#scroll-progress-marker {
+    position: absolute;
+    top: 40px;
+    left: 0%;
+    width: 18px;
+    height: 18px;
+    background: linear-gradient(180deg, #fff5da, #ffb14d);
+    clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+    box-shadow: 0 0 16px rgba(255, 201, 104, 0.3);
+    transition: left 0.25s ease;
+}
+
+#game-over-screen {
+    display: none;
+    position: absolute;
+    inset: 0;
+    align-items: center;
+    justify-content: center;
+    background: rgba(5, 5, 6, 0.82);
+    z-index: 100;
+    pointer-events: auto;
+}
+
+#game-over-box {
+    min-width: min(560px, 82vw);
+    padding: 34px 36px;
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.1), transparent 38%),
+        linear-gradient(180deg, rgba(80, 25, 10, 0.95), rgba(15, 10, 8, 0.96));
+    border: 2px solid rgba(255, 120, 40, 0.5);
+    box-shadow: 0 28px 70px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgba(255, 255, 255, 0.08), 0 0 80px rgba(255, 60, 20, 0.15);
+}
+
+#game-over-title {
+    color: #fff0d1;
+    font-size: clamp(40px, 4vw, 56px);
+    letter-spacing: 0.12em;
+    text-align: center;
+    margin-bottom: 18px;
+}
+
+#game-over-stats {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid rgba(255, 174, 92, 0.14);
+}
+
+.stat-label {
+    color: rgba(231, 220, 198, 0.7);
+    font-size: 12px;
+}
+
+.stat-value {
+    color: #ffd85f;
+    font-size: 34px;
+    letter-spacing: 0.05em;
+}
+
+#restart-hint {
+    margin-top: 18px;
+    color: #ffb768;
+    font-size: 14px;
+    text-align: center;
+    letter-spacing: 0.18em;
+    animation: blink 1s ease-in-out infinite;
+}
+
+@keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+
+#damage-flash,
+#impact-flash,
+#vignette,
+#scanlines {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+#damage-flash {
+    background: radial-gradient(circle at center, transparent 20%, rgba(255, 40, 30, 0.30) 100%);
+    opacity: 0;
+    z-index: 15;
+    transition: opacity 0.1s ease;
+}
+
+#impact-flash {
+    background: radial-gradient(circle at center, rgba(255, 248, 200, 0.60) 0%, rgba(255, 180, 80, 0.28) 36%, transparent 68%);
+    opacity: 0;
+    z-index: 16;
+    mix-blend-mode: screen;
+    transition: opacity 0.08s linear;
+}
+
+#impact-flash.pulse {
+    animation: impactPulse 0.28s ease-out;
+}
+
+@keyframes impactPulse {
+    0% { opacity: 0.9; }
+    40% { opacity: 0.55; }
+    100% { opacity: 0; }
+}
+
+#impact-flash.combo-burst {
+    background: radial-gradient(circle at center, rgba(255, 220, 120, 0.7) 0%, rgba(255, 130, 60, 0.32) 40%, transparent 72%);
+    animation: impactPulse 0.4s ease-out;
+}
+
+#vignette {
+    background: radial-gradient(circle at center, transparent 45%, rgba(0, 0, 0, 0.55) 100%);
+    z-index: 4;
+}
+
+#scanlines {
+    background: repeating-linear-gradient(
+        0deg,
+        transparent 0,
+        transparent 2px,
+        rgba(0, 0, 0, 0.08) 3px
+    );
+    opacity: 0.7;
+    mix-blend-mode: multiply;
+    z-index: 5;
+}
+
+/* ============================================
+   TITLE SCREEN
+   ============================================ */
+#title-screen {
+    position: absolute;
+    inset: 0;
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background:
+        radial-gradient(ellipse at 50% 25%, rgba(255, 120, 30, 0.2) 0%, transparent 50%),
+        radial-gradient(ellipse at 80% 70%, rgba(180, 60, 20, 0.15) 0%, transparent 35%),
+        radial-gradient(ellipse at 15% 80%, rgba(120, 80, 30, 0.18) 0%, transparent 35%),
+        linear-gradient(180deg, #0c0804 0%, #1c1408 25%, #2a1a0c 50%, #181008 75%, #080604 100%);
+    cursor: default;
+    overflow: hidden;
+}
+
+#title-bg-overlay {
+    position: absolute;
+    inset: 0;
+    background:
+        repeating-linear-gradient(
+            90deg,
+            transparent 0,
+            transparent 120px,
+            rgba(255, 180, 80, 0.015) 120px,
+            rgba(255, 180, 80, 0.015) 121px
+        ),
+        repeating-linear-gradient(
+            0deg,
+            transparent 0,
+            transparent 120px,
+            rgba(255, 180, 80, 0.015) 120px,
+            rgba(255, 180, 80, 0.015) 121px
+        );
+    animation: titleBgDrift 20s linear infinite;
+}
+
+@keyframes titleBgDrift {
+    0% { transform: translate(0, 0); }
+    100% { transform: translate(-120px, -120px); }
+}
+
+#title-scanlines {
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+        0deg,
+        transparent 0,
+        transparent 2px,
+        rgba(0, 0, 0, 0.12) 3px
+    );
+    pointer-events: none;
+    opacity: 0.6;
+}
+
+#title-content {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    animation: titleFadeIn 1.5s ease-out;
+}
+
+@keyframes titleFadeIn {
+    0% { opacity: 0; transform: translateY(30px); }
+    100% { opacity: 1; transform: translateY(0); }
+}
+
+#title-top-line {
+    font-family: 'Chakra Petch', sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.5em;
+    color: rgba(255, 200, 120, 0.5);
+    margin-bottom: 12px;
+}
+
+#title-logo {
+    display: flex;
+    align-items: baseline;
+    gap: 18px;
+    line-height: 1;
+    margin-bottom: 2px;
+}
+
+#title-metal {
+    font-family: 'Black Ops One', cursive;
+    font-size: clamp(64px, 10vw, 130px);
+    letter-spacing: 0.1em;
+    background: linear-gradient(180deg,
+        #FFFFFF 0%,
+        #FFE878 15%,
+        #FFD040 30%,
+        #CC8820 50%,
+        #885010 65%,
+        #CC8820 75%,
+        #FFD858 88%,
+        #FFFAE8 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    filter: drop-shadow(0 5px 0 rgba(0, 0, 0, 0.8)) drop-shadow(0 0 40px rgba(255, 150, 30, 0.35));
+}
+
+#title-slug {
+    font-family: 'Black Ops One', cursive;
+    font-size: clamp(64px, 10vw, 130px);
+    letter-spacing: 0.1em;
+    background: linear-gradient(180deg,
+        #FFE0B0 0%,
+        #FF8830 15%,
+        #EE5510 35%,
+        #AA2200 55%,
+        #CC3300 65%,
+        #FF6620 80%,
+        #FFB878 92%,
+        #FFE8C8 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    filter: drop-shadow(0 5px 0 rgba(0, 0, 0, 0.8)) drop-shadow(0 0 40px rgba(255, 80, 20, 0.3));
+}
+
+#title-subtitle {
+    font-family: 'Teko', sans-serif;
+    font-size: clamp(30px, 4.5vw, 56px);
+    font-weight: 700;
+    letter-spacing: 0.65em;
+    color: rgba(255, 200, 120, 0.8);
+    text-shadow: 0 2px 0 rgba(0, 0, 0, 0.6), 0 0 20px rgba(255, 150, 50, 0.2);
+    margin-top: -6px;
+}
+
+#title-divider {
+    width: 280px;
+    height: 1px;
+    margin: 24px 0;
+    background: linear-gradient(90deg, transparent, rgba(255, 190, 100, 0.4), transparent);
+}
+
+#title-controls-brief {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px 20px;
+    margin-bottom: 32px;
+}
+
+.title-control-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 120px;
+}
+
+.tc-key {
+    display: inline-block;
+    min-width: 54px;
+    padding: 3px 8px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 190, 100, 0.2);
+    color: var(--alert-200);
+    font-family: 'Teko', sans-serif;
+    font-size: 16px;
+    letter-spacing: 0.1em;
+    text-align: center;
+}
+
+.tc-desc {
+    color: rgba(220, 210, 190, 0.6);
+    font-family: 'Chakra Petch', sans-serif;
+    font-size: 11px;
+    letter-spacing: 0.14em;
+}
+
+#title-start-prompt {
+    font-family: 'Press Start 2P', 'Black Ops One', cursive;
+    font-size: clamp(14px, 1.8vw, 20px);
+    letter-spacing: 0.25em;
+    color: #ffdd55;
+    text-shadow: 0 0 25px rgba(255, 200, 40, 0.4), 0 2px 0 rgba(0, 0, 0, 0.5);
+    animation: titleBlink 1s ease-in-out infinite;
+    margin-bottom: 36px;
+}
+
+@keyframes titleBlink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.2; }
+}
+
+#title-footer {
+    font-family: 'Chakra Petch', sans-serif;
+    font-size: 10px;
+    letter-spacing: 0.3em;
+    color: rgba(180, 160, 130, 0.35);
+}
+
+#title-screen.title-hidden {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.6s ease;
+}
+
+/* ============================================
+   HUD LIGHTENING - Controls auto-hide
+   ============================================ */
+#controls-hint {
+    transition: opacity 0.8s ease, transform 0.8s ease;
+}
+
+#controls-hint.controls-faded {
+    opacity: 0;
+    transform: translateX(20px);
+    pointer-events: none;
+}
+
+/* Reduce side rail max width to give more game field space */
+#hud-left-rail,
+#hud-right-rail {
+    width: min(290px, 24vw);
+}
+
+/* Slightly more transparent panels */
+.hud-panel,
+.hud-wing-card {
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent 44%),
+        linear-gradient(180deg, rgba(46, 37, 24, 0.78), rgba(13, 12, 11, 0.68));
+}
+
+/* Compact the aim indicator */
+#aim-gauge {
+    min-height: 110px;
+}
+
+#aim-svg {
+    height: 100px;
+}
+
+@media (max-width: 1200px) {
+    #hud-top-shell {
+        grid-template-columns: 1fr;
+    }
+
+    .hud-wing-card {
+        display: none;
+    }
+
+    #hud-left-rail,
+    #hud-right-rail {
+        width: min(320px, 33vw);
+        top: 104px;
+    }
+}
+
+@media (max-width: 980px) {
+    #hud-left-rail,
+    #hud-right-rail {
+        width: calc(50vw - 24px);
+        bottom: 110px;
+    }
+
+    .controls-grid {
+        grid-template-columns: 1fr;
+    }
+
+    #feed-panel {
+        min-height: 150px;
+    }
+}
+
+@media (max-width: 760px) {
+    #ms-hud-top {
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    #ms-hud-left,
+    #ms-hud-center,
+    #ms-hud-right {
+        justify-content: space-between;
+    }
+
+    #hud-left-rail,
+    #hud-right-rail {
+        width: calc(100vw - 36px);
+        position: static;
+        margin: 0 18px;
+    }
+
+    #ui-overlay {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding-bottom: 92px;
+        overflow: hidden;
+    }
+
+    #hud-top-shell {
+        position: static;
+        margin: 16px 18px 0;
+    }
+
+    #combo-display {
+        top: 180px;
+    }
+
+    #boss-hp-container {
+        top: 178px;
+        width: calc(100vw - 40px);
+    }
+
+    #scroll-plate {
+        width: calc(100vw - 36px);
+    }
+}
+
+/* ============================================
+   Feature 5: コンボバナー / スコアポップ
+   ============================================ */
+.bonus-banner {
+    position: fixed;
+    left: 50%;
+    top: 35%;
+    transform: translate(-50%, -50%) scale(0);
+    font-family: "Press Start 2P", monospace;
+    font-size: 32px;
+    text-shadow: 4px 4px 0 #000, -2px -2px 0 #000;
+    animation: bonus-pop 1.4s ease-out forwards;
+    z-index: 200;
+    pointer-events: none;
+    white-space: nowrap;
+}
+
+@keyframes bonus-pop {
+    0%   { transform: translate(-50%, -50%) scale(0) rotate(-8deg); opacity: 1; }
+    25%  { transform: translate(-50%, -50%) scale(1.25) rotate(3deg); opacity: 1; }
+    50%  { transform: translate(-50%, -50%) scale(1.0) rotate(0); opacity: 1; }
+    80%  { transform: translate(-50%, -80%) scale(0.9); opacity: 1; }
+    100% { transform: translate(-50%, -120%) scale(0.7); opacity: 0; }
+}
+
+/* Feature 1: POW救出バナーは .bonus-banner を再利用 */
+
+/* Feature 6: 手榴弾準備インジケーター */
+.grenade-ready-indicator {
+    border: 2px solid #FFEE44 !important;
+    animation: grenade-pulse 0.6s infinite;
+}
+
+@keyframes grenade-pulse {
+    0%, 100% { box-shadow: 0 0 4px #FFEE44; }
+    50%       { box-shadow: 0 0 12px #FFEE44; }
+}

@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>METAL SLUG FRONTIER</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div id="game-container">
+        <canvas id="game-canvas"></canvas>
+
+        <div id="ui-overlay">
+            <div id="hud-top-shell">
+                <div class="hud-wing-card">
+                    <span class="wing-label">MISSION</span>
+                    <span class="wing-value" id="stage-display">DESERT FRONT</span>
+                    <span class="wing-sub" id="stage-sub-display">OPERATION DUNE BREAKER</span>
+                </div>
+
+                <div id="ms-hud-top">
+                    <div id="ms-hud-left">
+                        <div class="ms-hud-item">
+                            <span class="ms-label">SCORE</span>
+                            <span class="ms-value" id="score">0000000</span>
+                        </div>
+                        <div class="ms-hud-item">
+                            <span class="ms-label">TIME</span>
+                            <span class="ms-value ms-time" id="time-display">00:00</span>
+                        </div>
+                    </div>
+
+                    <div id="ms-hud-center">
+                        <div class="ms-hud-item">
+                            <span class="ms-label">WAVE</span>
+                            <span class="ms-value ms-wave" id="wave-display">1</span>
+                        </div>
+                    </div>
+
+                    <div id="ms-hud-right">
+                        <div class="ms-hud-item">
+                            <span class="ms-label">KILLS</span>
+                            <span class="ms-value ms-kills" id="kills-display">000</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="hud-wing-card hud-wing-right">
+                    <span class="wing-label">ALERT</span>
+                    <span class="wing-value">SV-001 ONLINE</span>
+                    <span class="wing-sub">PUSH THROUGH THE LINE</span>
+                </div>
+            </div>
+
+            <div id="hud-left-rail">
+                <div id="status-panel" class="hud-panel">
+                    <div class="hud-panel-header">
+                        <span class="hud-panel-title">SV-001 STATUS</span>
+                        <span class="hud-chip">ACTIVE</span>
+                    </div>
+
+                    <div id="hp-bar-container">
+                        <div id="hp-icons">
+                            <span id="hp-label">LIFE</span>
+                            <div id="hp-pips"></div>
+                        </div>
+                        <div id="hp-bar-bg">
+                            <div id="hp-bar-fill"></div>
+                        </div>
+                    </div>
+
+                    <div id="resource-grid">
+                        <div class="resource-card">
+                            <span class="resource-title">ARMS</span>
+                            <span class="resource-value" id="arms-display">VUL</span>
+                            <span class="resource-caption">MAIN GUN</span>
+                        </div>
+                        <div class="resource-card">
+                            <span class="resource-title">BOMB</span>
+                            <span class="resource-value" id="bomb-display">10</span>
+                            <span class="resource-caption">GRENADES</span>
+                        </div>
+                        <div class="resource-card resource-card-wide">
+                            <span class="resource-title">BOOST</span>
+                            <div class="resource-meter">
+                                <div class="resource-meter-fill" id="dash-meter-fill"></div>
+                            </div>
+                            <span class="resource-caption" id="dash-state">READY</span>
+                        </div>
+                        <div class="resource-card resource-card-wide">
+                            <span class="resource-title">CHARGE</span>
+                            <div class="resource-meter">
+                                <div class="resource-meter-fill charge-fill" id="charge-meter-fill"></div>
+                            </div>
+                            <span class="resource-caption" id="charge-state">READY</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="weapon-display" class="hud-panel">
+                    <div class="hud-panel-header">
+                        <span class="hud-panel-title">LOADOUT</span>
+                        <span class="hud-chip">MK-II</span>
+                    </div>
+                    <div class="weapon-item active" id="weapon-vulcan">
+                        <span class="weapon-icon">V</span>
+                        <span class="weapon-name">VULCAN</span>
+                        <span class="weapon-ammo" id="weapon-vulcan-ammo">READY</span>
+                    </div>
+                    <div class="weapon-item" id="weapon-cannon">
+                        <span class="weapon-icon">C</span>
+                        <span class="weapon-name">CANNON</span>
+                        <span class="weapon-ammo" id="weapon-cannon-ammo">CHARGE</span>
+                    </div>
+                </div>
+            </div>
+
+            <div id="hud-right-rail">
+                <div id="aim-indicator" class="hud-panel">
+                    <div class="hud-panel-header">
+                        <span class="hud-panel-title">GUNNER VECTOR</span>
+                        <span class="hud-chip" id="aim-mode-text">MOUSE</span>
+                    </div>
+                    <div id="aim-gauge">
+                        <svg viewBox="0 0 120 80" id="aim-svg">
+                            <path id="aim-arc-bg" d="" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="3"/>
+                            <line id="aim-line" x1="60" y1="66" x2="102" y2="30" stroke="#FF7442" stroke-width="3" stroke-linecap="round"/>
+                            <circle id="aim-dot" cx="102" cy="30" r="4" fill="#FF7442"/>
+                            <circle cx="60" cy="66" r="4" fill="#FFD061"/>
+                        </svg>
+                    </div>
+                    <div id="aim-info">
+                        <span id="aim-angle-text">0°</span>
+                    </div>
+                </div>
+
+                <div id="feed-panel" class="hud-panel">
+                    <div class="hud-panel-header">
+                        <span class="hud-panel-title">ENGAGEMENT LOG</span>
+                        <span class="hud-chip">LIVE</span>
+                    </div>
+                    <div id="kill-feed"></div>
+                </div>
+
+                <div id="controls-hint" class="hud-panel">
+                    <div class="hud-panel-header">
+                        <span class="hud-panel-title">CONTROLS</span>
+                        <span class="hud-chip">REVISED</span>
+                    </div>
+                    <div class="controls-grid">
+                        <span>←→ STRAFE</span>
+                        <span>↑↓ ADVANCE / RETREAT</span>
+                        <span>SPACE JUMP</span>
+                        <span>C / CTRL CROUCH</span>
+                        <span>MOUSE AIM</span>
+                        <span>LMB VULCAN</span>
+                        <span>RMB / F / SHIFT CANNON</span>
+                        <span>G GRENADE  (HOLD: ARC)</span>
+                        <span>E BOOST DASH</span>
+                        <span>Q DISMOUNT / BOARD</span>
+                        <span>R RESTART   M MUTE</span>
+                    </div>
+                </div>
+            </div>
+
+            <div id="combo-display"></div>
+
+            <div id="mission-start">
+                <div id="mission-start-text">MISSION START</div>
+                <div id="mission-start-sub">DESERT FRONT</div>
+            </div>
+
+            <div id="wave-announce">
+                <div id="wave-announce-text">WAVE 1</div>
+                <div id="wave-announce-desc">FIRST CONTACT</div>
+            </div>
+
+            <div id="score-popups"></div>
+
+            <div id="boss-hp-container">
+                <div id="boss-label">WARNING</div>
+                <div id="boss-hp-bar-bg">
+                    <div id="boss-hp-bar"></div>
+                </div>
+            </div>
+
+            <div id="scroll-plate" class="hud-panel">
+                <div class="hud-panel-header">
+                    <span class="hud-panel-title">ADVANCE</span>
+                    <span class="hud-chip">AUTO SCROLL</span>
+                </div>
+                <div id="scroll-progress">
+                    <div id="scroll-progress-fill"></div>
+                    <div id="scroll-progress-marker"></div>
+                </div>
+            </div>
+
+            <div id="vignette"></div>
+            <div id="damage-flash"></div>
+            <div id="impact-flash"></div>
+            <div id="scanlines"></div>
+        </div>
+
+        <div id="title-screen">
+            <div id="title-bg-overlay"></div>
+            <div id="title-content">
+                <div id="title-top-line">OPERATION DUNE BREAKER</div>
+                <div id="title-logo">
+                    <span id="title-metal">METAL</span>
+                    <span id="title-slug">SLUG</span>
+                </div>
+                <div id="title-subtitle">FRONTIER</div>
+                <div id="title-divider"></div>
+                <div id="title-controls-brief">
+                    <div class="title-control-row"><span class="tc-key">← →</span><span class="tc-desc">STRAFE LEFT / RIGHT</span></div>
+                    <div class="title-control-row"><span class="tc-key">↑ ↓</span><span class="tc-desc">ADVANCE / RETREAT</span></div>
+                    <div class="title-control-row"><span class="tc-key">SPACE</span><span class="tc-desc">JUMP</span></div>
+                    <div class="title-control-row"><span class="tc-key">C</span><span class="tc-desc">CROUCH</span></div>
+                    <div class="title-control-row"><span class="tc-key">MOUSE</span><span class="tc-desc">AIM</span></div>
+                    <div class="title-control-row"><span class="tc-key">LMB</span><span class="tc-desc">VULCAN (AUTO-FIRE)</span></div>
+                    <div class="title-control-row"><span class="tc-key">RMB / F / SHIFT</span><span class="tc-desc">CANNON (CHARGE)</span></div>
+                    <div class="title-control-row"><span class="tc-key">G</span><span class="tc-desc">GRENADE  (HOLD: AIM)</span></div>
+                    <div class="title-control-row"><span class="tc-key">E</span><span class="tc-desc">BOOST DASH</span></div>
+                    <div class="title-control-row"><span class="tc-key">Q</span><span class="tc-desc">DISMOUNT / RE-BOARD</span></div>
+                    <div class="title-control-row"><span class="tc-key">R / M</span><span class="tc-desc">RESTART / MUTE</span></div>
+                </div>
+                <div id="title-start-prompt">PRESS SPACE TO START</div>
+                <div id="title-footer">SV-001 METAL SLUG &mdash; DESERT FRONT THEATER</div>
+            </div>
+            <div id="title-scanlines"></div>
+        </div>
+
+        <div id="game-over-screen">
+            <div id="game-over-box">
+                <div id="game-over-title">MISSION FAILED</div>
+                <div id="game-over-stats">
+                    <div class="stat-row">
+                        <span class="stat-label">SCORE</span>
+                        <span class="stat-value" id="final-score">0</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">KILLS</span>
+                        <span class="stat-value" id="final-kills">0</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">WAVE</span>
+                        <span class="stat-value" id="final-wave">1</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">MAX COMBO</span>
+                        <span class="stat-value" id="final-combo">0</span>
+                    </div>
+                </div>
+                <div id="restart-hint">PRESS R TO REDEPLOY</div>
+            </div>
+        </div>
+    </div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+        }
+    }
+    </script>
+    <script type="module" src="js/main.js"></script>
+</body>
+</html>
