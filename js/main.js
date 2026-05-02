@@ -6,16 +6,24 @@ import { World } from './World.js';
 import { GameManager } from './GameManager.js';
 import { UIManager } from './UIManager.js';
 import { SoundManager } from './SoundManager.js';
+import { cancelAllPendingExtraDisposals, resetExplosionGlobals } from './Explosion.js';
 
 // ============================================
 // レンダラー
 // ============================================
 const canvas = document.getElementById('game-canvas');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+// logarithmicDepthBuffer: near 0.1 / far 1000（比 1:10000）の深度精度低下による
+// Z-fighting を抑制。背景プロップが密集する Wave3+ の点滅対策。
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance', logarithmicDepthBuffer: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+// 適応解像度: 初期は最大1.5、低FPSなら自動的に下げる
+const MAX_PIXEL_RATIO = Math.min(window.devicePixelRatio, 1.5);
+const MIN_PIXEL_RATIO = 0.85;
+let currentPixelRatio = MAX_PIXEL_RATIO;
+renderer.setPixelRatio(currentPixelRatio);
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// PCFSoft → PCF（ソフトシャドウ計算分のフィルタ重さを削減。屋外光なので差は微小）
+renderer.shadowMap.type = THREE.PCFShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.4;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -29,7 +37,10 @@ const scene = new THREE.Scene();
 // カメラ（斜め見下ろし 3/4 view - Panzer Dragoon風）
 // プレイヤーの後方上空から +Z 方向（前方）を見る
 // ============================================
-const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 500);
+// far: 500 → 1000。World チャンクの生成距離（scrollZ + 90）を超えても余裕を持たせ、
+// 遠方オブジェクトが far plane を出入りすることによる点滅/消失を防ぐ。
+// フォグ（line 117 の FogExp2）が遠景を自然にフェードアウトさせるため、far 拡張による描画コストは限定的。
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 1000);
 const CAMERA_OFFSET = new THREE.Vector3(0, 14, -18);
 const CAMERA_LOOK_AHEAD = 10;
 camera.position.set(0, CAMERA_OFFSET.y, CAMERA_OFFSET.z);
@@ -76,16 +87,18 @@ scene.add(ambientLight);
 const dirLight = new THREE.DirectionalLight(0xFFF0B8, 2.5);
 dirLight.position.set(22, 38, 14);
 dirLight.castShadow = true;
-dirLight.shadow.mapSize.width = 2048;
-dirLight.shadow.mapSize.height = 2048;
+// 2048→1024、影カメラ範囲も実プレイ範囲に絞り、毎フレームのシャドウパス負荷を大幅削減
+dirLight.shadow.mapSize.width = 1024;
+dirLight.shadow.mapSize.height = 1024;
 dirLight.shadow.camera.near = 0.5;
-dirLight.shadow.camera.far = 120;
-dirLight.shadow.camera.left = -50;
-dirLight.shadow.camera.right = 50;
-dirLight.shadow.camera.top = 50;
-dirLight.shadow.camera.bottom = -50;
+dirLight.shadow.camera.far = 90;
+dirLight.shadow.camera.left = -28;
+dirLight.shadow.camera.right = 28;
+dirLight.shadow.camera.top = 32;
+dirLight.shadow.camera.bottom = -22;
 dirLight.shadow.bias = -0.001;
-dirLight.shadow.normalBias = 0.02;
+// 0.08 は peter-panning（影が浮く）で別種のチラつきが出るため 0.04 に戻す
+dirLight.shadow.normalBias = 0.04;
 scene.add(dirLight);
 
 const lightTarget = new THREE.Object3D();
@@ -120,6 +133,22 @@ const uiManager = new UIManager(camera);
 const soundManager = new SoundManager();
 
 player.soundManager = soundManager;
+player.world = world;
+
+// チャージ砲のティアに応じた打撃感
+player.onChargeFire = (tier) => {
+    if (tier >= 2) {
+        shakeIntensity = Math.max(shakeIntensity, 0.55);
+        triggerHitstop(0.045);
+        cameraZoomTarget = 0.95;
+        uiManager.triggerImpactFlash(0.9, false);
+    } else if (tier >= 1) {
+        shakeIntensity = Math.max(shakeIntensity, 0.3);
+        triggerHitstop(0.025);
+    } else {
+        shakeIntensity = Math.max(shakeIntensity, 0.18);
+    }
+};
 gameManager.soundManager = soundManager;
 gameManager.world = world;
 
@@ -131,8 +160,12 @@ let gameMode = 'tank'; // 'tank' | 'foot'
 gameManager.getScrollZ = () => scrollZ;
 gameManager.getScrollSpeed = () => SCROLL_SPEED;
 
-// 対空ロックオン用: Player に敵リストへのアクセスを渡す
+// ロックオン用: 敵リスト & ボスへのアクセスを渡す
 player.getEnemies = () => gameManager.enemies;
+player.getBoss = () => gameManager.boss;
+marco.getEnemies = () => gameManager.enemies;
+marco.getBoss = () => gameManager.boss;
+marco.world = world;
 
 // ============================================
 // 環境パーティクル（浮遊する砂塵）
@@ -141,10 +174,11 @@ const dustMotes = [];
 const dustMat = new THREE.MeshBasicMaterial({
     color: 0xE8C890, transparent: true, opacity: 0.3,
 });
-for (let i = 0; i < 40; i++) {
-    const size = 0.05 + Math.random() * 0.1;
-    const geo = new THREE.SphereGeometry(size, 4, 3);
-    const mote = new THREE.Mesh(geo, dustMat);
+// 40 個 → 24 個、ジオメトリ共有。粒子数が多いほど見た目に効くが、視覚差は微小。
+const dustGeo = new THREE.SphereGeometry(0.08, 4, 3);
+for (let i = 0; i < 24; i++) {
+    const mote = new THREE.Mesh(dustGeo, dustMat);
+    mote.scale.setScalar(0.6 + Math.random() * 1.4);
     mote.position.set(
         (Math.random() - 0.5) * 30,
         1 + Math.random() * 8,
@@ -185,27 +219,6 @@ gameManager.onEnemyKilled = (enemy) => {
 gameManager.onWaveChange = (waveNum) => {
     uiManager.announceWave(waveNum);
     soundManager.playWaveStart();
-
-    const timeOfDay = [
-        { ambient: 0xFFDDA0, ambientI: 0.65, dir: 0xFFF0B8, dirI: 2.5, hemiSky: 0x88C0F0, hemiGnd: 0xE8B060, hemiI: 0.65, fog: 0xDCC088 },
-        { ambient: 0xFFDDA0, ambientI: 0.62, dir: 0xFFF0B8, dirI: 2.3, hemiSky: 0x88C0F0, hemiGnd: 0xE8B060, hemiI: 0.60, fog: 0xDCC088 },
-        { ambient: 0xFFCC80, ambientI: 0.55, dir: 0xFFD090, dirI: 2.0, hemiSky: 0x70A8D8, hemiGnd: 0xD09848, hemiI: 0.50, fog: 0xCCA868 },
-        { ambient: 0xFF9944, ambientI: 0.50, dir: 0xFF7722, dirI: 1.8, hemiSky: 0xFF6633, hemiGnd: 0x996633, hemiI: 0.40, fog: 0xCC7744 },
-        { ambient: 0x7755BB, ambientI: 0.40, dir: 0xDD5533, dirI: 1.2, hemiSky: 0x553377, hemiGnd: 0x664433, hemiI: 0.35, fog: 0x775566 },
-        { ambient: 0x384466, ambientI: 0.35, dir: 0x6688CC, dirI: 0.9, hemiSky: 0x2A3858, hemiGnd: 0x2A2838, hemiI: 0.30, fog: 0x384466 },
-        { ambient: 0x2E3E52, ambientI: 0.30, dir: 0x5577BB, dirI: 0.8, hemiSky: 0x1E2E44, hemiGnd: 0x1E1E30, hemiI: 0.25, fog: 0x2E3E52 },
-        { ambient: 0x263848, ambientI: 0.28, dir: 0x4466AA, dirI: 0.7, hemiSky: 0x162838, hemiGnd: 0x141428, hemiI: 0.20, fog: 0x263848 },
-    ];
-
-    const tod = timeOfDay[Math.min(waveNum - 1, timeOfDay.length - 1)];
-    ambientLight.color.setHex(tod.ambient);
-    ambientLight.intensity = tod.ambientI;
-    dirLight.color.setHex(tod.dir);
-    dirLight.intensity = tod.dirI;
-    hemiLight.color.setHex(tod.hemiSky);
-    hemiLight.groundColor.setHex(tod.hemiGnd);
-    hemiLight.intensity = tod.hemiI;
-    if (scene.fog) scene.fog.color.setHex(tod.fog);
 };
 
 gameManager.onPlayerHit = (hp, maxHp) => {
@@ -241,6 +254,11 @@ gameManager.onBossDefeated = () => {
     uiManager.hideBossHp();
     soundManager.playWaveStart();
     scrollPaused = false;
+    // ボス出現時に変更したライトをデイライト初期値へ戻す
+    ambientLight.color.setHex(0xFFDDA0);
+    ambientLight.intensity = 0.65;
+    dirLight.color.setHex(0xFFF0B8);
+    dirLight.intensity = 2.5;
 };
 
 gameManager.onBossSpawn = () => {
@@ -379,14 +397,77 @@ scene.add(aimDot);
 // ============================================
 // リスタート & ミュート
 // ============================================
+function isRestartKey(event) {
+    return event.code === 'KeyR' || event.key === 'r' || event.key === 'R';
+}
+
+// シーン直下の "保持しても良い" 永続オブジェクトを集合として持つ。
+// リスタート時の防衛的クリーンアップで、これらに含まれない直下メッシュは
+// dispose して取り除く。World/Player/Marco の管理対象は内部 reset で扱われるため、
+// ここでは scene.children を一階層だけ走査する（深い traverse は不要）。
+function _collectPermanentRoots() {
+    const roots = new Set([
+        ambientLight, dirLight, lightTarget, hemiLight, rimLight, fillLight,
+        aimCursor, cross1, cross2, aimDot,
+        player.group, marco.group,
+    ]);
+    if (world.bgLayers) world.bgLayers.forEach(l => l.objects && l.objects.forEach(o => roots.add(o)));
+    if (world.clouds) world.clouds.forEach(c => roots.add(c.group));
+    if (world.photoForegroundMeshes) world.photoForegroundMeshes.forEach(e => roots.add(e.mesh));
+    if (world.chunks) world.chunks.forEach(c => c.objects.forEach(o => roots.add(o)));
+    if (world.skyMesh) roots.add(world.skyMesh);
+    if (world.groundMesh) roots.add(world.groundMesh);
+    return roots;
+}
+
+function _deepCleanScene() {
+    const keep = _collectPermanentRoots();
+    // 爆発ライトプールの light は scene.children に含まれるが _lightPool に属するので
+    // まず一旦すべて keep 集合に積む（resetExplosionGlobals 後なので非アクティブ）
+    scene.children.slice().forEach(obj => {
+        if (obj.isLight) keep.add(obj); // 全ライトは温存（プール光含む）
+    });
+    const toRemove = scene.children.filter(o => !keep.has(o));
+    toRemove.forEach(obj => {
+        scene.remove(obj);
+        if (obj.traverse) {
+            obj.traverse(child => {
+                if (child.isMesh) {
+                    if (child.geometry && child.geometry.dispose) {
+                        try { child.geometry.dispose(); } catch (e) { /* shared */ }
+                    }
+                    if (child.material) {
+                        const mats = Array.isArray(child.material) ? child.material : [child.material];
+                        mats.forEach(m => { try { m.dispose && m.dispose(); } catch (e) { /* shared */ } });
+                    }
+                }
+            });
+        }
+    });
+}
+
 window.addEventListener('keydown', (e) => {
-    if (e.code === 'KeyR' && gameManager.gameOver) restartGame();
+    if (isRestartKey(e) && gameManager.gameOver) {
+        e.preventDefault();
+        restartGame();
+    }
     if (e.code === 'KeyM') soundManager.toggleMute();
     // ゲームオーバー時にSPACEでもリスタート
-    if (e.code === 'Space' && gameManager.gameOver) restartGame();
+    if (e.code === 'Space' && gameManager.gameOver) {
+        e.preventDefault();
+        restartGame();
+    }
 });
 
 function restartGame() {
+    // 前ゲームの未発火 setTimeout（焦げ跡/岩塊の遅延 dispose）を取り消し、
+    // 新ゲーム中に過去 mesh が突然消える/メモリが揺れる症状を防ぐ。
+    cancelAllPendingExtraDisposals();
+    // 爆発ライトプール（_activeExplosionLights カウンタ + 各 light の _busy フラグ）を初期化。
+    // これを呼ばないと、Game Over 時点で update が止まったまま release されなかった
+    // ライトが永続的に占有されたままになり、新ゲームの爆発が無灯化＋古いライトが
+    // シーン上で点きっぱなしになって点滅・重さの原因になる。
+    resetExplosionGlobals();
     uiManager.reset();
     player.restart();
     gameManager.restart();
@@ -399,7 +480,30 @@ function restartGame() {
     shakeIntensity = 0;
     cameraZoomTarget = 1.0;
     cameraZoomCurrent = 1.0;
+    // メモリプレッシャー監視・ヒットストップ・カメラキックなどのループ局所状態もリセット。
+    // 残ったまま新ゲームに入ると、開始直後の数フレームで強制 shift が走り、
+    // 表示エフェクトが一瞬で消える点滅が発生する。
+    memPressureTimer = 0;
+    hitstopTimer = 0;
+    cameraKickTimer = 0;
+    cameraKickAmount = 0;
+    // 適応解像度の FPS 計測もリセット。前ゲームの低 FPS 計測値が残ると
+    // 新ゲームの開始直後に誤判定で解像度を更に下げる挙動になりうる。
+    fpsAccumulator = 0;
+    fpsFrameCount = 0;
+    fpsCheckTimer = 0;
+    // ボス戦中に Game Over した場合、ライトがボス戦カラーのまま残るので明示的に戻す。
+    ambientLight.color.setHex(0xFFDDA0);
+    ambientLight.intensity = 0.65;
+    dirLight.color.setHex(0xFFF0B8);
+    dirLight.intensity = 2.5;
     world.reset(scrollZ);
+    // シーン防衛的クリーンアップ: 既知の永続オブジェクト以外の遺残メッシュを除去。
+    // dispose 漏れの最後のセーフティネット。
+    _deepCleanScene();
+    // シェーダプリコンパイル: 新生成チャンクのマテリアルが初フレームで
+    // インラインコンパイルされるとフレームが詰まる（リスタート直後の重さの一因）。
+    try { renderer.compile(scene, camera); } catch (e) { /* noop */ }
     setTimeout(() => {
         uiManager.showMissionStart();
         soundManager.playMissionStart();
@@ -430,6 +534,54 @@ window.addEventListener('resize', () => {
 let lastTime = -1;
 let isFirstFrame = true;
 let elapsedTime = 0;
+let memPressureTimer = 0;
+
+// エフェクトを安全に解放する（destroy() があればそれを優先、無ければ traverse で dispose）
+function forceReleaseEffect(effect) {
+    if (!effect) return;
+    if (typeof effect.destroy === 'function') {
+        try {
+            effect.destroy();
+            return;
+        } catch (_) { /* 多重呼出しの保険 */ }
+    }
+    effect.alive = false;
+    if (effect.group) {
+        if (effect.group.parent) effect.group.parent.remove(effect.group);
+        effect.group.traverse(child => {
+            if (child.isMesh) {
+                if (child.geometry && child.geometry.dispose) child.geometry.dispose();
+                if (child.material && child.material.dispose) child.material.dispose();
+            }
+        });
+    }
+}
+
+// 適応解像度: 直近フレームの平均 FPS を見て pixel ratio を調整
+// 低 FPS → 解像度を下げて即時に滑らかさ復帰
+// 高 FPS → ゆっくり解像度を戻し画質を維持
+let fpsAccumulator = 0;
+let fpsFrameCount = 0;
+let fpsCheckTimer = 0;
+const FPS_TARGET_LOW  = 48;  // これより低いと解像度ダウン
+const FPS_TARGET_HIGH = 58;  // これより高い時のみ解像度アップ
+function _updateAdaptiveResolution(rawDt) {
+    fpsAccumulator += rawDt;
+    fpsFrameCount++;
+    fpsCheckTimer += rawDt;
+    if (fpsCheckTimer < 0.6) return;  // 0.6秒ごとに評価
+    const avgFps = fpsFrameCount / fpsAccumulator;
+    fpsAccumulator = 0;
+    fpsFrameCount = 0;
+    fpsCheckTimer = 0;
+    if (avgFps < FPS_TARGET_LOW && currentPixelRatio > MIN_PIXEL_RATIO) {
+        currentPixelRatio = Math.max(MIN_PIXEL_RATIO, currentPixelRatio - 0.15);
+        renderer.setPixelRatio(currentPixelRatio);
+    } else if (avgFps > FPS_TARGET_HIGH && currentPixelRatio < MAX_PIXEL_RATIO) {
+        currentPixelRatio = Math.min(MAX_PIXEL_RATIO, currentPixelRatio + 0.05);
+        renderer.setPixelRatio(currentPixelRatio);
+    }
+}
 
 function gameLoop(timestamp) {
     requestAnimationFrame(gameLoop);
@@ -443,6 +595,9 @@ function gameLoop(timestamp) {
 
     const rawDt = Math.min((timestamp - lastTime) / 1000, 0.033);
     lastTime = timestamp;
+
+    // 適応解像度の更新（タイトル中も計測してウォームアップ）
+    if (rawDt > 0) _updateAdaptiveResolution(rawDt);
 
     // ヒットストップ適用（ゲームプレイ時間だけ一瞬止める。UIは通常速度）
     let dt = rawDt;
@@ -468,29 +623,33 @@ function gameLoop(timestamp) {
     // プレイヤー更新 (Feature 3: モード分岐)
     player.scrollZ = scrollZ;
     const activeEntity = gameMode === 'tank' ? player : marco;
-    if (gameMode === 'tank') {
-        player.update(dt, input, elapsedTime);
-        // 非アクティブ側（徒歩モード）の残存弾・エフェクトを解放
-        for (let i = marco.projectiles.length - 1; i >= 0; i--) {
-            const p = marco.projectiles[i];
-            if (p.destroy) p.destroy();
-            marco.projectiles.splice(i, 1);
-        }
-        for (let i = marco.effects.length - 1; i >= 0; i--) {
-            const e = marco.effects[i];
-            if (e.destroy) e.destroy();
-            marco.effects.splice(i, 1);
-        }
-    } else {
-        marco.scrollZ = scrollZ;
-        marco.update(dt, input, scrollZ);
-        // 戦車が画面外に流れないよう位置をスクロールに追従させる
-        player.group.position.z = scrollZ + player.localOffsetZ;
-        // マルコが死んだら戦車モードに戻る
-        if (marco.dead) {
-            gameMode = 'tank';
-            player.group.visible = true;
-            player.takeDamage(player.hp);
+    // ゲームオーバー中は player/marco の update を完全にスキップ。
+    // 入力で新たな弾/エフェクトが生成され続けるのを止め、restart 時の蓄積を防ぐ。
+    if (!gameManager.gameOver) {
+        if (gameMode === 'tank') {
+            player.update(dt, input, elapsedTime);
+            // 非アクティブ側（徒歩モード）の残存弾・エフェクトを解放
+            for (let i = marco.projectiles.length - 1; i >= 0; i--) {
+                const p = marco.projectiles[i];
+                if (p.destroy) p.destroy();
+                marco.projectiles.splice(i, 1);
+            }
+            for (let i = marco.effects.length - 1; i >= 0; i--) {
+                const e = marco.effects[i];
+                if (e.destroy) e.destroy();
+                marco.effects.splice(i, 1);
+            }
+        } else {
+            marco.scrollZ = scrollZ;
+            marco.update(dt, input, scrollZ);
+            // 戦車が画面外に流れないよう位置をスクロールに追従させる
+            player.group.position.z = scrollZ + player.localOffsetZ;
+            // マルコが死んだら戦車モードに戻る
+            if (marco.dead) {
+                gameMode = 'tank';
+                player.group.visible = true;
+                player.takeDamage(player.hp);
+            }
         }
     }
     const playerPos = activeEntity.getPosition();
@@ -544,10 +703,34 @@ function gameLoop(timestamp) {
         }
     }
     // アクティブキャラのエフェクト上限管理
+    // shift しただけだと scene 上の Mesh は残るので、必ず後処理で解放する。
+    // 上限を 24 → 40 に緩和（表示中の煙/炎/爆発粒子が突然消える"点滅"症状を抑制）
     const activeEffects = activeEntity.effects || [];
-    while (activeEffects.length > 30) {
+    while (activeEffects.length > 40) {
         const old = activeEffects.shift();
-        if (old.destroy) old.destroy();
+        forceReleaseEffect(old);
+    }
+
+    // ランタイム全体のメモリプレッシャー監視 (Three.js リソース数で評価)
+    // ItemDrop/Explosion の dispose 漏れを修正したので閾値超過頻度は下がるはず。
+    // 閾値 1800 → 2600（余裕）、シフト下限 22 → 30 に緩和し、
+    // 表示中エフェクトが突然消える「点滅」を更に抑制する。
+    memPressureTimer += rawDt;
+    if (memPressureTimer >= 0.3) {
+        memPressureTimer = 0;
+        const geoCount = renderer.info.memory.geometries;
+        if (geoCount > 2600) {
+            while (gameManager.effects.length > 30) {
+                const old = gameManager.effects.shift();
+                gameManager._forceDestroyEffect(old);
+            }
+            while (activeEffects.length > 30) {
+                const old = activeEffects.shift();
+                forceReleaseEffect(old);
+            }
+            // 後方の敵を強制クリーンアップ
+            gameManager.cleanupTimer = 999;
+        }
     }
 
     // エイムカーソル（地面 Y=0 平面上）

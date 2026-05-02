@@ -5,6 +5,38 @@ import * as THREE from 'three';
  * owner: 'player' or 'enemy'
  * type: 'bullet' | 'cannon' | 'rocket' | 'bomb'
  */
+
+// 弾丸用の共有ジオメトリ・マテリアル（毎フレーム生成→GC負荷を解消）
+// emissive を強めにして PointLight 無しでも視認性を確保
+const _bulletGeo  = new THREE.SphereGeometry(0.1, 6, 4);
+const _bulletMat  = new THREE.MeshBasicMaterial({ color: 0xFFEE44 });
+const _trailBulletGeo = new THREE.CylinderGeometry(0.03, 0.07, 0.45, 4);
+const _trailBulletMat = new THREE.MeshBasicMaterial({ color: 0xFFFF88, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false });
+
+const _cannonGeo  = new THREE.CylinderGeometry(0.08, 0.13, 0.55, 8);
+const _cannonMat  = new THREE.MeshBasicMaterial({ color: 0xFFAA44 });
+const _cannonTrailGeo = new THREE.SphereGeometry(0.18, 6, 4);
+const _cannonTrailMat = new THREE.MeshBasicMaterial({ color: 0x999999, transparent: true, opacity: 0.35, depthWrite: false });
+
+const _rocketBodyGeo = new THREE.CylinderGeometry(0.06, 0.09, 0.65, 6);
+const _rocketBodyMat = new THREE.MeshBasicMaterial({ color: 0x607030 });
+const _rocketFlameGeo = new THREE.ConeGeometry(0.07, 0.35, 6);
+const _rocketFlameMat = new THREE.MeshBasicMaterial({ color: 0xFF5500, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false });
+
+const _bombGeo = new THREE.SphereGeometry(0.2, 8, 6);
+const _bombMat = new THREE.MeshBasicMaterial({ color: 0x333333 });
+const _bombFinGeo = new THREE.BoxGeometry(0.02, 0.15, 0.15);
+const _bombFinMat = new THREE.MeshBasicMaterial({ color: 0x444444 });
+
+const _SHARED_GEOMS = new Set([
+    _bulletGeo, _trailBulletGeo, _cannonGeo, _cannonTrailGeo,
+    _rocketBodyGeo, _rocketFlameGeo, _bombGeo, _bombFinGeo,
+]);
+const _SHARED_MATS = new Set([
+    _bulletMat, _trailBulletMat, _cannonMat, _cannonTrailMat,
+    _rocketBodyMat, _rocketFlameMat, _bombMat, _bombFinMat,
+]);
+
 export class Projectile {
     constructor(scene, {
         position,
@@ -78,119 +110,55 @@ export class Projectile {
 
     /**
      * 通常弾（プレイヤーのバルカン砲弾）
+     * 共有 geo/mat。MeshBasic + 加算ブレンドのトレイルで自照効果を再現。
      */
     _buildBullet() {
-        // 弾頭
-        const bulletGeo = new THREE.SphereGeometry(0.1, 6, 4);
-        const bulletMat = new THREE.MeshStandardMaterial({
-            color: 0xFFEE44,
-            emissive: 0xFFBB00,
-            emissiveIntensity: 1.0,
-            roughness: 0.2,
-            metalness: 0.5,
-        });
-        const bullet = new THREE.Mesh(bulletGeo, bulletMat);
+        const bullet = new THREE.Mesh(_bulletGeo, _bulletMat);
         bullet.scale.set(1, 1, 1.5);
         this.group.add(bullet);
 
-        // 発光トレーサー
-        const trailGeo = new THREE.CylinderGeometry(0.03, 0.07, 0.45, 4);
-        const trailMat = new THREE.MeshBasicMaterial({
-            color: 0xFFFF88,
-            transparent: true,
-            opacity: 0.7,
-        });
-        this.trail = new THREE.Mesh(trailGeo, trailMat);
+        this.trail = new THREE.Mesh(_trailBulletGeo, _trailBulletMat);
         this.trail.rotation.z = Math.PI / 2;
         this.trail.position.x = -0.25;
         this.group.add(this.trail);
-
-        // PointLight（弾の光）
-        const light = new THREE.PointLight(0xFFBB00, 0.7, 3.5);
-        this.group.add(light);
     }
 
     /**
      * 主砲弾
      */
     _buildCannon() {
-        const shellGeo = new THREE.CylinderGeometry(0.08, 0.13, 0.55, 8);
-        const shellMat = new THREE.MeshStandardMaterial({
-            color: 0xCC9933,
-            emissive: 0xFF7700,
-            emissiveIntensity: 0.6,
-            metalness: 0.6,
-            roughness: 0.25,
-        });
-        const shell = new THREE.Mesh(shellGeo, shellMat);
+        const shell = new THREE.Mesh(_cannonGeo, _cannonMat);
         shell.rotation.z = Math.PI / 2;
         this.group.add(shell);
 
-        // 煙のトレイル
-        const smokeGeo = new THREE.SphereGeometry(0.18, 6, 4);
-        const smokeMat = new THREE.MeshBasicMaterial({
-            color: 0x999999,
-            transparent: true,
-            opacity: 0.35,
-        });
-        this.trail = new THREE.Mesh(smokeGeo, smokeMat);
+        this.trail = new THREE.Mesh(_cannonTrailGeo, _cannonTrailMat);
         this.trail.position.x = -0.35;
         this.group.add(this.trail);
-
-        const light = new THREE.PointLight(0xFF7700, 1.0, 6);
-        this.group.add(light);
     }
 
     /**
      * ロケット弾
      */
     _buildRocket() {
-        // ロケット本体
-        const bodyGeo = new THREE.CylinderGeometry(0.06, 0.09, 0.65, 6);
-        const bodyMat = new THREE.MeshStandardMaterial({
-            color: 0x607030,
-            roughness: 0.55,
-            metalness: 0.35,
-        });
-        const body = new THREE.Mesh(bodyGeo, bodyMat);
+        const body = new THREE.Mesh(_rocketBodyGeo, _rocketBodyMat);
         body.rotation.z = Math.PI / 2;
         this.group.add(body);
 
-        // ロケットの噴射炎
-        const flameGeo = new THREE.ConeGeometry(0.07, 0.35, 6);
-        const flameMat = new THREE.MeshBasicMaterial({
-            color: 0xFF5500,
-            transparent: true,
-            opacity: 0.85,
-        });
-        this.trail = new THREE.Mesh(flameGeo, flameMat);
+        this.trail = new THREE.Mesh(_rocketFlameGeo, _rocketFlameMat);
         this.trail.rotation.z = -Math.PI / 2;
         this.trail.position.x = -0.45;
         this.group.add(this.trail);
-
-        const light = new THREE.PointLight(0xFF5500, 1.2, 5);
-        light.position.x = -0.35;
-        this.group.add(light);
     }
 
     /**
      * 爆弾（重力で落下）
      */
     _buildBomb() {
-        const bombGeo = new THREE.SphereGeometry(0.2, 8, 6);
-        const bombMat = new THREE.MeshStandardMaterial({
-            color: 0x333333,
-            roughness: 0.5,
-            metalness: 0.4,
-        });
-        const bomb = new THREE.Mesh(bombGeo, bombMat);
+        const bomb = new THREE.Mesh(_bombGeo, _bombMat);
         this.group.add(bomb);
 
-        // 尾翼
-        const finGeo = new THREE.BoxGeometry(0.02, 0.15, 0.15);
-        const finMat = new THREE.MeshStandardMaterial({ color: 0x444444 });
         for (let i = 0; i < 4; i++) {
-            const fin = new THREE.Mesh(finGeo, finMat);
+            const fin = new THREE.Mesh(_bombFinGeo, _bombFinMat);
             fin.position.y = 0.2;
             fin.rotation.y = (Math.PI / 2) * i;
             this.group.add(fin);
@@ -263,11 +231,11 @@ export class Projectile {
         this.alive = false;
         this.impactPending = false;
         this.scene.remove(this.group);
-        // ジオメトリ・マテリアルの解放
+        // 共有 geo/mat は破棄しない。それ以外（万一あれば）のみ解放。
         this.group.traverse(child => {
             if (child.isMesh) {
-                child.geometry.dispose();
-                child.material.dispose();
+                if (child.geometry && !_SHARED_GEOMS.has(child.geometry)) child.geometry.dispose();
+                if (child.material && !_SHARED_MATS.has(child.material)) child.material.dispose();
             }
         });
     }

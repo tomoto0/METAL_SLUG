@@ -25,7 +25,11 @@ export class SoundManager {
         this._titleBgmBuffer = null;
         this._bgmLoaded = false;
         this._titleBgmLoaded = false;
+        this._bgmLoading = false;
+        this._titleBgmLoading = false;
+        this._bgmLoadFailed = false;
         this._currentBgmType = null; // 'battle' | 'title'
+        this._pendingBattleBgmStart = false;
 
         // フォールバック用プロシージャルBGM
         this._bgmNodes = [];
@@ -65,9 +69,35 @@ export class SoundManager {
 
         this.initialized = true;
 
-        // BGM音声ファイルを非同期ロード
-        this._loadBGM('audio/bgm_battle.ogg', 'battle');
-        this._loadBGM('audio/bgm_title.ogg', 'title');
+        // BGM音声ファイルを非同期ロード（モジュール基準で解決してパスずれを防ぐ）
+        // タイトル: bgm_title.ogg / ゲーム中: bgm_battle.ogg
+        const battleBgmUrls = [
+            new URL('../audio/bgm_battle.ogg', import.meta.url).href,
+        ];
+        const titleBgmUrl = new URL('../audio/bgm_title.ogg', import.meta.url).href;
+        this._loadFirstAvailableBGM(battleBgmUrls, 'battle');
+        this._loadBGM(titleBgmUrl, 'title');
+    }
+
+    async _loadFirstAvailableBGM(urls, type) {
+        if (type === 'battle') {
+            this._bgmLoading = true;
+            this._bgmLoadFailed = false;
+        }
+        for (const url of urls) {
+            // eslint-disable-next-line no-await-in-loop
+            const ok = await this._loadBGM(url, type);
+            if (ok) {
+                if (type === 'battle') this._bgmLoading = false;
+                return true;
+            }
+        }
+        if (type === 'battle') {
+            this._bgmLoading = false;
+            this._bgmLoadFailed = true;
+            console.warn('Battle BGM候補のロードに失敗。プロシージャルBGMへフォールバックします。');
+        }
+        return false;
     }
 
     /**
@@ -78,7 +108,7 @@ export class SoundManager {
             const response = await fetch(url);
             if (!response.ok) {
                 console.warn(`BGMファイルのロードに失敗: ${url} (${response.status})`);
-                return;
+                return false;
             }
             const arrayBuffer = await response.arrayBuffer();
             const audioBuffer = await this.ctx.decodeAudioData(arrayBuffer);
@@ -86,14 +116,22 @@ export class SoundManager {
             if (type === 'battle') {
                 this._bgmBuffer = audioBuffer;
                 this._bgmLoaded = true;
-                console.log('🎵 Battle BGM loaded successfully');
+                this._bgmLoadFailed = false;
+                console.log(`🎵 Battle BGM loaded successfully: ${url}`);
+                if (this._pendingBattleBgmStart && !this.bgmPlaying) {
+                    this._pendingBattleBgmStart = false;
+                    this._playAudioBGM(this._bgmBuffer, 'battle');
+                }
             } else if (type === 'title') {
                 this._titleBgmBuffer = audioBuffer;
                 this._titleBgmLoaded = true;
+                this._titleBgmLoading = false;
                 console.log('🎵 Title BGM loaded successfully');
             }
+            return true;
         } catch (err) {
             console.warn(`BGMデコードエラー (${type}):`, err);
+            return false;
         }
     }
 
@@ -388,8 +426,19 @@ export class SoundManager {
             return;
         }
 
-        // ファイルが読み込み中 or 失敗した場合、プロシージャルBGMにフォールバック
-        console.log('⚡ BGMファイル未ロード — プロシージャルBGMにフォールバック');
+        // 初回開始直後はロード中になりやすい。ロード完了後に自動再生する。
+        if (this._bgmLoading) {
+            this._pendingBattleBgmStart = true;
+            return;
+        }
+
+        // ファイル未取得時のみフォールバック
+        if (!this._bgmLoadFailed) {
+            this._pendingBattleBgmStart = true;
+            return;
+        }
+
+        console.log('⚡ Battle BGM未取得 — プロシージャルBGMにフォールバック');
         this._startProceduralBGM();
     }
 

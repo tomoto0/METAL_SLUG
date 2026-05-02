@@ -44,8 +44,12 @@ export class Marco {
         this.specialAmmo = 0;
 
         this.aimPoint = new THREE.Vector3(0, 0, 10);
-        this.raycaster = new THREE.Raycaster();
-        this.aimPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+
+        // ロックオン（マウス廃止後の自動照準）
+        this.lockTarget = null;
+        this.lockTargetPos = new THREE.Vector3();
+        this.lockSearchInterval = 0.08;
+        this.lockSearchTimer = 0;
 
         this.displayOffsetX = 0;
         this.localOffsetX = 0;
@@ -145,12 +149,24 @@ export class Marco {
         this.displayOffsetX += (this.group.position.x - this.displayOffsetX) * 0.18;
         this.localOffsetX = this.group.position.x;
 
-        // マウス照準
-        const mouseNDC = new THREE.Vector2(input.mouseX, input.mouseY);
-        this.raycaster.setFromCamera(mouseNDC, this.camera);
-        const groundHit = new THREE.Vector3();
-        if (this.raycaster.ray.intersectPlane(this.aimPlane, groundHit)) {
-            this.aimPoint.copy(groundHit);
+        // ロックオン照準（マウス廃止）
+        this.lockSearchTimer -= dt;
+        if (this.lockSearchTimer <= 0) {
+            this.lockSearchTimer = this.lockSearchInterval;
+            this._pickLockTarget();
+        }
+        if (this.lockTarget) {
+            const tp = this._getLockTargetPosition(this.lockTarget);
+            if (tp) {
+                this.lockTargetPos.copy(tp);
+                this.aimPoint.copy(tp);
+            } else {
+                this.lockTarget = null;
+            }
+        }
+        if (!this.lockTarget) {
+            // ターゲット無し: 前方 10m の固定狙点
+            this.aimPoint.set(this.group.position.x, 1.0, this.group.position.z + 10);
         }
 
         // 向き回転
@@ -175,6 +191,66 @@ export class Marco {
             if (!e.alive && e.destroy) e.destroy();
         });
         this.effects = this.effects.filter(e => e.alive);
+    }
+
+    _pickLockTarget() {
+        const MAX_DIST = 50;
+        let best = null;
+        let bestScore = Infinity;
+        const _v = new THREE.Vector3();
+        const origin = this.group.position;
+
+        const evalCandidate = (entity, pos, classWeight) => {
+            if (!pos) return;
+            _v.set(pos.x - origin.x, 0, pos.z - origin.z);
+            const dist = _v.length();
+            if (dist < 0.5 || dist > MAX_DIST) return;
+            const yaw = Math.atan2(_v.x, _v.z);
+            const yawAbs = Math.abs(yaw);
+            const behindPenalty = yawAbs > Math.PI / 2 ? (yawAbs - Math.PI / 2) * 18 : 0;
+            const stickyBonus = (this.lockTarget === entity) ? -4 : 0;
+            const score = dist * classWeight + behindPenalty + stickyBonus;
+            if (score < bestScore) {
+                bestScore = score;
+                best = entity;
+            }
+        };
+
+        const enemies = this.getEnemies ? this.getEnemies() : null;
+        if (enemies && enemies.length > 0) {
+            for (const e of enemies) {
+                if (!e || !e.alive) continue;
+                const pos = (e.getPosition && e.getPosition()) || (e.group && e.group.position);
+                evalCandidate(e, pos, 1.0);
+            }
+        }
+        if (this.getBoss) {
+            const boss = this.getBoss();
+            if (boss && boss.alive) {
+                const bp = (boss.getPosition && boss.getPosition()) || (boss.group && boss.group.position);
+                evalCandidate(boss, bp, 0.6);
+            }
+        }
+        if (this.world && typeof this.world.getObstacles === 'function') {
+            for (const entry of this.world.getObstacles()) {
+                if (!entry || !entry.info) continue;
+                if (entry.info.type !== 'destructible' || entry.info.destroyed) continue;
+                evalCandidate(entry, entry.obj.position, 2.5);
+            }
+        }
+        this.lockTarget = best;
+    }
+
+    _getLockTargetPosition(target) {
+        if (!target) return null;
+        if (target.obj && target.info) {
+            if (target.info.destroyed) return null;
+            return target.obj.position;
+        }
+        if (target.alive === false) return null;
+        if (target.getPosition) return target.getPosition();
+        if (target.group && target.group.position) return target.group.position;
+        return null;
     }
 
     _fire() {

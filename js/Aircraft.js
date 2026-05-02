@@ -4,7 +4,7 @@ import { Projectile } from './Projectile.js';
 
 /**
  * 航空系の敵
- * subType: 'scout_heli' | 'attack_heli' | 'bomber' | 'fighter'
+ * subType: 'scout_heli' | 'attack_heli' | 'bomber' | 'fighter' | 'drone' | 'interceptor' | 'gunship'
  */
 export class Aircraft extends Enemy {
     constructor(scene, {
@@ -18,14 +18,28 @@ export class Aircraft extends Enemy {
             attack_heli: { hp: 75,  speed: 4,  scoreValue: 2000, fireRate: 2.5,  damage: 15 },
             bomber:      { hp: 60,  speed: 7,  scoreValue: 1500, fireRate: 2.0,  damage: 20 },
             fighter:     { hp: 25,  speed: 12, scoreValue: 1200, fireRate: 0.15, damage: 5  },
+            drone:       { hp: 18,  speed: 9,  scoreValue: 900,  fireRate: 1.05, damage: 6  },
+            interceptor: { hp: 50,  speed: 14, scoreValue: 2400, fireRate: 0.38, damage: 7  },
+            gunship:     { hp: 150, speed: 3.2, scoreValue: 3800, fireRate: 1.8,  damage: 18 },
         };
         const spec = SPECS[subType] || SPECS.scout_heli;
 
         super(scene, { position, ...spec, type: 'aircraft' });
         this.subType = subType;
 
-        // 飛行高度
-        this.flightHeight = position.y || 12;
+        // 飛行高度（プレイヤー戦車の砲身仰角で届く低空に調整）
+        // 砲塔高 ≈ 1.2m、目安として 4〜7m を主役の高度に。
+        const HEIGHTS = {
+            scout_heli:  { base: 5.0,  jitter: 1.0 },
+            attack_heli: { base: 5.5,  jitter: 1.0 },
+            bomber:      { base: 6.5,  jitter: 1.0 },
+            fighter:     { base: 6.0,  jitter: 1.0 },
+            drone:       { base: 4.8,  jitter: 0.8 },
+            interceptor: { base: 6.2,  jitter: 0.9 },
+            gunship:     { base: 6.0,  jitter: 0.6 },
+        };
+        const h = HEIGHTS[subType] || HEIGHTS.scout_heli;
+        this.flightHeight = h.base + (Math.random() - 0.5) * 2 * h.jitter;
         this.group.position.y = this.flightHeight;
 
         // AI状態
@@ -39,6 +53,7 @@ export class Aircraft extends Enemy {
 
         // ローター回転用
         this.rotorAngle = 0;
+        this.extraRotors = [];
 
         this._buildModel();
         this._recordMaterials();
@@ -58,6 +73,15 @@ export class Aircraft extends Enemy {
                 break;
             case 'fighter':
                 this._buildFighter();
+                break;
+            case 'drone':
+                this._buildDrone();
+                break;
+            case 'interceptor':
+                this._buildInterceptor();
+                break;
+            case 'gunship':
+                this._buildGunship();
                 break;
         }
     }
@@ -126,12 +150,45 @@ export class Aircraft extends Enemy {
         this.mainRotor.position.y = 0.75;
         this.group.add(this.mainRotor);
 
+        // ローターブラー（半透明ディスク）
+        const blurDisc = new THREE.Mesh(
+            new THREE.CircleGeometry(1.85, 24),
+            new THREE.MeshBasicMaterial({
+                color: 0xCCCCCC, transparent: true, opacity: 0.18,
+                depthWrite: false, side: THREE.DoubleSide,
+            })
+        );
+        blurDisc.rotation.x = -Math.PI / 2;
+        blurDisc.position.y = 0.78;
+        this.group.add(blurDisc);
+
         // ローターハブ
         const hubGeo = new THREE.CylinderGeometry(0.1, 0.1, 0.15, 8);
         const hubMat = new THREE.MeshStandardMaterial({ color: C.metal, metalness: 0.5 });
         const hub = new THREE.Mesh(hubGeo, hubMat);
         hub.position.y = 0.75;
         this.group.add(hub);
+
+        // 機首機銃（小型）
+        const noseGun = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.04, 0.04, 0.4, 6),
+            new THREE.MeshStandardMaterial({ color: C.metal, metalness: 0.6, roughness: 0.4 })
+        );
+        noseGun.rotation.z = Math.PI / 2;
+        noseGun.position.set(1.0, -0.25, 0);
+        this.group.add(noseGun);
+
+        // ナビゲーションライト（緑右・赤左 + 機尾白）
+        const navGeoSm = new THREE.SphereGeometry(0.05, 6, 4);
+        const navR = new THREE.Mesh(navGeoSm, new THREE.MeshBasicMaterial({ color: 0xFF2030 }));
+        navR.position.set(0.2, -0.05, -0.85);
+        this.group.add(navR);
+        const navG = new THREE.Mesh(navGeoSm, new THREE.MeshBasicMaterial({ color: 0x20FF40 }));
+        navG.position.set(0.2, -0.05, 0.85);
+        this.group.add(navG);
+        const navW = new THREE.Mesh(navGeoSm, new THREE.MeshBasicMaterial({ color: 0xFFEEAA }));
+        navW.position.set(-2.4, 0.4, 0);
+        this.group.add(navW);
 
         // テイルローター
         this.tailRotor = new THREE.Group();
@@ -218,6 +275,83 @@ export class Aircraft extends Enemy {
         stripe.position.set(-0.5, 0, 0);
         this.group.add(stripe);
 
+        // 反乱軍エンブレム: 側面の赤三角 ▽（Metal Slug Rebel ロゴ）
+        const heliTriShape = new THREE.Shape();
+        const htR = 0.22;
+        heliTriShape.moveTo(-htR * 0.866, htR * 0.5);
+        heliTriShape.lineTo(htR * 0.866, htR * 0.5);
+        heliTriShape.lineTo(0, -htR);
+        heliTriShape.closePath();
+        const heliTriGeo = new THREE.ShapeGeometry(heliTriShape);
+        const heliTriMat = new THREE.MeshStandardMaterial({
+            color: C.accent, side: THREE.DoubleSide, roughness: 0.55,
+            emissive: 0x331008, emissiveIntensity: 0.2,
+        });
+        const heliDiscMat = new THREE.MeshBasicMaterial({ color: 0xE8DEB4, side: THREE.DoubleSide });
+        for (const z of [-0.62, 0.62]) {
+            const disc = new THREE.Mesh(new THREE.CircleGeometry(0.30, 18), heliDiscMat);
+            disc.position.set(-0.2, 0.05, z);
+            disc.rotation.y = z > 0 ? 0 : Math.PI;
+            this.group.add(disc);
+            const tri = new THREE.Mesh(heliTriGeo, heliTriMat);
+            tri.position.set(-0.2, 0.05, z + (z > 0 ? 0.005 : -0.005));
+            tri.rotation.y = z > 0 ? 0 : Math.PI;
+            this.group.add(tri);
+        }
+
+        // パイロット（コックピット内に上半身）
+        const pilotGroup = new THREE.Group();
+        pilotGroup.position.set(0.85, -0.05, 0);
+        const pHelmet = new THREE.Mesh(
+            new THREE.SphereGeometry(0.16, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.55),
+            new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.4, metalness: 0.5 })
+        );
+        pHelmet.position.y = 0.18;
+        pHelmet.scale.set(1.05, 0.95, 1.0);
+        pilotGroup.add(pHelmet);
+        // バイザー（黒）
+        const pVisor = new THREE.Mesh(
+            new THREE.BoxGeometry(0.04, 0.06, 0.22),
+            new THREE.MeshStandardMaterial({ color: 0x080810, metalness: 0.4, roughness: 0.2 })
+        );
+        pVisor.position.set(0.13, 0.16, 0);
+        pilotGroup.add(pVisor);
+        // 顔
+        const pHead = new THREE.Mesh(
+            new THREE.SphereGeometry(0.13, 10, 8),
+            new THREE.MeshStandardMaterial({ color: 0xF0CCA0, roughness: 0.8 })
+        );
+        pHead.position.y = 0.10;
+        pHead.scale.set(1.0, 0.95, 0.95);
+        pilotGroup.add(pHead);
+        // 体
+        const pTorso = new THREE.Mesh(
+            new THREE.BoxGeometry(0.18, 0.18, 0.22),
+            new THREE.MeshStandardMaterial({ color: 0x4B5B3B, roughness: 0.8 })
+        );
+        pTorso.position.y = -0.05;
+        pilotGroup.add(pTorso);
+        this.group.add(pilotGroup);
+
+        // 装甲プレート（胴体下の追加装甲、Metal Slug らしいゴテッと感）
+        const armor = new THREE.Mesh(
+            new THREE.BoxGeometry(1.4, 0.18, 1.1),
+            new THREE.MeshStandardMaterial({ color: C.bodyDark, roughness: 0.65, metalness: 0.3 })
+        );
+        armor.position.set(0.1, -0.55, 0);
+        this.group.add(armor);
+        // 装甲のリベット
+        const heliRivetMat = new THREE.MeshStandardMaterial({
+            color: 0x95956E, metalness: 0.6, roughness: 0.4
+        });
+        for (const ax of [-0.55, -0.18, 0.18, 0.55]) {
+            for (const az of [-0.45, 0.45]) {
+                const rv = new THREE.Mesh(new THREE.SphereGeometry(0.03, 5, 4), heliRivetMat);
+                rv.position.set(ax + 0.1, -0.46, az);
+                this.group.add(rv);
+            }
+        }
+
         // メインローター（大型）
         this.mainRotor = new THREE.Group();
         const rotorMat = new THREE.MeshStandardMaterial({
@@ -232,6 +366,26 @@ export class Aircraft extends Enemy {
         this.mainRotor.position.y = 0.8;
         this.group.add(this.mainRotor);
 
+        // 大型ローターブラーディスク
+        const blurDisc = new THREE.Mesh(
+            new THREE.CircleGeometry(2.1, 28),
+            new THREE.MeshBasicMaterial({
+                color: 0xC0C0C0, transparent: true, opacity: 0.22,
+                depthWrite: false, side: THREE.DoubleSide,
+            })
+        );
+        blurDisc.rotation.x = -Math.PI / 2;
+        blurDisc.position.y = 0.83;
+        this.group.add(blurDisc);
+
+        // ローターハブ（大型）
+        const hub = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.15, 0.18, 0.22, 10),
+            new THREE.MeshStandardMaterial({ color: C.metal, metalness: 0.6 })
+        );
+        hub.position.y = 0.78;
+        this.group.add(hub);
+
         // テイルローター
         this.tailRotor = new THREE.Group();
         const tBladeGeo = new THREE.BoxGeometry(0.05, 1.0, 0.1);
@@ -243,37 +397,107 @@ export class Aircraft extends Enemy {
         this.tailRotor.position.set(-3.0, 0.4, 0.1);
         this.group.add(this.tailRotor);
 
-        // 武装パイロン + ミサイルポッド
-        for (let z of [-0.9, 0.9]) {
+        // 武装スタブウィング + ロケットポッド + ミサイル
+        const pylonMat = new THREE.MeshStandardMaterial({ color: C.metal, roughness: 0.5, metalness: 0.4 });
+        const missileMat = new THREE.MeshStandardMaterial({ color: C.missile, roughness: 0.5 });
+        const tipMat = new THREE.MeshStandardMaterial({ color: C.accent });
+        for (let z of [-1.0, 1.0]) {
+            // スタブウィング
+            const stubWing = new THREE.Mesh(
+                new THREE.BoxGeometry(0.7, 0.08, 0.4),
+                new THREE.MeshStandardMaterial({ color: C.body, roughness: 0.5, metalness: 0.3 })
+            );
+            stubWing.position.set(0, -0.2, z);
+            this.group.add(stubWing);
+
             // パイロン
-            const pylonGeo = new THREE.BoxGeometry(0.6, 0.06, 0.06);
-            const pylonMat = new THREE.MeshStandardMaterial({ color: C.metal });
-            const pylon = new THREE.Mesh(pylonGeo, pylonMat);
-            pylon.position.set(0, -0.5, z);
+            const pylon = new THREE.Mesh(
+                new THREE.BoxGeometry(0.5, 0.18, 0.08),
+                pylonMat
+            );
+            pylon.position.set(0, -0.45, z);
             this.group.add(pylon);
 
-            // ミサイル x 2
-            for (let x of [-0.15, 0.15]) {
-                const missileGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.5, 6);
-                const missileMat = new THREE.MeshStandardMaterial({
-                    color: C.missile, roughness: 0.5
-                });
-                const missile = new THREE.Mesh(missileGeo, missileMat);
-                missile.rotation.z = Math.PI / 2;
-                missile.position.set(x, -0.6, z);
-                this.group.add(missile);
+            // ロケットポッド（円筒クラスター）
+            const podBody = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.18, 0.18, 0.55, 10),
+                new THREE.MeshStandardMaterial({ color: C.bodyDark, roughness: 0.5, metalness: 0.4 })
+            );
+            podBody.rotation.z = Math.PI / 2;
+            podBody.position.set(0.05, -0.62, z);
+            this.group.add(podBody);
+            // ポッド先端の穴（暗い円）
+            const podFace = new THREE.Mesh(
+                new THREE.CircleGeometry(0.16, 12),
+                new THREE.MeshBasicMaterial({ color: 0x080808 })
+            );
+            podFace.position.set(0.34, -0.62, z);
+            podFace.rotation.y = Math.PI / 2;
+            this.group.add(podFace);
+            // ロケット穴（7発分の小穴）
+            for (let r = 0; r < 7; r++) {
+                const ang = (r / 7) * Math.PI * 2;
+                const hole = new THREE.Mesh(
+                    new THREE.CircleGeometry(0.035, 6),
+                    new THREE.MeshBasicMaterial({ color: 0x331810 })
+                );
+                hole.position.set(
+                    0.345,
+                    -0.62 + Math.cos(ang) * 0.1,
+                    z + Math.sin(ang) * 0.1
+                );
+                hole.rotation.y = Math.PI / 2;
+                this.group.add(hole);
             }
+
+            // ミサイル（外側にもう一発）
+            const missile = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.07, 0.07, 0.65, 8),
+                missileMat
+            );
+            missile.rotation.z = Math.PI / 2;
+            missile.position.set(0.05, -0.45, z + (z > 0 ? 0.25 : -0.25));
+            this.group.add(missile);
+            // 弾頭
+            const tip = new THREE.Mesh(
+                new THREE.ConeGeometry(0.07, 0.18, 8),
+                tipMat
+            );
+            tip.rotation.z = -Math.PI / 2;
+            tip.position.set(0.45, -0.45, z + (z > 0 ? 0.25 : -0.25));
+            this.group.add(tip);
         }
 
-        // 機首の機銃
-        const gunGeo = new THREE.CylinderGeometry(0.04, 0.04, 0.6, 6);
+        // チンガンタレット（機首下の機銃マウント）
+        const chinTurret = new THREE.Mesh(
+            new THREE.SphereGeometry(0.18, 10, 8, 0, Math.PI * 2, 0, Math.PI / 2),
+            new THREE.MeshStandardMaterial({ color: C.bodyDark, roughness: 0.5, metalness: 0.4 })
+        );
+        chinTurret.rotation.x = Math.PI;
+        chinTurret.position.set(1.4, -0.35, 0);
+        this.group.add(chinTurret);
+        const gunGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.7, 8);
         const gunMat = new THREE.MeshStandardMaterial({
             color: C.metal, roughness: 0.3, metalness: 0.7
         });
         const gun = new THREE.Mesh(gunGeo, gunMat);
         gun.rotation.z = Math.PI / 2;
-        gun.position.set(1.5, -0.4, 0);
+        gun.position.set(1.85, -0.4, 0);
         this.group.add(gun);
+
+        // エンジン排気口（後方両側、オレンジ発光）
+        for (let z of [-0.4, 0.4]) {
+            const exhaust = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.12, 0.1, 0.18, 8),
+                new THREE.MeshBasicMaterial({
+                    color: 0xFFA040, transparent: true, opacity: 0.7,
+                    blending: THREE.AdditiveBlending, depthWrite: false,
+                })
+            );
+            exhaust.rotation.z = Math.PI / 2;
+            exhaust.position.set(-1.2, 0.35, z);
+            this.group.add(exhaust);
+        }
     }
 
     // ============================================
@@ -328,30 +552,99 @@ export class Aircraft extends Enemy {
 
         // エンジンナセル x 2
         for (let z of [-1.5, 1.5]) {
-            const engGeo = new THREE.CylinderGeometry(0.2, 0.25, 0.8, 8);
+            const engGeo = new THREE.CylinderGeometry(0.22, 0.28, 0.9, 10);
             const engMat = new THREE.MeshStandardMaterial({
-                color: C.engine, roughness: 0.4, metalness: 0.4
+                color: C.engine, roughness: 0.4, metalness: 0.45
             });
             const eng = new THREE.Mesh(engGeo, engMat);
             eng.rotation.z = Math.PI / 2;
             eng.position.set(-0.1, -0.15, z);
             this.group.add(eng);
 
+            // 排気管（オレンジ発光）
+            const exhaust = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.08, 0.06, 0.16, 8),
+                new THREE.MeshBasicMaterial({
+                    color: 0xFFA040, transparent: true, opacity: 0.6,
+                    blending: THREE.AdditiveBlending, depthWrite: false,
+                })
+            );
+            exhaust.rotation.z = Math.PI / 2;
+            exhaust.position.set(-0.62, -0.1, z + 0.18);
+            this.group.add(exhaust);
+
             // プロペラ（回転用）
             const propGroup = new THREE.Group();
-            const propGeo = new THREE.BoxGeometry(0.05, 1.0, 0.12);
+            const propGeo = new THREE.BoxGeometry(0.05, 1.4, 0.14);
             const propMat = new THREE.MeshStandardMaterial({ color: 0x2A2A2A });
-            const p1 = new THREE.Mesh(propGeo, propMat);
-            propGroup.add(p1);
-            const p2 = new THREE.Mesh(propGeo, propMat);
-            p2.rotation.z = Math.PI / 2;
-            propGroup.add(p2);
-            propGroup.position.set(0.3, -0.15, z);
+            for (let pi = 0; pi < 3; pi++) {
+                const p = new THREE.Mesh(propGeo, propMat);
+                p.rotation.z = (Math.PI * 2 / 3) * pi;
+                propGroup.add(p);
+            }
+            propGroup.position.set(0.4, -0.15, z);
             this.group.add(propGroup);
+
+            // プロペラブラー
+            const propBlur = new THREE.Mesh(
+                new THREE.CircleGeometry(0.7, 18),
+                new THREE.MeshBasicMaterial({
+                    color: 0xCCCCCC, transparent: true, opacity: 0.18,
+                    depthWrite: false, side: THREE.DoubleSide,
+                })
+            );
+            propBlur.rotation.y = Math.PI / 2;
+            propBlur.position.set(0.42, -0.15, z);
+            this.group.add(propBlur);
+
+            // スピナー
+            const spinner = new THREE.Mesh(
+                new THREE.ConeGeometry(0.1, 0.18, 8),
+                new THREE.MeshStandardMaterial({ color: 0x4A4A4A, metalness: 0.5 })
+            );
+            spinner.rotation.z = -Math.PI / 2;
+            spinner.position.set(0.5, -0.15, z);
+            this.group.add(spinner);
 
             if (!this.mainRotor) this.mainRotor = propGroup;
             else this.tailRotor = propGroup;
         }
+
+        // 爆弾ラック（胴体下）
+        const bombMat = new THREE.MeshStandardMaterial({ color: C.bomb, roughness: 0.5, metalness: 0.3 });
+        const finMat = new THREE.MeshStandardMaterial({ color: 0x1A1A1A, roughness: 0.6 });
+        for (const z of [-0.4, 0.4]) {
+            for (const x of [-0.6, 0.6]) {
+                const bomb = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.09, 0.06, 0.55, 8),
+                    bombMat
+                );
+                bomb.rotation.z = Math.PI / 2;
+                bomb.position.set(x, -0.55, z);
+                this.group.add(bomb);
+                // 尾翼
+                for (const fa of [0, Math.PI / 2]) {
+                    const fin = new THREE.Mesh(
+                        new THREE.BoxGeometry(0.18, 0.09, 0.02),
+                        finMat
+                    );
+                    fin.position.set(x - 0.28, -0.55, z);
+                    fin.rotation.x = fa;
+                    this.group.add(fin);
+                }
+            }
+        }
+
+        // ノーズガラス
+        const noseGlass = new THREE.Mesh(
+            new THREE.SphereGeometry(0.45, 10, 8, 0, Math.PI * 2, 0, Math.PI / 2),
+            new THREE.MeshStandardMaterial({
+                color: C.cockpit, transparent: true, opacity: 0.55, roughness: 0.1,
+            })
+        );
+        noseGlass.rotation.z = -Math.PI / 2;
+        noseGlass.position.set(2.05, 0, 0);
+        this.group.add(noseGlass);
     }
 
     // ============================================
@@ -423,9 +716,338 @@ export class Aircraft extends Enemy {
         stripe.position.set(0.3, 0, 0);
         this.group.add(stripe);
 
+        // ジェット排気（後方の青/オレンジ発光）
+        const jetCore = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.16, 0.1, 0.3, 12),
+            new THREE.MeshBasicMaterial({ color: 0xFFAA40, transparent: true, opacity: 0.85,
+                blending: THREE.AdditiveBlending, depthWrite: false })
+        );
+        jetCore.rotation.z = Math.PI / 2;
+        jetCore.position.set(-1.6, 0, 0);
+        this.group.add(jetCore);
+        this.jetCore = jetCore;
+
+        const jetCone = new THREE.Mesh(
+            new THREE.ConeGeometry(0.18, 1.4, 12, 1, true),
+            new THREE.MeshBasicMaterial({ color: 0x66CCFF, transparent: true, opacity: 0.5,
+                blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide })
+        );
+        jetCone.rotation.z = Math.PI / 2;
+        jetCone.position.set(-2.4, 0, 0);
+        this.group.add(jetCone);
+
+        // 排気ノズル（金属環）
+        const nozzle = new THREE.Mesh(
+            new THREE.TorusGeometry(0.18, 0.04, 6, 14),
+            new THREE.MeshStandardMaterial({ color: 0x2A2A30, metalness: 0.7, roughness: 0.3 })
+        );
+        nozzle.rotation.y = Math.PI / 2;
+        nozzle.position.set(-1.5, 0, 0);
+        this.group.add(nozzle);
+
+        // インテーク（機首両側）
+        for (let z of [-0.25, 0.25]) {
+            const intake = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.13, 0.15, 0.4, 10),
+                new THREE.MeshStandardMaterial({ color: 0x080808 })
+            );
+            intake.rotation.z = Math.PI / 2;
+            intake.position.set(0.3, -0.15, z);
+            this.group.add(intake);
+        }
+
+        // 翼下のミサイル（ハードポイント x 2）
+        const missileMat = new THREE.MeshStandardMaterial({ color: 0xCCCCCC, roughness: 0.4, metalness: 0.5 });
+        const tipMat = new THREE.MeshStandardMaterial({ color: 0xCC2020 });
+        for (const z of [-1.1, 1.1]) {
+            const missile = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.06, 0.06, 0.7, 8),
+                missileMat
+            );
+            missile.rotation.z = Math.PI / 2;
+            missile.position.set(-0.3, -0.18, z);
+            this.group.add(missile);
+            const tip = new THREE.Mesh(
+                new THREE.ConeGeometry(0.06, 0.18, 8),
+                tipMat
+            );
+            tip.rotation.z = -Math.PI / 2;
+            tip.position.set(0.13, -0.18, z);
+            this.group.add(tip);
+            // 尾翼
+            const fin = new THREE.Mesh(
+                new THREE.BoxGeometry(0.16, 0.1, 0.02),
+                new THREE.MeshStandardMaterial({ color: 0x666666 })
+            );
+            fin.position.set(-0.6, -0.18, z);
+            this.group.add(fin);
+        }
+
         // ダミーのローター（プロペラなし、互換性のため）
         this.mainRotor = null;
         this.tailRotor = null;
+    }
+
+    // ============================================
+    // レイザードローン
+    // ============================================
+    _buildDrone() {
+        const C = {
+            shell: 0x2E3D45,
+            plate: 0x485C62,
+            dark: 0x11171A,
+            lens: 0x55D6FF,
+            accent: 0xFF5A38,
+        };
+
+        const body = new THREE.Mesh(
+            new THREE.SphereGeometry(0.55, 14, 10),
+            new THREE.MeshStandardMaterial({ color: C.shell, roughness: 0.42, metalness: 0.45 })
+        );
+        body.scale.set(1.18, 0.72, 1.0);
+        body.castShadow = true;
+        this.group.add(body);
+
+        const eye = new THREE.Mesh(
+            new THREE.SphereGeometry(0.16, 10, 8),
+            new THREE.MeshBasicMaterial({ color: C.lens })
+        );
+        eye.position.set(0.52, 0.02, 0);
+        eye.scale.set(0.55, 0.85, 1.0);
+        this.group.add(eye);
+
+        const plateMat = new THREE.MeshStandardMaterial({ color: C.plate, roughness: 0.5, metalness: 0.38 });
+        for (const z of [-0.42, 0.42]) {
+            const plate = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.08, 0.18), plateMat);
+            plate.position.set(-0.04, 0.35, z);
+            plate.rotation.x = z > 0 ? -0.18 : 0.18;
+            this.group.add(plate);
+        }
+
+        const rotorMat = new THREE.MeshStandardMaterial({ color: C.dark, roughness: 0.35, metalness: 0.55 });
+        const ringMat = new THREE.MeshStandardMaterial({ color: C.plate, roughness: 0.4, metalness: 0.5 });
+        for (const x of [-0.38, 0.38]) {
+            for (const z of [-0.62, 0.62]) {
+                const duct = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.035, 6, 14), ringMat);
+                duct.position.set(x, 0.02, z);
+                duct.rotation.x = Math.PI / 2;
+                this.group.add(duct);
+
+                const rotor = new THREE.Group();
+                rotor.position.copy(duct.position);
+                this.group.add(rotor);
+                for (let i = 0; i < 3; i++) {
+                    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.025, 0.055), rotorMat);
+                    blade.rotation.y = i * Math.PI * 2 / 3;
+                    rotor.add(blade);
+                }
+                this.extraRotors.push(rotor);
+            }
+        }
+
+        const gun = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.035, 0.04, 0.52, 8),
+            new THREE.MeshStandardMaterial({ color: C.dark, roughness: 0.35, metalness: 0.7 })
+        );
+        gun.rotation.z = Math.PI / 2;
+        gun.position.set(0.72, -0.18, 0);
+        this.group.add(gun);
+
+        const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.055, 6, 4), new THREE.MeshBasicMaterial({ color: C.accent }));
+        beacon.position.set(-0.48, 0.26, 0);
+        this.group.add(beacon);
+    }
+
+    // ============================================
+    // 高速迎撃機
+    // ============================================
+    _buildInterceptor() {
+        const C = {
+            body: 0x3E4654,
+            wing: 0x29313D,
+            cockpit: 0x65C8E8,
+            accent: 0xE04A24,
+            metal: 0x161A20,
+        };
+
+        const bodyMat = new THREE.MeshStandardMaterial({ color: C.body, roughness: 0.28, metalness: 0.5 });
+        const wingMat = new THREE.MeshStandardMaterial({ color: C.wing, roughness: 0.38, metalness: 0.38 });
+
+        const body = new THREE.Mesh(new THREE.CylinderGeometry(0.23, 0.34, 3.5, 10), bodyMat);
+        body.rotation.z = Math.PI / 2;
+        body.castShadow = true;
+        this.group.add(body);
+
+        const nose = new THREE.Mesh(new THREE.ConeGeometry(0.23, 0.72, 10), bodyMat);
+        nose.rotation.z = -Math.PI / 2;
+        nose.position.x = 2.1;
+        this.group.add(nose);
+
+        const cockpit = new THREE.Mesh(
+            new THREE.SphereGeometry(0.26, 10, 7, 0, Math.PI * 2, 0, Math.PI * 0.58),
+            new THREE.MeshStandardMaterial({ color: C.cockpit, transparent: true, opacity: 0.68, roughness: 0.12, metalness: 0.12 })
+        );
+        cockpit.position.set(0.65, 0.22, 0);
+        cockpit.scale.set(1.1, 0.75, 0.9);
+        this.group.add(cockpit);
+
+        for (const z of [-1, 1]) {
+            const wing = new THREE.Mesh(new THREE.BoxGeometry(1.35, 0.06, 1.75), wingMat);
+            wing.position.set(-0.15, -0.02, z * 0.88);
+            wing.rotation.y = z * 0.36;
+            wing.rotation.z = -0.08;
+            this.group.add(wing);
+
+            const canard = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.045, 0.65), wingMat);
+            canard.position.set(1.05, 0.02, z * 0.45);
+            canard.rotation.y = z * -0.32;
+            this.group.add(canard);
+
+            const missile = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.62, 8), new THREE.MeshStandardMaterial({ color: 0xD5D5CE, roughness: 0.38, metalness: 0.45 }));
+            missile.rotation.z = Math.PI / 2;
+            missile.position.set(-0.30, -0.18, z * 1.45);
+            this.group.add(missile);
+        }
+
+        const tail = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.84, 0.06), wingMat);
+        tail.position.set(-1.45, 0.42, 0);
+        tail.rotation.z = -0.1;
+        this.group.add(tail);
+
+        const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.04, 0.40), new THREE.MeshStandardMaterial({ color: C.accent, roughness: 0.46 }));
+        stripe.position.set(0.20, 0.03, 0);
+        this.group.add(stripe);
+
+        for (const z of [-0.18, 0.18]) {
+            const intake = new THREE.Mesh(new THREE.CylinderGeometry(0.10, 0.13, 0.45, 10), new THREE.MeshBasicMaterial({ color: C.metal }));
+            intake.rotation.z = Math.PI / 2;
+            intake.position.set(0.10, -0.16, z);
+            this.group.add(intake);
+        }
+
+        const jetCore = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.18, 0.12, 0.32, 12),
+            new THREE.MeshBasicMaterial({ color: 0xFF7A2A, transparent: true, opacity: 0.86, blending: THREE.AdditiveBlending, depthWrite: false })
+        );
+        jetCore.rotation.z = Math.PI / 2;
+        jetCore.position.set(-1.85, 0, 0);
+        this.group.add(jetCore);
+        this.jetCore = jetCore;
+
+        const jetCone = new THREE.Mesh(
+            new THREE.ConeGeometry(0.20, 1.55, 12, 1, true),
+            new THREE.MeshBasicMaterial({ color: 0x58D8FF, transparent: true, opacity: 0.42, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide })
+        );
+        jetCone.rotation.z = Math.PI / 2;
+        jetCone.position.set(-2.58, 0, 0);
+        this.group.add(jetCone);
+    }
+
+    // ============================================
+    // 重装ガンシップ
+    // ============================================
+    _buildGunship() {
+        const C = {
+            body: 0x445246,
+            bodyDark: 0x252D27,
+            armor: 0x66715F,
+            cockpit: 0x8CCEE0,
+            metal: 0x2B3030,
+            accent: 0xD83A24,
+            missile: 0x676345,
+        };
+
+        const bodyMat = new THREE.MeshStandardMaterial({ color: C.body, roughness: 0.46, metalness: 0.28 });
+        const armorMat = new THREE.MeshStandardMaterial({ color: C.armor, roughness: 0.54, metalness: 0.34 });
+        const metalMat = new THREE.MeshStandardMaterial({ color: C.metal, roughness: 0.34, metalness: 0.68 });
+
+        const fuselage = new THREE.Mesh(new THREE.SphereGeometry(1.1, 16, 10), bodyMat);
+        fuselage.scale.set(2.2, 0.72, 0.92);
+        fuselage.castShadow = true;
+        this.group.add(fuselage);
+
+        const cockpit = new THREE.Mesh(
+            new THREE.SphereGeometry(0.62, 12, 8, 0, Math.PI),
+            new THREE.MeshStandardMaterial({ color: C.cockpit, roughness: 0.08, metalness: 0.12, transparent: true, opacity: 0.62 })
+        );
+        cockpit.rotation.y = -Math.PI / 2;
+        cockpit.position.set(1.72, 0.12, 0);
+        cockpit.scale.set(0.9, 0.65, 0.95);
+        this.group.add(cockpit);
+
+        const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.34, 2.2, 8), bodyMat);
+        tail.rotation.z = Math.PI / 2;
+        tail.position.set(-2.35, 0.10, 0);
+        this.group.add(tail);
+
+        for (const z of [-0.92, 0.92]) {
+            const stub = new THREE.Mesh(new THREE.BoxGeometry(1.25, 0.12, 0.42), armorMat);
+            stub.position.set(0.20, -0.16, z);
+            this.group.add(stub);
+
+            const pod = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.72, 10), metalMat);
+            pod.rotation.z = Math.PI / 2;
+            pod.position.set(0.34, -0.48, z);
+            this.group.add(pod);
+            const face = new THREE.Mesh(new THREE.CircleGeometry(0.16, 12), new THREE.MeshBasicMaterial({ color: 0x070707 }));
+            face.position.set(0.72, -0.48, z);
+            face.rotation.y = Math.PI / 2;
+            this.group.add(face);
+
+            for (const dz of [-0.20, 0.20]) {
+                const missile = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.68, 8), new THREE.MeshStandardMaterial({ color: C.missile, roughness: 0.46 }));
+                missile.rotation.z = Math.PI / 2;
+                missile.position.set(-0.25, -0.34, z + dz);
+                this.group.add(missile);
+            }
+        }
+
+        const rotorMat = new THREE.MeshStandardMaterial({ color: C.metal, roughness: 0.32, metalness: 0.58 });
+        for (const x of [-0.8, 0.8]) {
+            const rotor = new THREE.Group();
+            rotor.position.set(x, 0.88, 0);
+            this.group.add(rotor);
+            for (let i = 0; i < 4; i++) {
+                const blade = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.045, 0.20), rotorMat);
+                blade.rotation.y = i * Math.PI / 2;
+                rotor.add(blade);
+            }
+            const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, 0.16, 10), metalMat);
+            hub.position.y = 0.01;
+            rotor.add(hub);
+            if (!this.mainRotor) this.mainRotor = rotor;
+            else this.extraRotors.push(rotor);
+        }
+
+        this.tailRotor = new THREE.Group();
+        this.tailRotor.position.set(-3.30, 0.34, 0.08);
+        this.group.add(this.tailRotor);
+        for (let i = 0; i < 2; i++) {
+            const tb = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.9, 0.12), rotorMat);
+            tb.rotation.z = i * Math.PI / 2;
+            this.tailRotor.add(tb);
+        }
+
+        const chin = new THREE.Mesh(new THREE.SphereGeometry(0.24, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.62), metalMat);
+        chin.rotation.x = Math.PI;
+        chin.position.set(1.28, -0.48, 0);
+        this.group.add(chin);
+        for (const z of [-0.06, 0.06]) {
+            const gun = new THREE.Mesh(new THREE.CylinderGeometry(0.038, 0.042, 0.78, 8), metalMat);
+            gun.rotation.z = Math.PI / 2;
+            gun.position.set(1.78, -0.52, z);
+            this.group.add(gun);
+        }
+
+        for (const x of [-0.55, 0.1, 0.75]) {
+            const armor = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.08, 1.55), armorMat);
+            armor.position.set(x, -0.58, 0);
+            this.group.add(armor);
+        }
+
+        const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.92, 0.06, 1.08), new THREE.MeshStandardMaterial({ color: C.accent, roughness: 0.55 }));
+        stripe.position.set(-0.22, 0.08, 0);
+        this.group.add(stripe);
     }
 
     // ============================================
@@ -439,6 +1061,16 @@ export class Aircraft extends Enemy {
         this.rotorAngle += dt * 35;
         if (this.mainRotor) this.mainRotor.rotation.y = this.rotorAngle;
         if (this.tailRotor) this.tailRotor.rotation.z = this.rotorAngle * 1.5;
+        if (this.extraRotors && this.extraRotors.length) {
+            this.extraRotors.forEach((r, idx) => {
+                r.rotation.y = this.rotorAngle * (idx % 2 === 0 ? 1 : -1);
+            });
+        }
+
+        // ジェット排気フリッカー（fighter専用）
+        if (this.jetCore) {
+            this.jetCore.material.opacity = 0.7 + Math.sin(elapsedTime * 30) * 0.15 + (Math.random() - 0.5) * 0.1;
+        }
 
         this.aiTimer += dt;
 
@@ -454,6 +1086,15 @@ export class Aircraft extends Enemy {
                 break;
             case 'fighter':
                 this._aiFighter(dt, playerPos, elapsedTime);
+                break;
+            case 'drone':
+                this._aiDrone(dt, playerPos, elapsedTime);
+                break;
+            case 'interceptor':
+                this._aiInterceptor(dt, playerPos, elapsedTime);
+                break;
+            case 'gunship':
+                this._aiGunship(dt, playerPos, elapsedTime);
                 break;
         }
     }
@@ -592,14 +1233,14 @@ export class Aircraft extends Enemy {
                 this.orbitAngle += dt * 2;
                 this.group.position.x = playerPos.x + Math.cos(this.orbitAngle) * 25;
                 this.group.position.z = playerPos.z + Math.sin(this.orbitAngle) * 25;
-                this.group.position.y += (this.flightHeight + 5 - this.group.position.y) * dt * 3;
+                this.group.position.y += (this.flightHeight + 1.5 - this.group.position.y) * dt * 3;
 
                 this.group.rotation.z = -Math.sin(this.orbitAngle * 2) * 0.3;
                 break;
 
             case 'dive': {
                 const target = playerPos.clone();
-                target.y = 3;
+                target.y = 2;
                 const moveDir = new THREE.Vector3().subVectors(target, this.group.position);
                 moveDir.normalize().multiplyScalar(this.speed * 1.5 * dt);
                 this.group.position.add(moveDir);
@@ -629,6 +1270,166 @@ export class Aircraft extends Enemy {
             const angle = Math.atan2(-vel.z, vel.x);
             this.group.rotation.y = angle;
         }
+    }
+
+    /**
+     * レイザードローン: 近距離を周回し、短い直線突進を混ぜる。
+     */
+    _aiDrone(dt, playerPos, elapsed) {
+        const phases = [
+            { duration: 2.4, action: 'orbit' },
+            { duration: 0.9, action: 'slash' },
+            { duration: 1.2, action: 'reform' },
+        ];
+        const phase = phases[this.aiPhase % phases.length];
+        if (this.aiTimer > phase.duration) {
+            this.aiTimer = 0;
+            this.aiPhase++;
+            this.entryDir = Math.random() > 0.5 ? 1 : -1;
+        }
+
+        const prev = this.group.position.clone();
+        this.orbitAngle += dt * (2.2 + this.aiPhase * 0.05) * this.entryDir;
+
+        if (phase.action === 'orbit') {
+            const r = 7.0 + Math.sin(this.orbitAngle * 1.7) * 2.0;
+            const target = new THREE.Vector3(
+                playerPos.x + Math.cos(this.orbitAngle) * r,
+                this.flightHeight + Math.sin(this.orbitAngle * 1.3) * 0.6,
+                playerPos.z + Math.sin(this.orbitAngle) * r
+            );
+            this.group.position.lerp(target, Math.min(1, dt * 3.0));
+            this._fire(playerPos, elapsed);
+        } else if (phase.action === 'slash') {
+            const target = playerPos.clone();
+            target.x += this.entryDir * 9.5;
+            target.z += Math.sin(this.orbitAngle) * 4.0;
+            target.y = this.flightHeight - 0.8;
+            const move = target.sub(this.group.position);
+            if (move.lengthSq() > 0.01) this.group.position.add(move.normalize().multiplyScalar(this.speed * 1.35 * dt));
+            this._fire(playerPos, elapsed);
+        } else {
+            const target = playerPos.clone();
+            target.x -= this.entryDir * 11.0;
+            target.z += 8.0;
+            target.y = this.flightHeight + 0.5;
+            this.group.position.lerp(target, Math.min(1, dt * 2.2));
+        }
+
+        const vel = this.group.position.clone().sub(prev);
+        if (vel.lengthSq() > 0.0001) {
+            const angle = Math.atan2(-vel.z, vel.x);
+            this.group.rotation.y = angle;
+            this.group.rotation.z = THREE.MathUtils.clamp(-vel.x * 0.2, -0.32, 0.32);
+        }
+    }
+
+    /**
+     * 高速迎撃機: 斜め突入、反転、再突入を繰り返す。
+     */
+    _aiInterceptor(dt, playerPos, elapsed) {
+        const phases = [
+            { duration: 1.25, action: 'slash' },
+            { duration: 0.75, action: 'break' },
+            { duration: 1.10, action: 'reengage' },
+        ];
+        const phase = phases[this.aiPhase % phases.length];
+        if (this.aiTimer > phase.duration) {
+            this.aiTimer = 0;
+            this.aiPhase++;
+            if (phase.action === 'reengage') this.entryDir *= -1;
+        }
+
+        const prev = this.group.position.clone();
+        let target;
+        if (phase.action === 'slash') {
+            target = playerPos.clone();
+            target.x += this.entryDir * -13.5;
+            target.z += Math.sin(elapsed * 2.4) * 5.5;
+            target.y = this.flightHeight - 1.0;
+            this._fire(playerPos, elapsed);
+        } else if (phase.action === 'break') {
+            target = playerPos.clone();
+            target.x += this.entryDir * 18.0;
+            target.z += 12.0;
+            target.y = this.flightHeight + 2.0;
+        } else {
+            target = playerPos.clone();
+            target.x += this.entryDir * 15.0;
+            target.z -= 6.0;
+            target.y = this.flightHeight + 0.8;
+            if (this.aiTimer > 0.45) this._fire(playerPos, elapsed);
+        }
+
+        const move = target.sub(this.group.position);
+        if (move.lengthSq() > 0.01) {
+            const speedScale = phase.action === 'slash' ? 1.65 : 1.15;
+            this.group.position.add(move.normalize().multiplyScalar(this.speed * speedScale * dt));
+        }
+
+        const vel = this.group.position.clone().sub(prev);
+        if (vel.lengthSq() > 0.0001) {
+            const angle = Math.atan2(-vel.z, vel.x);
+            this.group.rotation.y = angle;
+            this.group.rotation.x = phase.action === 'slash' ? -0.22 : 0.18;
+            this.group.rotation.z = THREE.MathUtils.clamp(-vel.x * 0.16, -0.42, 0.42);
+        }
+    }
+
+    /**
+     * 重装ガンシップ: ホバー砲撃、横移動、爆撃を組み合わせる。
+     */
+    _aiGunship(dt, playerPos, elapsed) {
+        const phases = [
+            { duration: 2.8, action: 'approach' },
+            { duration: 2.6, action: 'barrage' },
+            { duration: 2.2, action: 'broadside' },
+            { duration: 1.4, action: 'relocate' },
+        ];
+        const phase = phases[this.aiPhase % phases.length];
+        if (this.aiTimer > phase.duration) {
+            this.aiTimer = 0;
+            this.aiPhase++;
+            this.entryDir = Math.random() > 0.5 ? 1 : -1;
+        }
+
+        const dir = new THREE.Vector3().subVectors(playerPos, this.group.position);
+        dir.y = 0;
+        if (dir.lengthSq() > 0.1) {
+            this.group.rotation.y = Math.atan2(-dir.z, dir.x);
+        }
+
+        if (phase.action === 'approach') {
+            const target = playerPos.clone();
+            target.x += this.entryDir * 7.0;
+            target.z += 12.0;
+            target.y = this.flightHeight;
+            this.group.position.lerp(target, Math.min(1, dt * 1.55));
+            this.group.rotation.x = -0.08;
+            this._fire(playerPos, elapsed);
+        } else if (phase.action === 'barrage') {
+            this.group.position.y += (this.flightHeight - this.group.position.y) * dt * 2.4;
+            this.group.position.x += Math.sin(elapsed * 1.4) * dt * 2.0;
+            this._fireRocket(playerPos, elapsed);
+            this._fire(playerPos, elapsed);
+        } else if (phase.action === 'broadside') {
+            const side = new THREE.Vector3(-dir.z, 0, dir.x).normalize();
+            this.group.position.add(side.multiplyScalar(this.entryDir * this.speed * 1.25 * dt));
+            this.group.position.z += Math.sin(elapsed * 2.0) * dt * 1.2;
+            this._fire(playerPos, elapsed);
+            if (Math.abs(this.group.position.x - playerPos.x) < 8.0 && this.aiTimer > 0.45) {
+                this._dropGunshipBomb(elapsed);
+            }
+        } else {
+            const target = playerPos.clone();
+            target.x -= this.entryDir * 12.0;
+            target.z += 16.0;
+            target.y = this.flightHeight + 0.8;
+            this.group.position.lerp(target, Math.min(1, dt * 2.0));
+            this.group.rotation.x = 0.12;
+        }
+
+        this.group.rotation.z = Math.sin(elapsed * 2.4) * 0.08;
     }
 
     _fireRocket(playerPos, elapsed) {
@@ -674,5 +1475,26 @@ export class Aircraft extends Enemy {
             gravity: 15,
         });
         this.projectiles.push(bomb);
+    }
+
+    _dropGunshipBomb(elapsed) {
+        if (elapsed - (this.lastBombTime || 0) < 1.05) return;
+        this.lastBombTime = elapsed;
+
+        for (const z of [-0.42, 0.42]) {
+            const pos = this.group.position.clone();
+            pos.z += z;
+            const bomb = new Projectile(this.scene, {
+                position: pos,
+                direction: new THREE.Vector3(0, -1, 0),
+                speed: 2.2,
+                damage: this.damage + 4,
+                owner: 'enemy',
+                type: 'bomb',
+                maxDistance: 50,
+                gravity: 16,
+            });
+            this.projectiles.push(bomb);
+        }
     }
 }

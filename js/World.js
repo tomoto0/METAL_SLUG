@@ -1,5 +1,20 @@
 import * as THREE from 'three';
 
+// チャンクごとに大量に new されていたマテリアル（同色・同設定）を共有して
+// GC とドローコール経由のシェーダ uniform 切り替えを抑える。
+// userData.shared=true を持つマテリアル/ジオメトリは destroyObstacle・チャンク dispose で
+// dispose しない。色がランダムなものは引き続き個別アロケーションする。
+const _sharedMatCache = new Map();
+function _sharedMat(key, factory) {
+    let m = _sharedMatCache.get(key);
+    if (!m) {
+        m = factory();
+        m.userData.shared = true;
+        _sharedMatCache.set(key, m);
+    }
+    return m;
+}
+
 /**
  * Metal Slug風 縦スクロール 3D 用ワールド
  * プレイヤーは +Z 方向（前方）へ自動前進する
@@ -16,17 +31,33 @@ export class World {
         this.chunks = [];
         this.chunkSize = 30;
         this.lastChunkZ = -this.chunkSize;
-        this.viewRange = 60;
+        // viewRange 90→75: 後半シーンで活きるチャンク数を抑え、毎フレームの描画
+        // メッシュ数 / シャドウキャスタ数を削減（点滅・重さの主要因）。
+        // フォグ（main.js）が遠景を 70 付近で十分フェードさせるためポップインは目立たない。
+        // cleanupRange 40 維持。
+        this.viewRange = 75;
         this.cleanupRange = 40;
+        // 1 フレームあたりの最大 dispose チャンク数。前方生成の速さに対し追従できる
+        // よう 3 に引き上げ、後方プロップの滞留を防ぐ。
+        this.maxChunkDisposesPerFrame = 3;
 
         this.bgLayers = [];
         this.props = [];
         this.clouds = [];
         this.photoForegroundMeshes = [];
+        // ダイナミックプロップ（炎/煙/揺れ/回転光など毎フレーム更新）
+        this.dynamicProps = [];
+
+        // getObstacles() の結果をキャッシュ（毎フレーム新配列を作らないため）。
+        // チャンク追加/削除・障害物破壊で dirty にして再構築する。
+        this._obstacleCache = [];
+        this._obstacleCacheDirty = true;
 
         this._buildSky();
         this._buildParallaxLayers();
         this._buildGround();
+        this._buildFarHorizonSilhouettes();
+        this._buildAtmosphere();
 
         // パララックス・雲を +Z 縦スクロール用に座標変換（+X/-X 両側の壁に再配置）
         this._transformLayersToForwardScroll();
@@ -72,13 +103,16 @@ export class World {
      *  コンセプト画像 07_desert_background.jpg より
      * ======================================================== */
     _buildSky() {
-        const skyGeo = new THREE.SphereGeometry(200, 32, 16);
+        const skyGeo = new THREE.SphereGeometry(200, 48, 24);
         const skyMat = new THREE.ShaderMaterial({
             uniforms: {
-                topColor:    { value: new THREE.Color(0x1E5CB3) },  // Metal Slug風 鮮やかな深い青
-                midColor:    { value: new THREE.Color(0x5EA8E0) },  // クリアスカイブルー
-                bottomColor: { value: new THREE.Color(0xFAE8B0) },  // 暖かい砂色（地平線下）
-                horizonColor:{ value: new THREE.Color(0xFFCC55) },  // 鮮やかなゴールデンホライズン
+                topColor:    { value: new THREE.Color(0x1A4FA8) },  // 深い空 (concept 07 上空)
+                midColor:    { value: new THREE.Color(0x6FB6E8) },  // 鮮やかな水色
+                bottomColor: { value: new THREE.Color(0xF5DEA0) },  // 砂塵色（地平線下）
+                horizonColor:{ value: new THREE.Color(0xFFD668) },  // ゴールデンホライズン
+                hazeColor:   { value: new THREE.Color(0xFFE8B8) },  // 地平線ヘイズ
+                sunDir:      { value: new THREE.Vector3(0.45, 0.18, 0.88).normalize() },
+                sunColor:    { value: new THREE.Color(0xFFF6CC) },
                 offset:      { value: 10 },
                 exponent:    { value: 0.5 },
             },
@@ -95,19 +129,35 @@ export class World {
                 uniform vec3 midColor;
                 uniform vec3 bottomColor;
                 uniform vec3 horizonColor;
+                uniform vec3 hazeColor;
+                uniform vec3 sunDir;
+                uniform vec3 sunColor;
                 uniform float offset;
                 uniform float exponent;
                 varying vec3 vWorldPosition;
                 void main() {
-                    float h = normalize(vWorldPosition + offset).y;
+                    vec3 dir = normalize(vWorldPosition + offset);
+                    float h = dir.y;
                     vec3 color;
-                    if (h > 0.3) {
-                        color = mix(midColor, topColor, pow((h - 0.3) / 0.7, 0.8));
-                    } else if (h > 0.05) {
-                        color = mix(horizonColor, midColor, (h - 0.05) / 0.25);
+                    if (h > 0.35) {
+                        color = mix(midColor, topColor, pow((h - 0.35) / 0.65, 0.85));
+                    } else if (h > 0.06) {
+                        color = mix(horizonColor, midColor, smoothstep(0.06, 0.35, h));
+                    } else if (h > 0.0) {
+                        color = mix(hazeColor, horizonColor, h / 0.06);
                     } else {
-                        color = mix(bottomColor, horizonColor, max(h / 0.05, 0.0));
+                        color = mix(bottomColor, hazeColor, clamp(h / -0.05 + 1.0, 0.0, 1.0));
                     }
+                    // 太陽グロー（広く拡散）
+                    float sunDot = max(dot(dir, sunDir), 0.0);
+                    float glow = pow(sunDot, 6.0) * 0.55;
+                    color += sunColor * glow;
+                    // 太陽コア（明るい円）
+                    float core = smoothstep(0.9985, 0.9998, sunDot);
+                    color = mix(color, vec3(1.0, 0.98, 0.85), core);
+                    // 地平線ヘイズの追加バンド
+                    float horizonBand = exp(-pow(h * 6.0, 2.0)) * 0.25;
+                    color = mix(color, hazeColor, horizonBand);
                     gl_FragColor = vec4(color, 1.0);
                 }
             `,
@@ -116,6 +166,41 @@ export class World {
         const sky = new THREE.Mesh(skyGeo, skyMat);
         this.scene.add(sky);
         this.skyMesh = sky;
+
+        // 太陽光ハロー（さらに大きい外側のソフトディスク、空の上に重ねる）
+        const sunHaloGeo = new THREE.PlaneGeometry(40, 40);
+        const sunHaloMat = new THREE.ShaderMaterial({
+            transparent: true,
+            depthWrite: false,
+            depthTest: false,
+            fog: false,
+            blending: THREE.AdditiveBlending,
+            uniforms: { tint: { value: new THREE.Color(0xFFE8A0) } },
+            vertexShader: `
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                }
+            `,
+            fragmentShader: `
+                uniform vec3 tint;
+                varying vec2 vUv;
+                void main() {
+                    float d = distance(vUv, vec2(0.5));
+                    float a = smoothstep(0.5, 0.0, d) * 0.5;
+                    gl_FragColor = vec4(tint, a);
+                }
+            `,
+        });
+        const sunHalo = new THREE.Mesh(sunHaloGeo, sunHaloMat);
+        // sunDir の方向に配置（半径 ~150）
+        const sd = skyMat.uniforms.sunDir.value;
+        sunHalo.position.set(sd.x * 150, sd.y * 150, sd.z * 150);
+        sunHalo.lookAt(0, 0, 0);
+        sunHalo.renderOrder = -1;
+        this.scene.add(sunHalo);
+        this.sunHalo = sunHalo;
 
         // Web由来の背景写真レイヤー（ライセンス許諾済み素材を想定）
         const photoUrl = this.options.backgroundPhotoUrl || null;
@@ -148,7 +233,14 @@ export class World {
                     this.skyPhotoMesh.material.needsUpdate = true;
                     this.skyPhotoMesh.visible = true;
                     this.photoForegroundMeshes.forEach(({ mesh }) => {
-                        mesh.material.map = tex;
+                        if (mesh.material.uniforms && mesh.material.uniforms.map) {
+                            mesh.material.uniforms.map.value = tex;
+                            if (mesh.material.uniforms.hasMap) {
+                                mesh.material.uniforms.hasMap.value = 1.0;
+                            }
+                        } else {
+                            mesh.material.map = tex;
+                        }
                         mesh.material.needsUpdate = true;
                     });
                 },
@@ -166,8 +258,9 @@ export class World {
     }
 
     _buildClouds() {
-        const cloudColors = [0xFFF8F0, 0xFFF0E0, 0xFFE8D0, 0xFFDDC0];
-        for (let i = 0; i < 22; i++) {
+        // コンセプト画像 C0mVPN3lN3L6: アフリカ村の青空に浮かぶ白い積雲
+        const cloudColors = [0xFFFFFF, 0xFAF8F2, 0xF5F0E8, 0xEEE8DC];
+        for (let i = 0; i < 28; i++) {
             const cloudGroup = new THREE.Group();
             const numPuffs = 5 + Math.floor(Math.random() * 6);
             const baseSize = 2.5 + Math.random() * 4.0;
@@ -180,10 +273,10 @@ export class World {
                 const puffMat = new THREE.MeshStandardMaterial({
                     color: cloudColors[colorIdx],
                     transparent: true,
-                    opacity: 0.65 + Math.random() * 0.25,
+                    opacity: 0.78 + Math.random() * 0.18,
                     roughness: 0.95,
-                    emissive: 0xFFE8C0,
-                    emissiveIntensity: 0.05,
+                    emissive: 0xFFFFFF,
+                    emissiveIntensity: 0.08,
                 });
                 const puff = new THREE.Mesh(puffGeo, puffMat);
                 puff.position.set(
@@ -243,31 +336,282 @@ export class World {
         this._buildNearForeground(-4, 0.75);
     }
 
-    _buildPhotoForegroundLayers() {
-        const mat = new THREE.MeshBasicMaterial({
-            color: 0xFFFFFF,
+    /**
+     * 写真パネル用 アルファフェード シェーダ素材
+     * - UV V を [vMin, vMax] にクロップして空・地平線部分だけサンプル可能
+     * - 下端 fadeBottom / 上端 fadeTop で滑らかにアルファをフェード
+     * - hazeColor を horizonMix の強さで地平線寄りにブレンドし、ヘイズと馴染ませる
+     */
+    _makePhotoFadeMaterial({
+        uMin = 0.0, uMax = 1.0,
+        vMin = 0.0, vMax = 1.0,
+        fadeBottom = 0.18, fadeTop = 0.0,
+        opacity = 1.0,
+        hazeColor = 0xE8C890,
+        horizonMix = 0.22,
+    } = {}) {
+        return new THREE.ShaderMaterial({
+            uniforms: {
+                map:        { value: null },
+                hasMap:     { value: 0.0 },
+                uRange:     { value: new THREE.Vector2(uMin, uMax) },
+                vRange:     { value: new THREE.Vector2(vMin, vMax) },
+                opacityMul: { value: opacity },
+                fadeBottom: { value: fadeBottom },
+                fadeTop:    { value: fadeTop },
+                haze:       { value: new THREE.Color(hazeColor) },
+                horizonMix: { value: horizonMix },
+            },
+            vertexShader: `
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                }
+            `,
+            fragmentShader: `
+                uniform sampler2D map;
+                uniform float hasMap;
+                uniform vec2 uRange;
+                uniform vec2 vRange;
+                uniform float opacityMul;
+                uniform float fadeBottom;
+                uniform float fadeTop;
+                uniform vec3 haze;
+                uniform float horizonMix;
+                varying vec2 vUv;
+                void main() {
+                    if (hasMap < 0.5) discard;
+                    vec2 uv = vec2(
+                        mix(uRange.x, uRange.y, vUv.x),
+                        mix(vRange.x, vRange.y, vUv.y)
+                    );
+                    vec3 col = texture2D(map, uv).rgb;
+                    // 下端ほどヘイズ色に寄せて地面となじませる
+                    float hazeAmt = horizonMix * (1.0 - smoothstep(0.0, 0.55, vUv.y));
+                    col = mix(col, haze, hazeAmt);
+                    float a = opacityMul;
+                    if (fadeBottom > 0.0) a *= smoothstep(0.0, fadeBottom, vUv.y);
+                    if (fadeTop > 0.0)    a *= 1.0 - smoothstep(1.0 - fadeTop, 1.0, vUv.y);
+                    gl_FragColor = vec4(col, a);
+                }
+            `,
             transparent: true,
-            opacity: 0.96,
+            depthWrite: false,
+            depthTest: true,
             side: THREE.DoubleSide,
+        });
+    }
+
+    _buildPhotoForegroundLayers() {
+        // 左右の壁: 写真フル UV、下端を地面にアルファブレンドして縫い目を消す
+        // 高さは 36（y=0 〜 36）。地面の y=0 にぴったり乗せる
+        for (const side of [-1, 1]) {
+            const wall = new THREE.Mesh(
+                new THREE.PlaneGeometry(260, 36),
+                this._makePhotoFadeMaterial({
+                    uMin: 0.0, uMax: 3.5,           // 横方向に 3.5 回タイル（260m カバー）
+                    vMin: 0.0, vMax: 1.0,
+                    fadeBottom: 0.22,
+                    fadeTop: 0.0,
+                    opacity: 1.0,
+                    horizonMix: 0.30,
+                })
+            );
+            wall.position.set(side * 44, 18, 0);
+            wall.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2;
+            this.scene.add(wall);
+            this.photoForegroundMeshes.push({ mesh: wall, baseX: wall.position.x, zOffset: 0 });
+        }
+
+        // 前方パネル: 写真の上半分（空 + 遠方の地平線）だけを使い、
+        // 下端を地面にフェードして「遠景の砂漠が地面と繋がっている」感を出す
+        const front = new THREE.Mesh(
+            new THREE.PlaneGeometry(180, 24),
+            this._makePhotoFadeMaterial({
+                uMin: 0.05, uMax: 0.95,
+                vMin: 0.45, vMax: 0.98,           // 上半分の空〜地平線部分のみ
+                fadeBottom: 0.32,
+                fadeTop: 0.04,
+                opacity: 1.0,
+                horizonMix: 0.35,
+            })
+        );
+        front.position.set(0, 12, 78);            // bottom = 0、地面に着地。z は遠めに
+        front.rotation.y = Math.PI;
+        this.scene.add(front);
+        this.photoForegroundMeshes.push({ mesh: front, baseX: 0, isFront: true, zOffset: 78 });
+    }
+
+    /* ========================================================
+     *  ATMOSPHERE — 砂漠の熱波 + 砂粒子（プレイヤー周辺の浮遊）
+     * ======================================================== */
+    _buildAtmosphere() {
+        // 1) 熱波シマー（地面付近の半透明小ディスク群、上下にゆらぐ）
+        this.heatShimmers = [];
+        const shimmerMat = new THREE.MeshBasicMaterial({
+            color: 0xFFEFBF,
+            transparent: true,
+            opacity: 0.10,
+            depthWrite: false,
+            fog: false,
+            blending: THREE.AdditiveBlending,
+        });
+        const shimmerGeo = new THREE.PlaneGeometry(2.0, 0.8);
+        for (let i = 0; i < 30; i++) {
+            const m = new THREE.Mesh(shimmerGeo, shimmerMat);
+            m.rotation.x = -Math.PI * 0.32;
+            const lateral = (Math.random() - 0.5) * 70;
+            if (Math.abs(lateral) < 5) continue;
+            m.position.set(lateral, 0.4 + Math.random() * 0.3, (Math.random() - 0.5) * 80);
+            this.scene.add(m);
+            this.heatShimmers.push({
+                mesh: m,
+                phase: Math.random() * Math.PI * 2,
+                speed: 0.8 + Math.random() * 0.5,
+                amp: 0.15 + Math.random() * 0.15,
+                baseY: m.position.y,
+            });
+        }
+
+        // 2) 風で流れる砂粒子（プレイヤー周辺、低高度）
+        this.sandDrift = [];
+        const sandMat = new THREE.MeshBasicMaterial({
+            color: 0xE8C078,
+            transparent: true,
+            opacity: 0.45,
             depthWrite: false,
             fog: false,
         });
+        const sandGeo = new THREE.SphereGeometry(0.04, 4, 3);
+        for (let i = 0; i < 50; i++) {
+            const grain = new THREE.Mesh(sandGeo, sandMat);
+            grain.position.set(
+                (Math.random() - 0.5) * 60,
+                0.2 + Math.random() * 2.0,
+                (Math.random() - 0.5) * 70
+            );
+            this.scene.add(grain);
+            this.sandDrift.push({
+                mesh: grain,
+                vx: 1.5 + Math.random() * 1.2,
+                vy: -0.2 + Math.random() * 0.4,
+                phase: Math.random() * Math.PI * 2,
+                bobAmp: 0.05 + Math.random() * 0.1,
+            });
+        }
+    }
 
-        // 画面手前左右を同一画像で埋める大型ウォール
-        for (const side of [-1, 1]) {
-            const wall = new THREE.Mesh(new THREE.PlaneGeometry(260, 62), mat.clone());
-            wall.position.set(side * 44, 20, 0);
-            wall.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2;
-            this.scene.add(wall);
-            this.photoForegroundMeshes.push({ mesh: wall, baseX: wall.position.x });
+    /* ========================================================
+     *  FAR HORIZON SILHOUETTES — 写真モード/プロシージャルモード両対応
+     *  前方遠景に砂丘 + 岩山 + 廃墟塔のシルエットを並べ、
+     *  地平線に Metal Slug らしい奥行きを出す
+     * ======================================================== */
+    _buildFarHorizonSilhouettes() {
+        this.farSilhouettes = [];
+        const farZ = 95;     // プレイヤーから前方の距離
+        const sideZ = 110;   // 横方向にも配置
+        // 大気遠近法のため、ベース色をヘイズ (0xE8C890) と 50% ブレンドして
+        // くっきりしたシルエットではなく霞んだ遠景として描画する
+        const hazeColor = new THREE.Color(0xE8C890);
+        const mixHaze = (hex, amount) => {
+            const c = new THREE.Color(hex);
+            c.lerp(hazeColor, amount);
+            return c.getHex();
+        };
+        const palette = [
+            { color: mixHaze(0xB58A52, 0.55), scale: 1.0 },
+            { color: mixHaze(0xA47D49, 0.50), scale: 0.85 },
+            { color: mixHaze(0xC8A06C, 0.45), scale: 1.1 },
+            { color: mixHaze(0x8C6638, 0.55), scale: 0.7 },
+        ];
+
+        const makeDuneSilhouette = (width, height, colorHex) => {
+            const shape = new THREE.Shape();
+            shape.moveTo(-width / 2, 0);
+            const steps = 14;
+            for (let s = 0; s <= steps; s++) {
+                const t = s / steps;
+                const x = (t - 0.5) * width;
+                const bumps = Math.sin(t * Math.PI * 3.0) * 0.18 + Math.sin(t * Math.PI * 7.0) * 0.08;
+                const y = (Math.sin(t * Math.PI) + bumps) * height;
+                shape.lineTo(x, Math.max(y, 0));
+            }
+            shape.lineTo(width / 2, 0);
+            const geo = new THREE.ShapeGeometry(shape);
+            const mat = new THREE.MeshBasicMaterial({
+                color: colorHex,
+                transparent: true,
+                opacity: 0.72,
+                fog: false,
+                depthWrite: false,
+            });
+            return new THREE.Mesh(geo, mat);
+        };
+
+        const makeRockSilhouette = (width, height, colorHex) => {
+            const shape = new THREE.Shape();
+            shape.moveTo(-width / 2, 0);
+            // 岩山のジャギーなプロファイル
+            const peaks = 5 + Math.floor(Math.random() * 3);
+            for (let s = 0; s <= peaks * 2; s++) {
+                const t = s / (peaks * 2);
+                const x = (t - 0.5) * width;
+                const isRidge = s % 2 === 1;
+                const y = isRidge ? height * (0.6 + Math.random() * 0.4) : height * (0.2 + Math.random() * 0.2);
+                shape.lineTo(x, y);
+            }
+            shape.lineTo(width / 2, 0);
+            const geo = new THREE.ShapeGeometry(shape);
+            const mat = new THREE.MeshBasicMaterial({
+                color: colorHex,
+                transparent: true,
+                opacity: 0.65,
+                fog: false,
+                depthWrite: false,
+            });
+            return new THREE.Mesh(geo, mat);
+        };
+
+        // 前方遠景: 4 セグメントの砂丘ライン (z = scrollZ + farZ)
+        for (let i = 0; i < 6; i++) {
+            const p = palette[i % palette.length];
+            const w = 50 + Math.random() * 30;
+            const h = 8 + Math.random() * 14;
+            const dune = (i % 3 === 0) ? makeRockSilhouette(w, h * 1.3, p.color) : makeDuneSilhouette(w, h, p.color);
+            dune.position.set((i - 2.5) * 32 + (Math.random() - 0.5) * 8, 0, farZ + Math.random() * 12);
+            // -Z 側を向く（プレイヤー側）
+            dune.rotation.y = Math.PI;
+            this.scene.add(dune);
+            this.farSilhouettes.push({ mesh: dune, baseZOffset: dune.position.z, lateral: dune.position.x, parallax: 0.04 });
         }
 
-        // 手前中央下を埋める低い前面パネル（地平線付近の切れ目防止）
-        const front = new THREE.Mesh(new THREE.PlaneGeometry(120, 30), mat.clone());
-        front.position.set(0, 11, 56);
-        front.rotation.y = Math.PI;
-        this.scene.add(front);
-        this.photoForegroundMeshes.push({ mesh: front, baseX: 0, isFront: true });
+        // 後方遠景（プレイヤー後ろの -Z 側、振り向き感を出す）
+        for (let i = 0; i < 4; i++) {
+            const p = palette[(i + 1) % palette.length];
+            const w = 45 + Math.random() * 25;
+            const h = 6 + Math.random() * 10;
+            const dune = makeDuneSilhouette(w, h, p.color);
+            dune.position.set((i - 1.5) * 36 + (Math.random() - 0.5) * 10, 0, -farZ - Math.random() * 10);
+            // +Z 側を向く
+            dune.rotation.y = 0;
+            this.scene.add(dune);
+            this.farSilhouettes.push({ mesh: dune, baseZOffset: dune.position.z, lateral: dune.position.x, parallax: 0.03 });
+        }
+
+        // 横方向の遠景（左右、写真パネルの外側に薄く見える）
+        for (const side of [-1, 1]) {
+            for (let i = 0; i < 3; i++) {
+                const p = palette[i % palette.length];
+                const w = 55 + Math.random() * 25;
+                const h = 10 + Math.random() * 12;
+                const dune = makeDuneSilhouette(w, h, p.color);
+                dune.position.set(side * sideZ, 0, (i - 1) * 40);
+                dune.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2;
+                this.scene.add(dune);
+                this.farSilhouettes.push({ mesh: dune, baseZOffset: dune.position.z, lateral: dune.position.x, parallax: 0.06, lateralRow: true });
+            }
+        }
     }
 
     /* --- Layer 0: 最遠景のピラミッド群（Metal Slug砂漠ステージの象徴） --- */
@@ -433,6 +777,9 @@ export class World {
                 0,
                 zPos + (Math.random() - 0.5) * 8
             );
+            // 遠景でもダイナミックに: 大スケール
+            const distScale = 1.4 + Math.random() * 0.6;
+            bGroup.scale.setScalar(distScale);
             this.scene.add(bGroup);
             layer.objects.push(bGroup);
         }
@@ -440,9 +787,9 @@ export class World {
     }
 
     _buildFactory(group) {
-        const w = 8 + Math.random() * 5;
-        const h = 4 + Math.random() * 3;
-        const bodyGeo = new THREE.BoxGeometry(w, h, 5);
+        const w = 12 + Math.random() * 7;
+        const h = 6 + Math.random() * 5;
+        const bodyGeo = new THREE.BoxGeometry(w, h, 7);
         const bodyMat = new THREE.MeshStandardMaterial({
             color: 0x787868, roughness: 0.82, metalness: 0.12,
         });
@@ -453,13 +800,13 @@ export class World {
         // 屋根（三角）
         const roofShape = new THREE.Shape();
         roofShape.moveTo(-w / 2 - 0.3, 0);
-        roofShape.lineTo(0, 2.5);
+        roofShape.lineTo(0, 4.0);
         roofShape.lineTo(w / 2 + 0.3, 0);
-        const roofGeo = new THREE.ExtrudeGeometry(roofShape, { depth: 5.5, bevelEnabled: false });
+        const roofGeo = new THREE.ExtrudeGeometry(roofShape, { depth: 7.5, bevelEnabled: false });
         const roof = new THREE.Mesh(roofGeo, new THREE.MeshStandardMaterial({
             color: 0x9A5020, roughness: 0.85,
         }));
-        roof.position.set(0, h, -2.75);
+        roof.position.set(0, h, -3.75);
         group.add(roof);
 
         // 窓
@@ -514,20 +861,20 @@ export class World {
 
     _buildChimneyFactory(group) {
         // 本体
-        const bodyGeo = new THREE.BoxGeometry(6, 5, 4);
+        const bodyGeo = new THREE.BoxGeometry(10, 7, 6);
         const body = new THREE.Mesh(bodyGeo, new THREE.MeshStandardMaterial({
             color: 0x7B6B5B, roughness: 0.85,
         }));
-        body.position.y = 2.5;
+        body.position.y = 3.5;
         group.add(body);
 
         // 煙突（2本）
         for (let x of [-1.5, 1.5]) {
             const chimney = new THREE.Mesh(
-                new THREE.CylinderGeometry(0.4, 0.5, 8, 8),
+                new THREE.CylinderGeometry(0.55, 0.65, 12, 8),
                 new THREE.MeshStandardMaterial({ color: 0x8B5A2B, roughness: 0.7, metalness: 0.2 })
             );
-            chimney.position.set(x, 9, 0);
+            chimney.position.set(x, 13, 0);
             group.add(chimney);
 
             // 煙突の上部リング
@@ -551,9 +898,9 @@ export class World {
     }
 
     _buildRuinedHighrise(group) {
-        const h = 8 + Math.random() * 8;
-        const w = 4 + Math.random() * 3;
-        const bodyGeo = new THREE.BoxGeometry(w, h, 3.5);
+        const h = 12 + Math.random() * 12;
+        const w = 6 + Math.random() * 4;
+        const bodyGeo = new THREE.BoxGeometry(w, h, 5);
         const body = new THREE.Mesh(bodyGeo, new THREE.MeshStandardMaterial({
             color: 0x8B7B6B, roughness: 0.9,
         }));
@@ -584,44 +931,49 @@ export class World {
         }
     }
 
-    /* --- Layer 3: 中景の石造り建物群・監視塔・砂漠遺跡・アラビア風街並み --- */
+    /* --- Layer 3: 中景の石造り建物群・監視塔・砂漠遺跡・アフリカ村 --- */
     _buildMidgroundBuildings(zPos, parallaxRate) {
         const layer = { objects: [], parallaxRate, zPos };
-        // アラビア風建築の比率を上げるため、i=-4..8 に拡張して密度アップ
+        // アフリカ村の小屋密度を上げる
         for (let i = -4; i <= 8; i++) {
             const bGroup = new THREE.Group();
-            // 0-11 の12種：後半8種はアラビア/砂漠町並み系
-            const type = Math.floor(Math.random() * 14);
-
-            if (type === 0) {
-                this._buildStoneBuilding(bGroup);
-            } else if (type === 1) {
+            // 0-15: 重み付き選択。コンセプト画像（C0mVPN3lN3L6）に合わせ
+            // 茅葺き集落を最多に、アラビア/監視塔は脇役へ
+            const r = Math.random();
+            if (r < 0.28) {
+                // アフリカ村集落（複数小屋）
+                this._buildVillageCluster(bGroup);
+            } else if (r < 0.36) {
+                // 単独の大きな小屋
+                this._buildThatchedHut(bGroup, {
+                    radius: 1.8 + Math.random() * 0.6,
+                    wallH: 1.6 + Math.random() * 0.4,
+                    roofH: 3.0 + Math.random() * 0.6,
+                });
+            } else if (r < 0.50) {
+                // フラット屋根アドベ（ヴィガ突き出し梁）— ジオラマ風
+                this._buildFlatAdobeHouse(bGroup);
+            } else if (r < 0.57) {
+                // 装飾された石壁
+                this._buildDecoratedStoneWall(bGroup);
+            } else if (r < 0.64) {
                 this._buildWatchTower(bGroup);
-            } else if (type === 2) {
-                this._buildWarehouse(bGroup);
-            } else if (type === 3) {
-                this._buildFortWall(bGroup);
-            } else if (type === 4) {
-                this._buildDesertRuins(bGroup);
-            } else if (type === 5) {
-                this._buildObelisk(bGroup);
-            } else if (type <= 7) {
-                // アラビア風二連オニオンドーム寺院
-                this._buildArabianTemple(bGroup);
-            } else if (type <= 9) {
-                // 岩壁アドベ民家（縞ひさし・果物籠付き）
+            } else if (r < 0.70) {
+                this._buildStoneBuilding(bGroup);
+            } else if (r < 0.76) {
                 this._buildAdobeHouse(bGroup);
-            } else if (type === 10) {
-                // バザール（縞テント・果物台）
+            } else if (r < 0.82) {
+                this._buildDesertRuins(bGroup);
+            } else if (r < 0.86) {
+                this._buildWarehouse(bGroup);
+            } else if (r < 0.90) {
+                this._buildFortWall(bGroup);
+            } else if (r < 0.94) {
+                this._buildArabianTemple(bGroup);
+            } else if (r < 0.97) {
                 this._buildBazaarStall(bGroup);
-            } else if (type === 11) {
-                // 大モスク（中央大ドーム＋角ミナレット）
-                this._buildGrandMosque(bGroup);
-            } else if (type === 12) {
-                // アラビア門（青旗・書法バナー）
-                this._buildArabianGate(bGroup);
             } else {
-                this._buildDesertTemple(bGroup);
+                this._buildArabianGate(bGroup);
             }
 
             bGroup.position.set(
@@ -629,6 +981,9 @@ export class World {
                 0,
                 zPos + (Math.random() - 0.5) * 5
             );
+            // ダイナミックなアーケード感: ランダムにスケールアップ
+            const buildingScale = 1.3 + Math.random() * 0.5;
+            bGroup.scale.setScalar(buildingScale);
             this.scene.add(bGroup);
             layer.objects.push(bGroup);
         }
@@ -1987,22 +2342,36 @@ export class World {
         const layer = { objects: [], parallaxRate, zPos };
         for (let i = -3; i <= 7; i++) {
             const pGroup = new THREE.Group();
-            const type = Math.floor(Math.random() * 7);
-
-            if (type === 0) {
+            const r = Math.random();
+            // 前景：ジオラマの生活感（物干し・陶器棚）を加えてバラエティアップ
+            if (r < 0.18) {
+                this._buildHangingLaundry(pGroup);
+            } else if (r < 0.30) {
+                this._buildPotteryShelf(pGroup);
+            } else if (r < 0.42) {
+                this._buildAcaciaTree(pGroup);
+            } else if (r < 0.52) {
+                this._buildWoodenScaffold(pGroup);
+            } else if (r < 0.60) {
+                this._buildThatchedHut(pGroup, {
+                    radius: 1.6 + Math.random() * 0.5,
+                    wallH: 1.4 + Math.random() * 0.4,
+                    roofH: 2.6 + Math.random() * 0.6,
+                });
+            } else if (r < 0.68) {
                 this._buildPalmTree(pGroup);
-            } else if (type === 1) {
-                this._buildPowerPole(pGroup);
-            } else if (type === 2) {
-                this._buildMilitarySign(pGroup);
-            } else if (type === 3) {
+            } else if (r < 0.74) {
+                this._buildVillageWell(pGroup);
+            } else if (r < 0.80) {
                 this._buildWreckage(pGroup);
-            } else if (type === 4) {
-                this._buildStreetLamp(pGroup);
-            } else if (type === 5) {
+            } else if (r < 0.85) {
+                this._buildPowerPole(pGroup);
+            } else if (r < 0.90) {
+                this._buildMilitarySign(pGroup);
+            } else if (r < 0.95) {
                 this._buildMarketCanopy(pGroup);
             } else {
-                this._buildRuinedStatue(pGroup);
+                this._buildHangingScimitar(pGroup);
             }
 
             pGroup.position.set(
@@ -2376,32 +2745,2242 @@ export class World {
     }
 
     /* ========================================================
+     *  AFRICAN VILLAGE - コンセプト画像 C0mVPN3lN3L6.png 準拠
+     *  円錐茅葺き屋根の小屋、アカシア木、木製足場、土器、丸太柵
+     * ======================================================== */
+
+    /** 円錐茅葺き屋根の小屋（メタルスラッグ風アフリカ村） */
+    _buildThatchedHut(group, opts = {}) {
+        const radius = opts.radius || (1.4 + Math.random() * 0.7);
+        const wallH = opts.wallH || (1.4 + Math.random() * 0.4);
+        const roofH = opts.roofH || (radius * 1.7 + Math.random() * 0.4);
+
+        // 土壁（クレイ／泥レンガ）— わずかに色をばらつかせる
+        const wallColors = [0xC9A271, 0xB89060, 0xD4B080, 0xA88454, 0xC09668];
+        const wallColor = wallColors[Math.floor(Math.random() * wallColors.length)];
+        const wallMat = new THREE.MeshStandardMaterial({
+            color: wallColor, roughness: 0.95, flatShading: true,
+        });
+        const wall = new THREE.Mesh(
+            new THREE.CylinderGeometry(radius * 0.92, radius, wallH, 14),
+            wallMat
+        );
+        wall.position.y = wallH / 2;
+        wall.castShadow = true;
+        wall.receiveShadow = true;
+        group.add(wall);
+
+        // 壁の縦溝（粘土を塗り重ねた質感）
+        const grooveMat = new THREE.MeshStandardMaterial({
+            color: new THREE.Color(wallColor).multiplyScalar(0.78), roughness: 1.0,
+        });
+        const grooveCount = 8;
+        for (let i = 0; i < grooveCount; i++) {
+            const a = (i / grooveCount) * Math.PI * 2;
+            const groove = new THREE.Mesh(
+                new THREE.BoxGeometry(0.04, wallH * 0.85, 0.04),
+                grooveMat
+            );
+            groove.position.set(
+                Math.cos(a) * radius * 0.96,
+                wallH / 2,
+                Math.sin(a) * radius * 0.96
+            );
+            groove.rotation.y = -a;
+            group.add(groove);
+        }
+
+        // 入口（暗い穴）
+        const doorW = Math.min(0.55, radius * 0.45);
+        const doorH = Math.min(1.0, wallH * 0.7);
+        const door = new THREE.Mesh(
+            new THREE.BoxGeometry(doorW, doorH, 0.08),
+            new THREE.MeshStandardMaterial({ color: 0x0A0805, roughness: 1.0 })
+        );
+        const doorAngle = (Math.random() - 0.5) * 0.6;
+        door.position.set(
+            Math.cos(doorAngle) * radius * 0.96,
+            doorH / 2,
+            Math.sin(doorAngle) * radius * 0.96
+        );
+        door.rotation.y = -doorAngle;
+        group.add(door);
+
+        // 入口上の楣（木の梁）
+        const lintelMat = new THREE.MeshStandardMaterial({ color: 0x4A2E18, roughness: 0.95 });
+        const lintel = new THREE.Mesh(
+            new THREE.BoxGeometry(doorW + 0.18, 0.1, 0.16),
+            lintelMat
+        );
+        lintel.position.set(door.position.x, doorH + 0.05, door.position.z);
+        lintel.rotation.y = -doorAngle;
+        group.add(lintel);
+
+        // 円錐茅葺き屋根（重ねた段で質感を出す）
+        const roofColors = [0xC8A050, 0xB89048, 0xD8B060, 0xA88040];
+        const roofColor = roofColors[Math.floor(Math.random() * roofColors.length)];
+        const roofBaseR = radius * 1.18;
+        const roofMat = new THREE.MeshStandardMaterial({
+            color: roofColor, roughness: 1.0, flatShading: true,
+        });
+        const roofTiers = 4;
+        for (let t = 0; t < roofTiers; t++) {
+            const tBot = t / roofTiers;
+            const tTop = (t + 1) / roofTiers;
+            const rBot = roofBaseR * (1 - tBot * 0.95);
+            const rTop = roofBaseR * (1 - tTop * 0.95);
+            const yBot = wallH + roofH * tBot;
+            const yTop = wallH + roofH * tTop;
+            const tier = new THREE.Mesh(
+                new THREE.CylinderGeometry(rTop, rBot, yTop - yBot, 16, 1, true),
+                roofMat
+            );
+            tier.position.y = (yBot + yTop) / 2;
+            tier.castShadow = true;
+            group.add(tier);
+
+            // 段の縁の藁の毛羽（小さなコーン群）
+            if (t < roofTiers - 1) {
+                const fringeCount = 16;
+                const fringeMat = new THREE.MeshStandardMaterial({
+                    color: new THREE.Color(roofColor).multiplyScalar(0.78), roughness: 1.0,
+                });
+                for (let f = 0; f < fringeCount; f++) {
+                    const a = (f / fringeCount) * Math.PI * 2;
+                    const fringe = new THREE.Mesh(
+                        new THREE.ConeGeometry(0.08, 0.22, 4),
+                        fringeMat
+                    );
+                    fringe.position.set(
+                        Math.cos(a) * rBot * 1.02,
+                        yBot + 0.04,
+                        Math.sin(a) * rBot * 1.02
+                    );
+                    fringe.rotation.x = Math.PI; // 下向き
+                    fringe.rotation.y = a;
+                    group.add(fringe);
+                }
+            }
+        }
+
+        // 屋根の頂点キャップ（小さな束）
+        const capMat = new THREE.MeshStandardMaterial({ color: 0x6A4220, roughness: 1.0 });
+        const cap = new THREE.Mesh(
+            new THREE.ConeGeometry(0.12, 0.45, 6),
+            capMat
+        );
+        cap.position.y = wallH + roofH + 0.15;
+        group.add(cap);
+
+        // 屋根の骨組み（先端から放射状に出る木枝）
+        const stickMat = new THREE.MeshStandardMaterial({ color: 0x3A2410, roughness: 1.0 });
+        const stickCount = 6;
+        for (let s = 0; s < stickCount; s++) {
+            const a = (s / stickCount) * Math.PI * 2 + 0.2;
+            const stick = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.025, 0.025, 0.5, 4),
+                stickMat
+            );
+            stick.position.set(
+                Math.cos(a) * roofBaseR * 0.05,
+                wallH + roofH + 0.08,
+                Math.sin(a) * roofBaseR * 0.05
+            );
+            stick.rotation.z = Math.PI / 2 - 0.5;
+            stick.rotation.y = -a;
+            group.add(stick);
+        }
+
+        return group;
+    }
+
+    /** アフリカ村の建物グループ（複数の小屋を寄り添わせて配置） */
+    _buildVillageCluster(group) {
+        const hutCount = 2 + Math.floor(Math.random() * 3);
+        const placed = [];
+        for (let i = 0; i < hutCount; i++) {
+            const hut = new THREE.Group();
+            this._buildThatchedHut(hut, {
+                radius: 1.3 + Math.random() * 0.6,
+                wallH: 1.3 + Math.random() * 0.4,
+                roofH: 2.4 + Math.random() * 0.5,
+            });
+            // 既存小屋と重ならないようにスポット選び
+            let tries = 0;
+            let px, pz;
+            do {
+                px = (Math.random() - 0.5) * 6;
+                pz = (Math.random() - 0.5) * 4;
+                tries++;
+            } while (
+                tries < 8 &&
+                placed.some(p => Math.hypot(p.x - px, p.z - pz) < 3.2)
+            );
+            hut.position.set(px, 0, pz);
+            hut.rotation.y = Math.random() * Math.PI * 2;
+            group.add(hut);
+            placed.push({ x: px, z: pz });
+        }
+
+        // 中央に共有スペースの石組み焚き火跡
+        if (Math.random() > 0.5) {
+            const fireRing = new THREE.Group();
+            const stoneMat = new THREE.MeshStandardMaterial({ color: 0x5A4A3A, roughness: 1.0, flatShading: true });
+            for (let s = 0; s < 8; s++) {
+                const a = (s / 8) * Math.PI * 2;
+                const stone = new THREE.Mesh(
+                    new THREE.DodecahedronGeometry(0.12, 0),
+                    stoneMat
+                );
+                stone.position.set(Math.cos(a) * 0.45, 0.08, Math.sin(a) * 0.45);
+                stone.rotation.set(Math.random(), Math.random(), Math.random());
+                fireRing.add(stone);
+            }
+            const ash = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.32, 0.38, 0.04, 12),
+                new THREE.MeshStandardMaterial({ color: 0x2A2018, roughness: 1.0 })
+            );
+            ash.position.y = 0.02;
+            fireRing.add(ash);
+            fireRing.position.set((Math.random() - 0.5) * 1.2, 0, (Math.random() - 0.5) * 1.2);
+            group.add(fireRing);
+        }
+        return group;
+    }
+
+    /** アカシア（サバンナ樹）— 細長く曲がった幹に水平に広がる傘状の葉冠 */
+    _buildAcaciaTree(group) {
+        const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5A3E22, roughness: 0.95 });
+        const segCount = 5;
+        const lean = (Math.random() - 0.5) * 0.55;
+        let prevY = 0;
+        let prevX = 0;
+        let prevZ = 0;
+        const totalH = 5.5 + Math.random() * 2.0;
+        for (let s = 0; s < segCount; s++) {
+            const segH = totalH / segCount;
+            const botR = 0.32 - s * 0.045;
+            const topR = 0.32 - (s + 1) * 0.045;
+            const seg = new THREE.Mesh(
+                new THREE.CylinderGeometry(Math.max(topR, 0.08), Math.max(botR, 0.1), segH, 7),
+                trunkMat
+            );
+            const tilt = (s === 0 ? 0 : (Math.random() - 0.5) * 0.18);
+            seg.position.set(prevX + lean * 0.18, prevY + segH / 2, prevZ + tilt * 0.3);
+            seg.rotation.z = lean * 0.08 - tilt;
+            group.add(seg);
+            prevY += segH;
+            prevX += lean * 0.18;
+            prevZ += tilt * 0.3;
+        }
+
+        // 枝分かれ（上部から左右にしなる枝）
+        const branchMat = trunkMat;
+        const branchTips = [];
+        const branchCount = 4 + Math.floor(Math.random() * 3);
+        for (let b = 0; b < branchCount; b++) {
+            const a = (b / branchCount) * Math.PI * 2 + Math.random() * 0.6;
+            const len = 1.6 + Math.random() * 0.9;
+            const branch = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.06, 0.12, len, 5),
+                branchMat
+            );
+            const tipX = prevX + Math.cos(a) * (len * 0.55);
+            const tipY = prevY + 0.4 + Math.random() * 0.5;
+            const tipZ = prevZ + Math.sin(a) * (len * 0.55);
+            branch.position.set((prevX + tipX) / 2, (prevY + tipY) / 2, (prevZ + tipZ) / 2);
+            const dir = new THREE.Vector3(tipX - prevX, tipY - prevY, tipZ - prevZ).normalize();
+            const up = new THREE.Vector3(0, 1, 0);
+            const q = new THREE.Quaternion().setFromUnitVectors(up, dir);
+            branch.quaternion.copy(q);
+            group.add(branch);
+            branchTips.push({ x: tipX, y: tipY, z: tipZ });
+        }
+
+        // 葉冠（傘状に水平に広がる、3層）
+        const leafColors = [0x3D5A28, 0x4A6B30, 0x2F4A20, 0x5A7A38];
+        const canopyR = 2.2 + Math.random() * 0.7;
+        for (let layer = 0; layer < 3; layer++) {
+            const ly = prevY + 0.3 + layer * 0.35;
+            const lr = canopyR * (1 - layer * 0.18);
+            const lh = 0.45 - layer * 0.08;
+            const leafMat = new THREE.MeshStandardMaterial({
+                color: leafColors[Math.floor(Math.random() * leafColors.length)],
+                roughness: 0.9, flatShading: true,
+            });
+            // 葉冠は扁平な楕円体で表現
+            const blob = new THREE.Mesh(
+                new THREE.SphereGeometry(lr, 12, 8),
+                leafMat
+            );
+            blob.scale.set(1, lh / lr, 1);
+            blob.position.set(prevX + (Math.random() - 0.5) * 0.3, ly, prevZ + (Math.random() - 0.5) * 0.3);
+            group.add(blob);
+        }
+        // 葉のシルエット小ブロブ（不揃いに）
+        const accentMat = new THREE.MeshStandardMaterial({
+            color: 0x4A6B30, roughness: 0.9, flatShading: true,
+        });
+        for (let i = 0; i < 8; i++) {
+            const a = Math.random() * Math.PI * 2;
+            const r = canopyR * (0.5 + Math.random() * 0.5);
+            const blob = new THREE.Mesh(
+                new THREE.SphereGeometry(0.5 + Math.random() * 0.4, 8, 6),
+                accentMat
+            );
+            blob.scale.y = 0.5;
+            blob.position.set(
+                prevX + Math.cos(a) * r,
+                prevY + 0.2 + Math.random() * 0.6,
+                prevZ + Math.sin(a) * r
+            );
+            group.add(blob);
+        }
+        return group;
+    }
+
+    /** 木製の足場/櫓（コンセプト画像左の構造物） */
+    _buildWoodenScaffold(group) {
+        const woodMat = new THREE.MeshStandardMaterial({ color: 0x6A4422, roughness: 0.95 });
+        const darkWoodMat = new THREE.MeshStandardMaterial({ color: 0x4A2E18, roughness: 0.95 });
+        const w = 2.4 + Math.random() * 0.8;
+        const d = 1.2 + Math.random() * 0.5;
+        const h = 3.2 + Math.random() * 1.2;
+
+        // 4本の柱
+        const postR = 0.12;
+        for (const px of [-w / 2, w / 2]) {
+            for (const pz of [-d / 2, d / 2]) {
+                const post = new THREE.Mesh(
+                    new THREE.CylinderGeometry(postR, postR * 1.2, h, 6),
+                    woodMat
+                );
+                post.position.set(px, h / 2, pz);
+                post.castShadow = true;
+                group.add(post);
+            }
+        }
+
+        // 横木（水平の梁、複数段）
+        const beamH = 0.12;
+        const tiers = 3;
+        for (let t = 0; t < tiers; t++) {
+            const y = (t + 1) * (h / (tiers + 0.5));
+            // X方向の梁（前後）
+            for (const pz of [-d / 2, d / 2]) {
+                const beam = new THREE.Mesh(
+                    new THREE.BoxGeometry(w + 0.2, beamH, beamH),
+                    darkWoodMat
+                );
+                beam.position.set(0, y, pz);
+                group.add(beam);
+            }
+            // Z方向の梁（左右）
+            for (const px of [-w / 2, w / 2]) {
+                const beam = new THREE.Mesh(
+                    new THREE.BoxGeometry(beamH, beamH, d + 0.2),
+                    darkWoodMat
+                );
+                beam.position.set(px, y, 0);
+                group.add(beam);
+            }
+        }
+
+        // 上の床板（複数の板を並べる）
+        const planks = 6;
+        const plankMat = new THREE.MeshStandardMaterial({ color: 0x7A5A38, roughness: 0.95 });
+        for (let i = 0; i < planks; i++) {
+            const plank = new THREE.Mesh(
+                new THREE.BoxGeometry(w + 0.1, 0.06, (d / planks) - 0.02),
+                plankMat
+            );
+            plank.position.set(0, h, -d / 2 + (d / planks) * (i + 0.5));
+            plank.rotation.y = (Math.random() - 0.5) * 0.02;
+            group.add(plank);
+        }
+
+        // 斜めの筋交い（X字に交差）
+        for (const side of [-1, 1]) {
+            const len = Math.hypot(w, h);
+            const brace = new THREE.Mesh(
+                new THREE.BoxGeometry(0.08, len, 0.08),
+                darkWoodMat
+            );
+            brace.position.set(0, h / 2, side * d / 2);
+            brace.rotation.z = Math.atan2(w, h);
+            brace.rotation.y = side > 0 ? 0 : Math.PI;
+            group.add(brace);
+
+            const brace2 = new THREE.Mesh(
+                new THREE.BoxGeometry(0.08, len, 0.08),
+                darkWoodMat
+            );
+            brace2.position.set(0, h / 2, side * d / 2);
+            brace2.rotation.z = -Math.atan2(w, h);
+            brace2.rotation.y = side > 0 ? 0 : Math.PI;
+            group.add(brace2);
+        }
+
+        // 屋根（簡素な茅葺き or 帆布）
+        if (Math.random() > 0.4) {
+            const roofMat = new THREE.MeshStandardMaterial({
+                color: 0xB89048, roughness: 1.0, flatShading: true,
+            });
+            const roof = new THREE.Mesh(
+                new THREE.ConeGeometry(Math.max(w, d) * 0.85, 1.0, 4),
+                roofMat
+            );
+            roof.position.y = h + 0.5;
+            roof.rotation.y = Math.PI / 4;
+            group.add(roof);
+        }
+        return group;
+    }
+
+    /** 土器/壺の集まり（村の生活感） */
+    _buildClayPots(group) {
+        const count = 2 + Math.floor(Math.random() * 4);
+        const potColors = [0x8B4A20, 0x9C5028, 0xA85A30, 0x7A3E18, 0xB06038];
+        for (let i = 0; i < count; i++) {
+            const pot = new THREE.Group();
+            const r = 0.18 + Math.random() * 0.18;
+            const h = r * (1.6 + Math.random() * 0.7);
+            const color = potColors[Math.floor(Math.random() * potColors.length)];
+            const potMat = new THREE.MeshStandardMaterial({
+                color, roughness: 0.85,
+                emissive: new THREE.Color(color).multiplyScalar(0.04),
+            });
+
+            // 壺本体（ロウ・ジオメトリで膨らみのプロファイル）
+            const points = [];
+            const segs = 8;
+            for (let p = 0; p <= segs; p++) {
+                const t = p / segs;
+                const y = t * h;
+                let pr;
+                if (t < 0.15) pr = r * (0.5 + t * 2.0);
+                else if (t < 0.6) pr = r * (0.8 + Math.sin((t - 0.15) * Math.PI / 0.9) * 0.5);
+                else pr = r * (0.85 - (t - 0.6) * 0.6);
+                points.push(new THREE.Vector2(Math.max(pr, 0.04), y));
+            }
+            const body = new THREE.Mesh(
+                new THREE.LatheGeometry(points, 12),
+                potMat
+            );
+            body.castShadow = true;
+            body.receiveShadow = true;
+            pot.add(body);
+
+            // 口縁の濃い帯
+            const rim = new THREE.Mesh(
+                new THREE.TorusGeometry(r * 0.55, 0.025, 4, 12),
+                new THREE.MeshStandardMaterial({ color: 0x4A2410, roughness: 1.0 })
+            );
+            rim.rotation.x = Math.PI / 2;
+            rim.position.y = h - 0.02;
+            pot.add(rim);
+
+            pot.position.set(
+                (Math.random() - 0.5) * 1.2,
+                0,
+                (Math.random() - 0.5) * 1.0
+            );
+            pot.rotation.y = Math.random() * Math.PI * 2;
+            group.add(pot);
+        }
+
+        // たまに転がった壺（横倒し）
+        if (Math.random() > 0.6) {
+            const fallen = new THREE.Mesh(
+                new THREE.SphereGeometry(0.22, 10, 6),
+                new THREE.MeshStandardMaterial({ color: 0x7A3818, roughness: 0.9 })
+            );
+            fallen.scale.set(1, 0.7, 1);
+            fallen.rotation.z = Math.PI / 2;
+            fallen.position.set((Math.random() - 0.5) * 1.0, 0.18, (Math.random() - 0.5) * 1.0);
+            group.add(fallen);
+        }
+        return group;
+    }
+
+    /** 尖った木杭の柵（コンセプト画像下部の前景柵） */
+    _buildSpikeFence(group) {
+        const stakeMat = new THREE.MeshStandardMaterial({ color: 0x6A4422, roughness: 0.95 });
+        const tipMat = new THREE.MeshStandardMaterial({ color: 0x3A2410, roughness: 0.95 });
+        const stakeCount = 5 + Math.floor(Math.random() * 4);
+        const spacing = 0.45;
+        const totalW = (stakeCount - 1) * spacing;
+        for (let i = 0; i < stakeCount; i++) {
+            const x = -totalW / 2 + i * spacing + (Math.random() - 0.5) * 0.05;
+            const h = 1.0 + Math.random() * 0.5;
+            const tilt = (Math.random() - 0.5) * 0.12;
+
+            const stake = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.07, 0.1, h, 6),
+                stakeMat
+            );
+            stake.position.set(x, h / 2, (Math.random() - 0.5) * 0.15);
+            stake.rotation.z = tilt;
+            stake.castShadow = true;
+            group.add(stake);
+
+            // 尖端（焦げ茶のコーン）
+            const tip = new THREE.Mesh(
+                new THREE.ConeGeometry(0.08, 0.35, 6),
+                tipMat
+            );
+            tip.position.set(stake.position.x + Math.sin(tilt) * h * 0.5, h + 0.13, stake.position.z);
+            tip.rotation.z = tilt;
+            group.add(tip);
+        }
+
+        // 横の縛り紐（蔓/縄）
+        const ropeMat = new THREE.MeshStandardMaterial({ color: 0x4A3220, roughness: 1.0 });
+        const rope = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.03, 0.03, totalW + 0.1, 4),
+            ropeMat
+        );
+        rope.rotation.z = Math.PI / 2;
+        rope.position.y = 0.7;
+        group.add(rope);
+        return group;
+    }
+
+    /** 村の井戸（石組みリングと木枠） */
+    _buildVillageWell(group) {
+        const stoneMat = new THREE.MeshStandardMaterial({ color: 0x8A7256, roughness: 0.95, flatShading: true });
+
+        // 石組みリング
+        const ringR = 0.7;
+        const ringH = 0.55;
+        for (let i = 0; i < 14; i++) {
+            const a = (i / 14) * Math.PI * 2;
+            const stone = new THREE.Mesh(
+                new THREE.BoxGeometry(0.32, ringH, 0.22),
+                stoneMat
+            );
+            stone.position.set(Math.cos(a) * ringR, ringH / 2, Math.sin(a) * ringR);
+            stone.rotation.y = -a;
+            stone.position.y += (Math.random() - 0.5) * 0.04;
+            group.add(stone);
+        }
+
+        // 内側の暗い水穴
+        const hole = new THREE.Mesh(
+            new THREE.CylinderGeometry(ringR - 0.18, ringR - 0.18, 0.12, 14),
+            new THREE.MeshStandardMaterial({ color: 0x0A0A12, roughness: 1.0 })
+        );
+        hole.position.y = ringH - 0.04;
+        group.add(hole);
+
+        // A字フレーム（木枠）
+        const woodMat = new THREE.MeshStandardMaterial({ color: 0x4A2E18, roughness: 0.95 });
+        const postH = 1.8;
+        for (const side of [-1, 1]) {
+            const post = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.08, 0.1, postH, 6),
+                woodMat
+            );
+            post.position.set(side * 0.5, postH / 2, 0);
+            post.rotation.z = -side * 0.18;
+            group.add(post);
+        }
+        // 上の横木
+        const cross = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.07, 0.07, 1.4, 6),
+            woodMat
+        );
+        cross.rotation.z = Math.PI / 2;
+        cross.position.y = postH - 0.1;
+        group.add(cross);
+
+        // 吊り下げバケツ
+        const bucket = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.13, 0.16, 0.25, 8),
+            new THREE.MeshStandardMaterial({ color: 0x6A4220, roughness: 0.85 })
+        );
+        bucket.position.set(0, postH - 0.6, 0);
+        group.add(bucket);
+        // ロープ
+        const ropeMat = new THREE.MeshStandardMaterial({ color: 0xA08858, roughness: 1.0 });
+        const rope = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.015, 0.015, 0.5, 4),
+            ropeMat
+        );
+        rope.position.set(0, postH - 0.35, 0);
+        group.add(rope);
+
+        return group;
+    }
+
+    /* ========================================================
+     *  LATE-STAGE PALACE - コンセプト画像 m3jxBpfv0qrr.jpg 準拠
+     *  銅赤のリブ付きオニオンドーム宮殿、城壁、果物屋台
+     * ======================================================== */
+
+    /** 縦リブ（瓜模様）付きの大ドーム（玉ねぎ形） */
+    _buildRibbedOnionDome(baseR, totalH, color, ribCount = 12) {
+        const group = new THREE.Group();
+        const segments = 22;
+
+        // ベースドーム本体（少し暗めの陰影色）
+        const points = [];
+        points.push(new THREE.Vector2(baseR * 0.55, 0));
+        points.push(new THREE.Vector2(baseR * 0.85, totalH * 0.05));
+        points.push(new THREE.Vector2(baseR * 1.10, totalH * 0.18));
+        points.push(new THREE.Vector2(baseR * 1.18, totalH * 0.32));
+        points.push(new THREE.Vector2(baseR * 1.10, totalH * 0.48));
+        points.push(new THREE.Vector2(baseR * 0.92, totalH * 0.62));
+        points.push(new THREE.Vector2(baseR * 0.70, totalH * 0.75));
+        points.push(new THREE.Vector2(baseR * 0.42, totalH * 0.86));
+        points.push(new THREE.Vector2(baseR * 0.18, totalH * 0.95));
+        points.push(new THREE.Vector2(baseR * 0.04, totalH));
+        const baseColor = new THREE.Color(color).multiplyScalar(0.78);
+        const baseMat = new THREE.MeshStandardMaterial({
+            color: baseColor, roughness: 0.7, metalness: 0.35,
+        });
+        const baseDome = new THREE.Mesh(
+            new THREE.LatheGeometry(points, segments),
+            baseMat
+        );
+        baseDome.castShadow = true;
+        group.add(baseDome);
+
+        // リブ（外側の凸条 — 細長い扁平トーラスを並べて見せる）
+        const ribMat = new THREE.MeshStandardMaterial({
+            color, roughness: 0.55, metalness: 0.55,
+        });
+        for (let r = 0; r < ribCount; r++) {
+            const angle = (r / ribCount) * Math.PI * 2;
+            // リブを Lathe で半周分作り、Y軸回転させて配置
+            const ribPoints = [];
+            const ribSegs = 14;
+            for (let p = 0; p <= ribSegs; p++) {
+                const t = p / ribSegs;
+                const py = totalH * t;
+                const profile = points[Math.min(Math.floor(t * (points.length - 1)), points.length - 2)];
+                const next = points[Math.min(Math.floor(t * (points.length - 1)) + 1, points.length - 1)];
+                const lt = (t * (points.length - 1)) % 1;
+                const px = profile.x + (next.x - profile.x) * lt;
+                ribPoints.push(new THREE.Vector2(px * 1.06 + 0.02, py));
+            }
+            const ribGeo = new THREE.LatheGeometry(ribPoints, 4, angle - 0.08, 0.16);
+            const rib = new THREE.Mesh(ribGeo, ribMat);
+            group.add(rib);
+        }
+
+        // 頂点フィニアル（黄金の球＋スパイク）
+        const finialMat = new THREE.MeshStandardMaterial({
+            color: 0xD4A030, roughness: 0.4, metalness: 0.85,
+            emissive: 0x3a2a08, emissiveIntensity: 0.18,
+        });
+        const finialBall = new THREE.Mesh(
+            new THREE.SphereGeometry(baseR * 0.12, 12, 8),
+            finialMat
+        );
+        finialBall.position.y = totalH + baseR * 0.1;
+        group.add(finialBall);
+        const finialSpike = new THREE.Mesh(
+            new THREE.ConeGeometry(baseR * 0.04, baseR * 0.4, 8),
+            finialMat
+        );
+        finialSpike.position.y = totalH + baseR * 0.35;
+        group.add(finialSpike);
+        // 三日月
+        const crescent = new THREE.Mesh(
+            new THREE.TorusGeometry(baseR * 0.09, baseR * 0.018, 4, 10, Math.PI * 1.2),
+            finialMat
+        );
+        crescent.position.y = totalH + baseR * 0.6;
+        crescent.rotation.x = Math.PI / 2;
+        group.add(crescent);
+
+        // ドーム基部のリング（金の帯）
+        const ringMat = new THREE.MeshStandardMaterial({
+            color: 0xCFA050, roughness: 0.5, metalness: 0.7,
+        });
+        const ring = new THREE.Mesh(
+            new THREE.TorusGeometry(baseR * 0.6, 0.08, 6, 18),
+            ringMat
+        );
+        ring.position.y = -0.04;
+        ring.rotation.x = Math.PI / 2;
+        group.add(ring);
+
+        return group;
+    }
+
+    /** 銅赤の宮殿（リブ付きオニオンドーム複数＋アドベ壁＋アーチ＋書法バナー） */
+    _buildCopperPalace(group) {
+        // 基壇（クリーム色のアドベ／砂岩壁）
+        const wallMat = new THREE.MeshStandardMaterial({
+            color: 0xD8B888, roughness: 0.95,
+        });
+        const wallW = 7.5;
+        const wallD = 4.0;
+        const wallH = 3.6;
+        const base = new THREE.Mesh(
+            new THREE.BoxGeometry(wallW, wallH, wallD),
+            wallMat
+        );
+        base.position.y = wallH / 2;
+        base.castShadow = true;
+        base.receiveShadow = true;
+        group.add(base);
+
+        // 壁の風化縞（横帯）
+        const stripeMat = new THREE.MeshStandardMaterial({ color: 0xB89060, roughness: 1.0 });
+        for (let s = 0; s < 4; s++) {
+            const stripe = new THREE.Mesh(
+                new THREE.BoxGeometry(wallW + 0.05, 0.06, wallD + 0.05),
+                stripeMat
+            );
+            stripe.position.y = 0.6 + s * 0.85;
+            group.add(stripe);
+        }
+
+        // 中央の尖頭アーチ（暗い入り口）
+        const arch = this._buildPointedArch(2.0, 3.0, 0.18, 0x1A0F08);
+        arch.position.set(0, 0, wallD / 2 + 0.05);
+        group.add(arch);
+
+        // アーチ上の書法バナー（青地に金文字）
+        const banner = this._buildCalligraphyBanner(3.4, 0.7, 3.1, wallD / 2 + 0.18);
+        group.add(banner);
+
+        // 装飾ジグザグ・コーニス（壁の上端）
+        const corniceMat = new THREE.MeshStandardMaterial({ color: 0x7A4A28, roughness: 0.85 });
+        const corniceCount = 14;
+        for (let i = 0; i < corniceCount; i++) {
+            const triangle = new THREE.Mesh(
+                new THREE.ConeGeometry(0.18, 0.32, 4),
+                corniceMat
+            );
+            triangle.position.set(
+                -wallW / 2 + 0.4 + i * (wallW - 0.8) / (corniceCount - 1),
+                wallH + 0.16,
+                wallD / 2 + 0.05
+            );
+            triangle.rotation.y = Math.PI / 4;
+            group.add(triangle);
+        }
+
+        // ドーム基壇（壁上の各ドーム下のドラム）
+        const drumMat = new THREE.MeshStandardMaterial({ color: 0xC8A07C, roughness: 0.9 });
+        const domeColors = [0x8C2818, 0xA0381C, 0x701A0C];
+        const domeXs = [-2.4, 0.4, 2.6];
+        const domeRadii = [1.05, 1.35, 1.0];
+        const domeHeights = [3.2, 4.0, 3.0];
+        for (let i = 0; i < domeXs.length; i++) {
+            const dx = domeXs[i];
+            const baseR = domeRadii[i];
+            const dh = domeHeights[i];
+            const drum = new THREE.Mesh(
+                new THREE.CylinderGeometry(baseR * 0.95, baseR * 1.0, 0.6, 16),
+                drumMat
+            );
+            drum.position.set(dx, wallH + 0.3, 0);
+            group.add(drum);
+
+            // 小さな尖頭窓（ドラム周り）
+            for (let w = 0; w < 4; w++) {
+                const wa = w * Math.PI / 2 + Math.PI / 4;
+                const win = this._buildPointedArch(0.28, 0.5, 0.05, 0x1A0F1F);
+                win.position.set(
+                    dx + Math.cos(wa) * baseR * 0.96,
+                    wallH + 0.55,
+                    Math.sin(wa) * baseR * 0.96
+                );
+                win.rotation.y = wa - Math.PI / 2;
+                group.add(win);
+            }
+
+            const dome = this._buildRibbedOnionDome(baseR, dh, domeColors[i % domeColors.length], 12);
+            dome.position.set(dx, wallH + 0.65, 0);
+            group.add(dome);
+        }
+
+        // 入り口横の縞ひさし
+        const awning = this._buildStripedAwning(2.6, 1.4, 0xCB3E1A, 0xF0D260, 8);
+        awning.position.set(0, 2.7, wallD / 2 + 0.15);
+        group.add(awning);
+
+        // 側壁の小窓（尖頭）
+        for (let i = -1; i <= 1; i += 2) {
+            for (let y of [1.2, 2.4]) {
+                const win = this._buildPointedArch(0.5, 0.95, 0.08, 0x1A0F1F);
+                win.position.set(i * (wallW / 2 - 1.2), y, wallD / 2 + 0.05);
+                group.add(win);
+            }
+        }
+
+        return group;
+    }
+
+    /** 城壁（クレネーション付き、コンセプト画像右の高い壁） */
+    _buildFortressWall(group) {
+        const stoneColors = [0xC8A878, 0xB8986A, 0xA88858, 0xD4B080];
+        const blockMat = new THREE.MeshStandardMaterial({
+            color: stoneColors[Math.floor(Math.random() * stoneColors.length)],
+            roughness: 0.95, flatShading: true,
+        });
+        const wallW = 5.0;
+        const wallH = 5.5;
+        const wallD = 1.2;
+
+        // 本体壁
+        const body = new THREE.Mesh(
+            new THREE.BoxGeometry(wallW, wallH, wallD),
+            blockMat
+        );
+        body.position.y = wallH / 2;
+        body.castShadow = true;
+        body.receiveShadow = true;
+        group.add(body);
+
+        // 石ブロックの目地（横方向の薄い溝）
+        const grooveMat = new THREE.MeshStandardMaterial({ color: 0x8A6A40, roughness: 1.0 });
+        for (let h = 0; h < 8; h++) {
+            const groove = new THREE.Mesh(
+                new THREE.BoxGeometry(wallW + 0.02, 0.04, wallD + 0.02),
+                grooveMat
+            );
+            groove.position.y = 0.7 + h * 0.65;
+            group.add(groove);
+        }
+        // 縦の目地（ブロックずらし）
+        for (let h = 0; h < 8; h++) {
+            const offset = (h % 2) * 0.45;
+            for (let x = -wallW / 2 + 0.45 + offset; x < wallW / 2; x += 0.9) {
+                const vGroove = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.04, 0.65, wallD + 0.02),
+                    grooveMat
+                );
+                vGroove.position.set(x, 0.7 + h * 0.65 + 0.3, 0);
+                group.add(vGroove);
+            }
+        }
+
+        // クレネーション（メルロン — 上の歯型）
+        const merlonW = 0.5;
+        const merlonH = 0.7;
+        const merlonGap = 0.35;
+        const merlonStep = merlonW + merlonGap;
+        const merlonCount = Math.floor(wallW / merlonStep);
+        const merlonStart = -((merlonCount - 1) * merlonStep) / 2;
+        for (let i = 0; i < merlonCount; i++) {
+            const merlon = new THREE.Mesh(
+                new THREE.BoxGeometry(merlonW, merlonH, wallD),
+                blockMat
+            );
+            merlon.position.set(merlonStart + i * merlonStep, wallH + merlonH / 2, 0);
+            group.add(merlon);
+        }
+
+        // 上端の縁取り
+        const cap = new THREE.Mesh(
+            new THREE.BoxGeometry(wallW + 0.15, 0.18, wallD + 0.15),
+            new THREE.MeshStandardMaterial({ color: 0x8A6A48, roughness: 0.9 })
+        );
+        cap.position.y = wallH + 0.09;
+        group.add(cap);
+
+        // 矢狭間（小さな縦長の暗い窓）
+        for (let i = -1; i <= 1; i++) {
+            const slit = new THREE.Mesh(
+                new THREE.BoxGeometry(0.12, 0.7, 0.05),
+                new THREE.MeshStandardMaterial({ color: 0x0A0805, roughness: 1.0 })
+            );
+            slit.position.set(i * 1.4, wallH * 0.65, wallD / 2 + 0.03);
+            group.add(slit);
+        }
+
+        // 下部の苔／泥染み
+        const stainMat = new THREE.MeshStandardMaterial({ color: 0x6A5230, roughness: 1.0, transparent: true, opacity: 0.6 });
+        for (let i = 0; i < 3; i++) {
+            const stain = new THREE.Mesh(
+                new THREE.PlaneGeometry(1.2, 0.8),
+                stainMat
+            );
+            stain.position.set(-wallW / 2 + 1 + i * 1.6, 0.6, wallD / 2 + 0.04);
+            group.add(stain);
+        }
+
+        return group;
+    }
+
+    /** 果物屋台（垂直の支柱に吊るしたバスケット＋オレンジの山） */
+    _buildFruitStand(group) {
+        const woodMat = new THREE.MeshStandardMaterial({ color: 0x6A4422, roughness: 0.95 });
+        // 支柱
+        const pole = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.06, 0.07, 3.2, 6),
+            woodMat
+        );
+        pole.position.y = 1.6;
+        group.add(pole);
+
+        // 上の横木
+        const cross = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.045, 0.045, 1.3, 6),
+            woodMat
+        );
+        cross.rotation.z = Math.PI / 2;
+        cross.position.y = 3.0;
+        group.add(cross);
+
+        // バスケット2個（吊り下げ）
+        const basketMat = new THREE.MeshStandardMaterial({ color: 0x7A5A30, roughness: 1.0 });
+        const orangeMat = new THREE.MeshStandardMaterial({
+            color: 0xE87838, roughness: 0.7,
+            emissive: 0x3a1a08, emissiveIntensity: 0.12,
+        });
+        for (const xOff of [-0.5, 0.5]) {
+            const basket = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.28, 0.22, 0.25, 10, 1, true),
+                basketMat
+            );
+            basket.position.set(xOff, 2.55, 0);
+            group.add(basket);
+
+            // ロープ
+            const ropeMat = new THREE.MeshStandardMaterial({ color: 0xA08858, roughness: 1.0 });
+            const rope = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.012, 0.012, 0.4, 4),
+                ropeMat
+            );
+            rope.position.set(xOff, 2.85, 0);
+            group.add(rope);
+
+            // バスケット内のオレンジ
+            for (let o = 0; o < 7; o++) {
+                const orange = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.08, 6, 5),
+                    orangeMat
+                );
+                orange.position.set(
+                    xOff + (Math.random() - 0.5) * 0.35,
+                    2.65 + Math.random() * 0.08,
+                    (Math.random() - 0.5) * 0.35
+                );
+                group.add(orange);
+            }
+        }
+
+        // 地面の木箱台
+        const crateMat = new THREE.MeshStandardMaterial({ color: 0x7A5A38, roughness: 0.95 });
+        const crate = new THREE.Mesh(
+            new THREE.BoxGeometry(1.4, 0.5, 0.9),
+            crateMat
+        );
+        crate.position.y = 0.25;
+        group.add(crate);
+
+        // 木箱の上に積まれたオレンジの山
+        for (let o = 0; o < 14; o++) {
+            const orange = new THREE.Mesh(
+                new THREE.SphereGeometry(0.09, 6, 5),
+                orangeMat
+            );
+            const layer = Math.floor(o / 7);
+            orange.position.set(
+                (Math.random() - 0.5) * 1.0,
+                0.55 + layer * 0.13 + Math.random() * 0.04,
+                (Math.random() - 0.5) * 0.5
+            );
+            group.add(orange);
+        }
+
+        // 横木の端から垂れる旗（赤＋クリームの縞）
+        const flagMat = new THREE.MeshStandardMaterial({
+            color: 0xCB3E1A, roughness: 0.9, side: THREE.DoubleSide,
+        });
+        const flag = new THREE.Mesh(
+            new THREE.PlaneGeometry(0.5, 0.7),
+            flagMat
+        );
+        flag.position.set(0.5, 2.7, 0.05);
+        group.add(flag);
+
+        return group;
+    }
+
+    /** 後半ステージかどうか（startZ ベース） */
+    // 200→420 に引き上げ（Wave3 で重量プロップが一斉に湧いてジオメトリ激増→
+    // メモリ圧クリーンアップ→エフェクト消失/点滅 を起こさないように、Wave5 以降から段階的に投入）
+    _isLateStage(z) {
+        return z > 420;
+    }
+
+    _isMidStage(z) {
+        // wave 5〜7 相当: 軍事工業地帯（煙突・クレーン・残骸）
+        // 220→460 に引き上げ
+        return z > 460;
+    }
+
+    _isHeavyStage(z) {
+        // wave 8〜11 相当: 戦地（破壊された装甲車・対空陣地・燃える施設）
+        return z > 450;
+    }
+
+    _isFinalStage(z) {
+        // wave 12+ 相当: 反乱軍要塞（巨大旗・サーチライト・遺跡）
+        return z > 680;
+    }
+
+    // 終盤の新Wave(13〜22)をスクロール距離で近似判定。
+    // main.js の既定スクロール速度 5 と各 wave.duration の積から境界を推定。
+    // 13: 1880+ / 14: 2080+ / 15: 2270+ / 16: 2470+ / 17: 2700+
+    // 18: 2940+ / 19: 3160+ / 20: 3390+ / 21: 3630+ / 22: 3880+
+    _getEndgamePhase(z) {
+        if (z > 3880) return 9; // Wave 22+
+        if (z > 3630) return 8; // Wave 21
+        if (z > 3390) return 7; // Wave 20
+        if (z > 3160) return 6; // Wave 19
+        if (z > 2940) return 5; // Wave 18
+        if (z > 2700) return 4; // Wave 17
+        if (z > 2470) return 3; // Wave 16
+        if (z > 2270) return 2; // Wave 15
+        if (z > 2080) return 1; // Wave 14
+        if (z > 1880) return 0; // Wave 13
+        return -1;
+    }
+
+    /* ========================================================
+     *  DIORAMA VILLAGE - コンセプト画像 06_metal_slug_diorama.jpg 準拠
+     *  フラット屋根アドベ＋ヴィガ（突き出し梁）、洗濯物の物干、
+     *  陶器棚、装飾石壁、吊りシミター
+     * ======================================================== */
+
+    /** フラット屋根アドベ家屋（ヴィガ突き出し梁付き、北アフリカ伝統建築） */
+    _buildFlatAdobeHouse(group) {
+        const adobeColors = [0xD8AE7C, 0xC89868, 0xCBA078, 0xBE8E58, 0xD4A878, 0xE2BC8A];
+        const c = adobeColors[Math.floor(Math.random() * adobeColors.length)];
+        const adobeMat = new THREE.MeshStandardMaterial({ color: c, roughness: 0.96 });
+        const adobeShade = new THREE.MeshStandardMaterial({
+            color: new THREE.Color(c).multiplyScalar(0.78), roughness: 0.98,
+        });
+        const adobeLight = new THREE.MeshStandardMaterial({
+            color: new THREE.Color(c).multiplyScalar(1.12), roughness: 0.95,
+        });
+        const vigaMat = new THREE.MeshStandardMaterial({ color: 0x4A2E18, roughness: 0.95 });
+        const darkWoodMat = new THREE.MeshStandardMaterial({ color: 0x3A2410, roughness: 0.95 });
+        const windowMat = new THREE.MeshStandardMaterial({ color: 0x0A0805, roughness: 1.0 });
+
+        // === メイン棟（横長で大きい） ===
+        const w = 7.5 + Math.random() * 2.0;   // 7.5〜9.5（旧: 4.5〜6）
+        const h = 5.0 + Math.random() * 1.5;   // 5.0〜6.5（旧: 3.2〜4.4）
+        const d = 4.2 + Math.random() * 1.2;   // 4.2〜5.4（旧: 3.0〜4.0）
+
+        const body = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), adobeMat);
+        body.position.y = h / 2;
+        body.castShadow = true;
+        body.receiveShadow = true;
+        group.add(body);
+
+        // L字配置: 横にもう一棟（少し背を低くして段差感を出す）
+        const wingW = w * 0.55;
+        const wingH = h * 0.78;
+        const wingD = d * 0.85;
+        const wingX = -w / 2 - wingW / 2 + 0.4;
+        const wing = new THREE.Mesh(new THREE.BoxGeometry(wingW, wingH, wingD), adobeShade);
+        wing.position.set(wingX, wingH / 2, (Math.random() - 0.5) * 0.8);
+        wing.castShadow = true;
+        wing.receiveShadow = true;
+        group.add(wing);
+
+        // パラペット (張り出し屋根縁) — メイン
+        const parapet = new THREE.Mesh(
+            new THREE.BoxGeometry(w + 0.3, 0.45, d + 0.3),
+            adobeShade
+        );
+        parapet.position.y = h + 0.18;
+        group.add(parapet);
+        // パラペット縁の上端ハイライト
+        const parapetCap = new THREE.Mesh(
+            new THREE.BoxGeometry(w + 0.32, 0.08, d + 0.32),
+            adobeLight
+        );
+        parapetCap.position.y = h + 0.42;
+        group.add(parapetCap);
+
+        // パラペット — ウィング棟
+        const wingParapet = new THREE.Mesh(
+            new THREE.BoxGeometry(wingW + 0.25, 0.36, wingD + 0.25),
+            adobeShade
+        );
+        wingParapet.position.set(wingX, wingH + 0.14, wing.position.z);
+        group.add(wingParapet);
+
+        // === ヴィガ（屋根を支える突き出し梁）— 大きく長く強調 ===
+        const vigaCount = 6 + Math.floor(Math.random() * 3);
+        for (let i = 0; i < vigaCount; i++) {
+            const xOff = -w / 2 + 0.6 + i * (w - 1.2) / (vigaCount - 1);
+            for (const side of [-1, 1]) {
+                const viga = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.13, 0.15, 1.4, 7),
+                    vigaMat
+                );
+                viga.rotation.x = Math.PI / 2;
+                viga.position.set(xOff, h - 0.45, side * (d / 2 + 0.6));
+                viga.castShadow = true;
+                group.add(viga);
+                // ヴィガ先端の節
+                const knot = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.16, 0.16, 0.08, 6),
+                    darkWoodMat
+                );
+                knot.rotation.x = Math.PI / 2;
+                knot.position.set(xOff, h - 0.45, side * (d / 2 + 1.25));
+                group.add(knot);
+            }
+        }
+        // ウィング棟のヴィガ
+        const wVigaCount = 4;
+        for (let i = 0; i < wVigaCount; i++) {
+            const xOff = wingX - wingW / 2 + 0.5 + i * (wingW - 1) / (wVigaCount - 1);
+            const viga = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.11, 0.13, 1.1, 6),
+                vigaMat
+            );
+            viga.rotation.x = Math.PI / 2;
+            viga.position.set(xOff, wingH - 0.4, wing.position.z + wingD / 2 + 0.5);
+            group.add(viga);
+        }
+
+        // === 大きな深窓（リセスされた窓）—  正面 ===
+        const winRows = 2;
+        const winsPerRow = 2 + Math.floor(Math.random() * 2);
+        for (let r = 0; r < winRows; r++) {
+            for (let i = 0; i < winsPerRow; i++) {
+                const wx = -w / 2 + 0.9 + i * ((w - 1.8) / Math.max(winsPerRow - 1, 1));
+                const wy = 1.4 + r * (h - 2.4) / Math.max(winRows - 1, 1);
+                this._buildAdobeWindow(group, wx, wy, d / 2, 0.55, 0.85, vigaMat, windowMat, darkWoodMat);
+            }
+        }
+        // ウィング棟にも窓
+        if (Math.random() > 0.3) {
+            this._buildAdobeWindow(group, wingX, wingH * 0.55,
+                wing.position.z + wingD / 2, 0.45, 0.6, vigaMat, windowMat, darkWoodMat);
+        }
+
+        // ドア（深いアーチ風の暗い枠）
+        const doorX = (Math.random() - 0.5) * (w - 2.5);
+        const doorH = 2.1;
+        const doorW = 1.0;
+        // 開口部（暗い穴）
+        const doorHole = new THREE.Mesh(
+            new THREE.BoxGeometry(doorW * 0.9, doorH * 0.95, 0.15),
+            windowMat
+        );
+        doorHole.position.set(doorX, doorH / 2, d / 2 + 0.05);
+        group.add(doorHole);
+        // ドア枠（木製、太め）
+        const doorFrameTop = new THREE.Mesh(
+            new THREE.BoxGeometry(doorW + 0.25, 0.18, 0.18),
+            vigaMat
+        );
+        doorFrameTop.position.set(doorX, doorH + 0.08, d / 2 + 0.06);
+        group.add(doorFrameTop);
+        for (const sx of [-1, 1]) {
+            const jamb = new THREE.Mesh(
+                new THREE.BoxGeometry(0.15, doorH + 0.08, 0.12),
+                vigaMat
+            );
+            jamb.position.set(doorX + sx * (doorW / 2 + 0.07), doorH / 2, d / 2 + 0.06);
+            group.add(jamb);
+        }
+        // 鴨居の上の小さな日除け（板）
+        const awning = new THREE.Mesh(
+            new THREE.BoxGeometry(doorW + 0.6, 0.06, 0.55),
+            darkWoodMat
+        );
+        awning.position.set(doorX, doorH + 0.32, d / 2 + 0.32);
+        group.add(awning);
+        // 日除けの支え
+        for (const sx of [-1, 1]) {
+            const brace = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.04, 0.05, 0.4, 5),
+                vigaMat
+            );
+            brace.rotation.x = Math.PI / 2;
+            brace.position.set(doorX + sx * (doorW / 2 + 0.15), doorH + 0.25, d / 2 + 0.22);
+            group.add(brace);
+        }
+
+        // === 屋上の追加棟（2階風） ===
+        if (Math.random() > 0.3) {
+            const upperW = w * (0.4 + Math.random() * 0.2);
+            const upperH = 1.8 + Math.random() * 0.8;
+            const upperD = d * (0.55 + Math.random() * 0.2);
+            const upperX = (Math.random() - 0.5) * w * 0.3;
+            const upper = new THREE.Mesh(
+                new THREE.BoxGeometry(upperW, upperH, upperD),
+                adobeMat
+            );
+            upper.position.set(upperX, h + 0.45 + upperH / 2, 0);
+            upper.castShadow = true;
+            group.add(upper);
+
+            // パラペット
+            const upperPar = new THREE.Mesh(
+                new THREE.BoxGeometry(upperW + 0.18, 0.28, upperD + 0.18),
+                adobeShade
+            );
+            upperPar.position.set(upperX, h + 0.45 + upperH + 0.1, 0);
+            group.add(upperPar);
+
+            // 小窓
+            this._buildAdobeWindow(group, upperX, h + 0.45 + upperH * 0.55,
+                upperD / 2, 0.4, 0.55, vigaMat, windowMat, darkWoodMat);
+
+            // 上層のヴィガ
+            for (let i = 0; i < 3; i++) {
+                const vx = upperX - upperW / 2 + 0.4 + i * (upperW - 0.8) / 2;
+                for (const side of [-1, 1]) {
+                    const v = new THREE.Mesh(
+                        new THREE.CylinderGeometry(0.09, 0.1, 0.85, 6),
+                        vigaMat
+                    );
+                    v.rotation.x = Math.PI / 2;
+                    v.position.set(vx, h + 0.45 + upperH - 0.3, side * (upperD / 2 + 0.3));
+                    group.add(v);
+                }
+            }
+        }
+
+        // === 風化染み（壁の縦streaks、複数色） ===
+        const streakColors = [0x6A4A2A, 0x8A6A40, 0x9A7A50];
+        for (let s = 0; s < 7; s++) {
+            const sc = streakColors[Math.floor(Math.random() * streakColors.length)];
+            const streakMat = new THREE.MeshBasicMaterial({
+                color: sc, transparent: true, opacity: 0.28 + Math.random() * 0.18,
+            });
+            const sw = 0.12 + Math.random() * 0.18;
+            const sh = h * (0.4 + Math.random() * 0.4);
+            const streak = new THREE.Mesh(new THREE.PlaneGeometry(sw, sh), streakMat);
+            streak.position.set(
+                -w / 2 + 0.3 + Math.random() * (w - 0.6),
+                h * 0.5 + (Math.random() - 0.5) * h * 0.2,
+                d / 2 + 0.06
+            );
+            group.add(streak);
+        }
+        // 苔/汚れの斑
+        for (let s = 0; s < 4; s++) {
+            const blot = new THREE.Mesh(
+                new THREE.CircleGeometry(0.18 + Math.random() * 0.18, 6),
+                new THREE.MeshBasicMaterial({
+                    color: 0x6A5A38, transparent: true, opacity: 0.3,
+                })
+            );
+            blot.scale.set(1.4, 0.8, 1);
+            blot.position.set(
+                -w / 2 + Math.random() * w,
+                0.3 + Math.random() * (h - 0.6),
+                d / 2 + 0.07
+            );
+            group.add(blot);
+        }
+        // 下部の砂溜まりライン
+        const baseDirt = new THREE.Mesh(
+            new THREE.PlaneGeometry(w + 0.4, 0.5),
+            new THREE.MeshBasicMaterial({
+                color: 0x8A6A40, transparent: true, opacity: 0.4,
+            })
+        );
+        baseDirt.position.set(0, 0.25, d / 2 + 0.08);
+        group.add(baseDirt);
+
+        // === 屋根の小道具（壺・薪・洗濯カゴ） ===
+        const roofClutter = 2 + Math.floor(Math.random() * 3);
+        for (let i = 0; i < roofClutter; i++) {
+            const choice = Math.random();
+            if (choice < 0.4) {
+                // 壺
+                const pot = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.22, 0.28, 0.5, 8),
+                    new THREE.MeshStandardMaterial({ color: 0x8B4A20, roughness: 0.85 })
+                );
+                pot.position.set(
+                    (Math.random() - 0.5) * w * 0.6,
+                    h + 0.55,
+                    (Math.random() - 0.5) * d * 0.5
+                );
+                group.add(pot);
+            } else if (choice < 0.75) {
+                // 薪束
+                const wood = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.2, 0.2, 0.7, 8),
+                    vigaMat
+                );
+                wood.rotation.z = Math.PI / 2;
+                wood.position.set(
+                    (Math.random() - 0.5) * w * 0.6,
+                    h + 0.4,
+                    (Math.random() - 0.5) * d * 0.5
+                );
+                group.add(wood);
+            } else {
+                // カゴ
+                const basket = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.32, 0.28, 0.32, 8),
+                    new THREE.MeshStandardMaterial({ color: 0xA88454, roughness: 0.95 })
+                );
+                basket.position.set(
+                    (Math.random() - 0.5) * w * 0.6,
+                    h + 0.42,
+                    (Math.random() - 0.5) * d * 0.5
+                );
+                group.add(basket);
+            }
+        }
+
+        return group;
+    }
+
+    /** 深いリセスのある adobe 様式の窓を作る共通ヘルパー */
+    _buildAdobeWindow(group, x, y, zFront, w, h, frameMat, holeMat, lintelMat) {
+        // 暗い穴（深く凹ませる）
+        const hole = new THREE.Mesh(
+            new THREE.BoxGeometry(w, h, 0.18),
+            holeMat
+        );
+        hole.position.set(x, y, zFront + 0.04);
+        group.add(hole);
+        // 木製の枠（リセス感を出す）
+        const frameW = w + 0.18;
+        const frameH = h + 0.18;
+        // 上枠（まぐさ）
+        const lintel = new THREE.Mesh(
+            new THREE.BoxGeometry(frameW + 0.12, 0.12, 0.16),
+            lintelMat
+        );
+        lintel.position.set(x, y + h / 2 + 0.06, zFront + 0.06);
+        group.add(lintel);
+        // 下枠（敷居）
+        const sill = new THREE.Mesh(
+            new THREE.BoxGeometry(frameW + 0.12, 0.1, 0.18),
+            lintelMat
+        );
+        sill.position.set(x, y - h / 2 - 0.05, zFront + 0.07);
+        group.add(sill);
+        // 縦枠
+        for (const sx of [-1, 1]) {
+            const jamb = new THREE.Mesh(
+                new THREE.BoxGeometry(0.09, frameH, 0.14),
+                frameMat
+            );
+            jamb.position.set(x + sx * (w / 2 + 0.045), y, zFront + 0.05);
+            group.add(jamb);
+        }
+        // 十字格子（mullion）
+        const mull = new THREE.Mesh(
+            new THREE.BoxGeometry(w * 0.92, 0.05, 0.08),
+            lintelMat
+        );
+        mull.position.set(x, y, zFront + 0.10);
+        group.add(mull);
+        const mullV = new THREE.Mesh(
+            new THREE.BoxGeometry(0.05, h * 0.92, 0.08),
+            lintelMat
+        );
+        mullV.position.set(x, y, zFront + 0.10);
+        group.add(mullV);
+    }
+
+    /** 装飾された石壁（コンセプト画像中央右の彫刻入りの壁） */
+    _buildDecoratedStoneWall(group) {
+        // 上部の漆喰部 — 装飾モチーフが描かれる明るい面
+        const plasterColor = 0xCFB890;
+        const plasterMat = new THREE.MeshStandardMaterial({
+            color: plasterColor, roughness: 0.96, flatShading: true,
+        });
+        const plasterShade = new THREE.MeshStandardMaterial({
+            color: new THREE.Color(plasterColor).multiplyScalar(0.78), roughness: 0.98,
+        });
+        // 下部の石ブロック（土台）
+        const stoneMat = new THREE.MeshStandardMaterial({
+            color: 0xA89878, roughness: 0.95, flatShading: true,
+        });
+        const stoneShade = new THREE.MeshStandardMaterial({
+            color: 0x807058, roughness: 0.98, flatShading: true,
+        });
+
+        // === 大型化 ===
+        const w = 5.8;     // 旧: 3.6
+        const h = 5.6;     // 旧: 4.0
+        const d = 0.7;     // 旧: 0.5
+
+        // 漆喰本体
+        const wall = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), plasterMat);
+        wall.position.y = h / 2;
+        wall.castShadow = true;
+        wall.receiveShadow = true;
+        group.add(wall);
+
+        // 下部の石積み土台（高さ1.2）
+        const baseH = 1.2;
+        const base = new THREE.Mesh(
+            new THREE.BoxGeometry(w + 0.2, baseH, d + 0.18),
+            stoneMat
+        );
+        base.position.y = baseH / 2;
+        base.castShadow = true;
+        base.receiveShadow = true;
+        group.add(base);
+
+        // 石ブロックの目地（土台部のみ）
+        for (let row = 0; row < 2; row++) {
+            const groove = new THREE.Mesh(
+                new THREE.BoxGeometry(w + 0.22, 0.05, d + 0.20),
+                stoneShade
+            );
+            groove.position.y = 0.4 + row * 0.45;
+            group.add(groove);
+        }
+        for (let row = 0; row < 2; row++) {
+            const offset = (row % 2) * 0.45;
+            for (let x = -w / 2 + 0.45 + offset; x < w / 2; x += 0.9) {
+                const vGroove = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.05, 0.42, d + 0.22),
+                    stoneShade
+                );
+                vGroove.position.set(x, 0.4 + row * 0.45 + 0.21, 0);
+                group.add(vGroove);
+            }
+        }
+
+        // 漆喰と石の境目（細い影帯）
+        const seam = new THREE.Mesh(
+            new THREE.BoxGeometry(w + 0.05, 0.06, d + 0.05),
+            plasterShade
+        );
+        seam.position.y = baseH;
+        group.add(seam);
+
+        // === 装飾モチーフ（大きな唐草・渦巻き紋様） ===
+        const motifMat = new THREE.MeshBasicMaterial({
+            color: 0xC8521C, transparent: true, opacity: 0.88, side: THREE.DoubleSide,
+        });
+        const motifMat2 = new THREE.MeshBasicMaterial({
+            color: 0xA84818, transparent: true, opacity: 0.78, side: THREE.DoubleSide,
+        });
+        const motifMat3 = new THREE.MeshBasicMaterial({
+            color: 0xE2864A, transparent: true, opacity: 0.7, side: THREE.DoubleSide,
+        });
+
+        // 大きな中央の渦巻き（雲龍を抽象化したフォルム）
+        const motifCenterY = h * 0.55;
+        const motifCenterX = -w * 0.18;
+        // 外周の弧（大）
+        for (let i = 0; i < 8; i++) {
+            const ang = (i / 8) * Math.PI * 1.6 - Math.PI * 0.2;
+            const r = 1.1 - i * 0.05;
+            const blob = new THREE.Mesh(
+                new THREE.CircleGeometry(0.18 + i * 0.015, 10),
+                i % 2 === 0 ? motifMat : motifMat2
+            );
+            blob.scale.set(1.5, 0.7, 1);
+            blob.position.set(
+                motifCenterX + Math.cos(ang) * r,
+                motifCenterY + Math.sin(ang) * r * 0.7,
+                d / 2 + 0.04
+            );
+            blob.rotation.z = ang;
+            group.add(blob);
+        }
+        // 内側の渦
+        for (let i = 0; i < 5; i++) {
+            const ang = (i / 5) * Math.PI * 1.4 + Math.PI * 0.4;
+            const r = 0.45 - i * 0.06;
+            const swirl = new THREE.Mesh(
+                new THREE.CircleGeometry(0.22 - i * 0.025, 10),
+                motifMat
+            );
+            swirl.scale.set(1.2, 0.8, 1);
+            swirl.position.set(
+                motifCenterX + Math.cos(ang) * r,
+                motifCenterY + Math.sin(ang) * r * 0.8 + 0.05,
+                d / 2 + 0.045
+            );
+            swirl.rotation.z = ang + Math.PI / 2;
+            group.add(swirl);
+        }
+        // 中央の核
+        const core = new THREE.Mesh(
+            new THREE.CircleGeometry(0.18, 12),
+            motifMat3
+        );
+        core.position.set(motifCenterX, motifCenterY + 0.05, d / 2 + 0.05);
+        group.add(core);
+
+        // 右側に補助モチーフ（小さな尾の渦）
+        for (let i = 0; i < 4; i++) {
+            const dot = new THREE.Mesh(
+                new THREE.CircleGeometry(0.15 - i * 0.02, 8),
+                motifMat2
+            );
+            dot.scale.set(1.3, 0.6, 1);
+            dot.position.set(w * 0.22 + i * 0.18, motifCenterY + 0.4 - i * 0.18, d / 2 + 0.04);
+            dot.rotation.z = -0.4 + i * 0.25;
+            group.add(dot);
+        }
+
+        // 上部の波線フリーズ（破風帯）
+        const friezeY = h - 0.45;
+        for (let i = 0; i < 7; i++) {
+            const wave = new THREE.Mesh(
+                new THREE.CircleGeometry(0.13, 6),
+                motifMat2
+            );
+            wave.scale.set(2.4, 0.32, 1);
+            wave.position.set(-w / 2 + 0.5 + i * (w - 1) / 6, friezeY, d / 2 + 0.04);
+            wave.rotation.z = (i % 2 === 0) ? 0.1 : -0.1;
+            group.add(wave);
+        }
+
+        // === 上部の小窓（深窓、複数） ===
+        const winY = h * 0.78;
+        const winW = 0.42;
+        const winH = 0.7;
+        for (const wxOff of [w * 0.30, -w * 0.42]) {
+            const winHole = new THREE.Mesh(
+                new THREE.BoxGeometry(winW, winH, 0.18),
+                new THREE.MeshStandardMaterial({ color: 0x0A0805, roughness: 1.0 })
+            );
+            winHole.position.set(wxOff, winY, d / 2 + 0.06);
+            group.add(winHole);
+            // 木製格子
+            for (const o of [-0.11, 0, 0.11]) {
+                const bar = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.04, winH + 0.02, 0.08),
+                    new THREE.MeshStandardMaterial({ color: 0x2A1A0E, roughness: 0.95 })
+                );
+                bar.position.set(wxOff + o, winY, d / 2 + 0.10);
+                group.add(bar);
+            }
+            const cross = new THREE.Mesh(
+                new THREE.BoxGeometry(winW + 0.02, 0.04, 0.08),
+                new THREE.MeshStandardMaterial({ color: 0x2A1A0E, roughness: 0.95 })
+            );
+            cross.position.set(wxOff, winY, d / 2 + 0.10);
+            group.add(cross);
+            // 上部の小さな庇
+            const cornice = new THREE.Mesh(
+                new THREE.BoxGeometry(winW + 0.3, 0.1, 0.18),
+                plasterShade
+            );
+            cornice.position.set(wxOff, winY + winH / 2 + 0.1, d / 2 + 0.07);
+            group.add(cornice);
+        }
+
+        // === 上端の冠石（コーニス） ===
+        const cornice = new THREE.Mesh(
+            new THREE.BoxGeometry(w + 0.25, 0.18, d + 0.22),
+            plasterShade
+        );
+        cornice.position.y = h - 0.09;
+        group.add(cornice);
+        const corniceCap = new THREE.Mesh(
+            new THREE.BoxGeometry(w + 0.32, 0.08, d + 0.28),
+            stoneMat
+        );
+        corniceCap.position.y = h + 0.04;
+        group.add(corniceCap);
+
+        // === 風化染み・剥落 ===
+        for (let s = 0; s < 6; s++) {
+            const blot = new THREE.Mesh(
+                new THREE.CircleGeometry(0.18 + Math.random() * 0.22, 6),
+                new THREE.MeshBasicMaterial({
+                    color: 0x8A6A40, transparent: true, opacity: 0.32,
+                })
+            );
+            blot.scale.set(1.3 + Math.random() * 0.6, 0.7 + Math.random() * 0.3, 1);
+            blot.position.set(
+                -w / 2 + Math.random() * w,
+                baseH + 0.2 + Math.random() * (h - baseH - 0.6),
+                d / 2 + 0.05
+            );
+            group.add(blot);
+        }
+
+        return group;
+    }
+
+    /** 物干し（2本の柱の間にロープを張り、色とりどりの布／ラグを吊るす） */
+    _buildHangingLaundry(group) {
+        const woodMat = new THREE.MeshStandardMaterial({ color: 0x6A4422, roughness: 0.95 });
+        const woodMatDk = new THREE.MeshStandardMaterial({ color: 0x4A2E18, roughness: 0.95 });
+
+        // === 大型化: 柱を高く、間隔を広く ===
+        const postH = 3.4;          // 旧: 2.4
+        const postSpacing = 6.4;    // 旧: 3.6
+
+        // 2本の柱（角材っぽく）
+        for (const xOff of [-postSpacing / 2, postSpacing / 2]) {
+            const post = new THREE.Mesh(
+                new THREE.BoxGeometry(0.18, postH, 0.18),
+                woodMat
+            );
+            post.position.set(xOff, postH / 2, 0);
+            post.castShadow = true;
+            group.add(post);
+
+            // 柱頂部の冠
+            const cap = new THREE.Mesh(
+                new THREE.BoxGeometry(0.28, 0.16, 0.28),
+                woodMatDk
+            );
+            cap.position.set(xOff, postH + 0.08, 0);
+            group.add(cap);
+
+            // 根元の支え（地面側）
+            const baseStone = new THREE.Mesh(
+                new THREE.BoxGeometry(0.34, 0.18, 0.34),
+                new THREE.MeshStandardMaterial({ color: 0x9A8868, roughness: 0.96 })
+            );
+            baseStone.position.set(xOff, 0.09, 0);
+            group.add(baseStone);
+
+            // 斜めの控え（X字補強）
+            for (const dir of [-1, 1]) {
+                const brace = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.06, 0.7, 0.06),
+                    woodMatDk
+                );
+                brace.position.set(xOff + dir * 0.18, 0.45, 0);
+                brace.rotation.z = dir * 0.4;
+                group.add(brace);
+            }
+        }
+
+        // ロープ（複数、サギング曲線を多角形で近似）
+        const ropeMat = new THREE.MeshStandardMaterial({ color: 0xA08858, roughness: 1.0 });
+        const ropeYOffs = [postH - 0.12, postH - 0.55, postH - 0.95];
+        const ropeSagAmts = [0.18, 0.28, 0.22];
+        const ropeSegs = 8;
+        const ropeLen = postSpacing - 0.2;
+        const ropePoints = []; // [yOff][seg] 後で布のY参照に使う
+        for (let r = 0; r < ropeYOffs.length; r++) {
+            const yBase = ropeYOffs[r];
+            const sag = ropeSagAmts[r];
+            const segPts = [];
+            for (let s = 0; s < ropeSegs; s++) {
+                const t = s / (ropeSegs - 1);
+                const x = -ropeLen / 2 + t * ropeLen;
+                // 放物線でサギング
+                const y = yBase - sag * (1 - (2 * t - 1) * (2 * t - 1));
+                segPts.push({ x, y });
+            }
+            // 線分でロープを表現
+            for (let s = 0; s < segPts.length - 1; s++) {
+                const a = segPts[s], b = segPts[s + 1];
+                const dx = b.x - a.x;
+                const dy = b.y - a.y;
+                const segLen = Math.sqrt(dx * dx + dy * dy);
+                const seg = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.025, 0.025, segLen, 4),
+                    ropeMat
+                );
+                seg.position.set((a.x + b.x) / 2, (a.y + b.y) / 2, 0);
+                seg.rotation.z = Math.PI / 2 + Math.atan2(dy, dx);
+                group.add(seg);
+            }
+            ropePoints.push(segPts);
+        }
+
+        // === 吊り下げる布／ラグ（カラフルでパターン豊か） ===
+        const fabricColors = [
+            { base: 0xC44848, accent: 0xE8C868, accent2: 0x6A2A1A },  // 赤×金×濃赤
+            { base: 0x4A6FA0, accent: 0xE8E0C8, accent2: 0x223E5A },  // 青×クリーム×紺
+            { base: 0xC88848, accent: 0x4A2E18, accent2: 0xE8C868 },  // オレンジ×茶×黄
+            { base: 0x88B0A0, accent: 0xE8C868, accent2: 0x3E5E58 },  // ターコイズ×金×深緑
+            { base: 0xA85838, accent: 0xE8C8A0, accent2: 0x602A18 },  // テラコッタ×ベージュ×焦茶
+            { base: 0x6B8E5A, accent: 0xE0D8B8, accent2: 0x3A4E30 },  // オリーブ×ベージュ×深緑
+            { base: 0x884A6E, accent: 0xE8B868, accent2: 0x4A2640 },  // 紫×黄×暗紫
+            { base: 0xD8A468, accent: 0x8B3E1A, accent2: 0xF0DAB0 },  // 砂金×赤茶×象牙
+        ];
+
+        // 上段ロープには大きな布、中段には中サイズ、下段には小さい布
+        const ropeConfigs = [
+            { yOffIdx: 0, count: 3, fHRange: [1.5, 2.0], drape: true },   // 上段: 大判ラグ
+            { yOffIdx: 1, count: 4, fHRange: [0.8, 1.3], drape: false },  // 中段
+            { yOffIdx: 2, count: 5, fHRange: [0.55, 0.85], drape: false }, // 下段
+        ];
+
+        for (const cfg of ropeConfigs) {
+            const segPts = ropePoints[cfg.yOffIdx];
+            const sectionW = ropeLen / cfg.count;
+            for (let i = 0; i < cfg.count; i++) {
+                const col = fabricColors[Math.floor(Math.random() * fabricColors.length)];
+                const xPos = -ropeLen / 2 + sectionW * (i + 0.5);
+                // ロープのY位置を補間
+                const t = (xPos + ropeLen / 2) / ropeLen;
+                const ti = Math.min(segPts.length - 2, Math.floor(t * (segPts.length - 1)));
+                const ts = t * (segPts.length - 1) - ti;
+                const ropeY = segPts[ti].y * (1 - ts) + segPts[ti + 1].y * ts;
+
+                const fW = sectionW * (0.55 + Math.random() * 0.3);
+                const fH = cfg.fHRange[0] + Math.random() * (cfg.fHRange[1] - cfg.fHRange[0]);
+                const fY = ropeY;
+
+                const fabricMat = new THREE.MeshStandardMaterial({
+                    color: col.base, roughness: 0.95, side: THREE.DoubleSide,
+                });
+
+                // ドレープ式: ロープにかけて二つ折り (V字風)
+                if (cfg.drape && Math.random() > 0.4) {
+                    const halfH = fH * 0.55;
+                    for (const fSide of [-1, 1]) {
+                        const drape = new THREE.Mesh(
+                            new THREE.PlaneGeometry(fW, halfH),
+                            fabricMat
+                        );
+                        drape.position.set(
+                            xPos + fSide * fW * 0.05,
+                            fY - halfH / 2,
+                            fSide * 0.04
+                        );
+                        drape.rotation.y = fSide * 0.18;
+                        drape.rotation.x = (Math.random() - 0.5) * 0.05;
+                        group.add(drape);
+                        // パターン縞
+                        for (let s = 0; s < 4; s++) {
+                            const stripe = new THREE.Mesh(
+                                new THREE.PlaneGeometry(fW * 0.95, 0.05),
+                                new THREE.MeshStandardMaterial({
+                                    color: s % 2 === 0 ? col.accent : col.accent2,
+                                    roughness: 0.95, side: THREE.DoubleSide,
+                                })
+                            );
+                            stripe.position.set(
+                                xPos + fSide * fW * 0.05,
+                                fY - 0.15 - s * (halfH - 0.2) / 4,
+                                fSide * 0.045
+                            );
+                            stripe.rotation.y = fSide * 0.18;
+                            group.add(stripe);
+                        }
+                    }
+                    // 中央の幾何学モチーフ
+                    if (Math.random() > 0.4) {
+                        const motif = new THREE.Mesh(
+                            new THREE.PlaneGeometry(fW * 0.45, halfH * 0.4),
+                            new THREE.MeshStandardMaterial({
+                                color: col.accent, roughness: 0.95, side: THREE.DoubleSide,
+                            })
+                        );
+                        motif.position.set(xPos, fY - halfH * 0.5, 0.05);
+                        motif.rotation.z = Math.PI / 4;
+                        group.add(motif);
+                    }
+                    continue;
+                }
+
+                // 通常の吊り下げ式
+                const fabric = new THREE.Mesh(
+                    new THREE.PlaneGeometry(fW, fH),
+                    fabricMat
+                );
+                fabric.position.set(xPos, fY - fH / 2 - 0.04, (Math.random() - 0.5) * 0.06);
+                fabric.rotation.y = (Math.random() - 0.5) * 0.15;
+                fabric.rotation.z = (Math.random() - 0.5) * 0.04;
+                group.add(fabric);
+
+                // 縦縞 or 横縞 (層を増やしてパターン豊か)
+                const horizontal = Math.random() > 0.5;
+                const stripeCount = 4 + Math.floor(Math.random() * 3);
+                for (let s = 0; s < stripeCount; s++) {
+                    const sCol = (s % 3 === 0) ? col.accent : col.accent2;
+                    const stripeMat = new THREE.MeshStandardMaterial({
+                        color: sCol, roughness: 0.95, side: THREE.DoubleSide,
+                    });
+                    const sw = horizontal ? fW * 0.95 : fW * 0.06;
+                    const sh = horizontal ? 0.05 + Math.random() * 0.04 : fH * 0.95;
+                    const stripe = new THREE.Mesh(
+                        new THREE.PlaneGeometry(sw, sh),
+                        stripeMat
+                    );
+                    if (horizontal) {
+                        const yOffP = -fH * 0.4 + (s / Math.max(stripeCount - 1, 1)) * fH * 0.8;
+                        stripe.position.set(xPos, fY - fH / 2 + yOffP - 0.04, fabric.position.z + 0.005);
+                    } else {
+                        const xOffP = -fW * 0.4 + (s / Math.max(stripeCount - 1, 1)) * fW * 0.8;
+                        stripe.position.set(xPos + xOffP, fY - fH / 2 - 0.04, fabric.position.z + 0.005);
+                    }
+                    stripe.rotation.y = fabric.rotation.y;
+                    group.add(stripe);
+                }
+
+                // 中央のひし形 or 円のモチーフ
+                if (Math.random() > 0.35) {
+                    const motifSize = Math.min(fW, fH) * 0.32;
+                    const motif = new THREE.Mesh(
+                        Math.random() > 0.5
+                            ? new THREE.PlaneGeometry(motifSize, motifSize)
+                            : new THREE.CircleGeometry(motifSize * 0.5, 10),
+                        new THREE.MeshStandardMaterial({
+                            color: col.accent, roughness: 0.95, side: THREE.DoubleSide,
+                        })
+                    );
+                    motif.position.set(xPos, fY - fH * 0.5 - 0.04, fabric.position.z + 0.008);
+                    motif.rotation.set(0, fabric.rotation.y, Math.PI / 4);
+                    group.add(motif);
+                    // 内側の小ダイヤ
+                    const inner = new THREE.Mesh(
+                        new THREE.PlaneGeometry(motifSize * 0.4, motifSize * 0.4),
+                        new THREE.MeshStandardMaterial({
+                            color: col.accent2, roughness: 0.95, side: THREE.DoubleSide,
+                        })
+                    );
+                    inner.position.set(xPos, fY - fH * 0.5 - 0.04, fabric.position.z + 0.012);
+                    inner.rotation.set(0, fabric.rotation.y, Math.PI / 4);
+                    group.add(inner);
+                }
+
+                // 房（フリンジ）— 下端
+                const fringeCount = 5;
+                for (let f = 0; f < fringeCount; f++) {
+                    const fx = xPos - fW * 0.4 + (f / (fringeCount - 1)) * fW * 0.8;
+                    const fringe = new THREE.Mesh(
+                        new THREE.BoxGeometry(0.025, 0.08 + Math.random() * 0.05, 0.02),
+                        new THREE.MeshStandardMaterial({
+                            color: col.accent, roughness: 0.95,
+                        })
+                    );
+                    fringe.position.set(fx, fY - fH - 0.04, fabric.position.z + 0.01);
+                    group.add(fringe);
+                }
+
+                // 留めピン（洗濯ばさみ）
+                for (const pinOff of [-fW * 0.4, fW * 0.4]) {
+                    const pin = new THREE.Mesh(
+                        new THREE.BoxGeometry(0.07, 0.1, 0.05),
+                        new THREE.MeshStandardMaterial({ color: 0x3A2410, roughness: 0.95 })
+                    );
+                    pin.position.set(xPos + pinOff, fY + 0.04, fabric.position.z);
+                    group.add(pin);
+                }
+            }
+        }
+
+        return group;
+    }
+
+    /** 陶器棚（木の棚に多数のテラコッタ壺・アンフォラを並べる） */
+    _buildPotteryShelf(group) {
+        const woodMat = new THREE.MeshStandardMaterial({ color: 0x4A2E18, roughness: 0.95 });
+        const woodMatLt = new THREE.MeshStandardMaterial({ color: 0x6A4422, roughness: 0.95 });
+
+        // === 大型化 ===
+        const w = 3.8;          // 旧: 2.4
+        const d = 0.95;         // 旧: 0.65
+        const shelves = 4;      // 旧: 3
+        const shelfH = 0.95;    // 旧: 0.85
+        const totalH = shelves * shelfH;
+
+        // 側板2枚（より太く）
+        for (const xOff of [-w / 2, w / 2]) {
+            const side = new THREE.Mesh(
+                new THREE.BoxGeometry(0.14, totalH + 0.2, d),
+                woodMat
+            );
+            side.position.set(xOff, (totalH + 0.2) / 2 - 0.1, 0);
+            side.castShadow = true;
+            group.add(side);
+            // 側板の縁取り
+            const edge = new THREE.Mesh(
+                new THREE.BoxGeometry(0.16, totalH + 0.22, 0.06),
+                woodMatLt
+            );
+            edge.position.set(xOff, (totalH + 0.2) / 2 - 0.1, d / 2 - 0.02);
+            group.add(edge);
+        }
+
+        // 背板（縦の板組み風）
+        const back = new THREE.Mesh(
+            new THREE.BoxGeometry(w, totalH + 0.1, 0.08),
+            new THREE.MeshStandardMaterial({ color: 0x3A2410, roughness: 0.95 })
+        );
+        back.position.set(0, totalH / 2, -d / 2 + 0.04);
+        group.add(back);
+        // 背板の縦リブ
+        for (let r = -2; r <= 2; r++) {
+            const rib = new THREE.Mesh(
+                new THREE.BoxGeometry(0.04, totalH, 0.04),
+                woodMatLt
+            );
+            rib.position.set(r * (w / 5), totalH / 2, -d / 2 + 0.09);
+            group.add(rib);
+        }
+
+        // 棚板 + 壺
+        const potColors = [
+            0x8B4A20, 0x9C5028, 0xA85A30, 0x7A3E18, 0xB06038,
+            0x6A3018, 0xC4682E, 0x884A28, 0x5A2810, 0xCC7842,
+        ];
+        const accentColors = [0xE8C868, 0xC44848, 0x4A6FA0, 0x2A1A0E];
+
+        for (let s = 0; s < shelves; s++) {
+            const yShelf = (s + 1) * shelfH - 0.05;
+            const board = new THREE.Mesh(
+                new THREE.BoxGeometry(w + 0.06, 0.1, d - 0.04),
+                woodMat
+            );
+            board.position.set(0, yShelf - 0.05, 0);
+            board.castShadow = true;
+            board.receiveShadow = true;
+            group.add(board);
+            // 棚板の前縁（明色）
+            const boardEdge = new THREE.Mesh(
+                new THREE.BoxGeometry(w + 0.08, 0.06, 0.06),
+                woodMatLt
+            );
+            boardEdge.position.set(0, yShelf - 0.06, d / 2 - 0.02);
+            group.add(boardEdge);
+
+            // 棚板上の壺を並べる（5〜7個）
+            const potsPerShelf = 5 + Math.floor(Math.random() * 3);
+            for (let p = 0; p < potsPerShelf; p++) {
+                const px = -w / 2 + 0.3 + p * ((w - 0.6) / Math.max(potsPerShelf - 1, 1));
+                const pz = (Math.random() - 0.5) * (d - 0.3);
+                const r = 0.16 + Math.random() * 0.12;
+                const ph = r * (1.6 + Math.random() * 1.0);
+                const color = potColors[Math.floor(Math.random() * potColors.length)];
+
+                // 壺本体（Lathe で膨らみのプロファイル）
+                const points = [];
+                const segs = 8;
+                const profile = Math.floor(Math.random() * 3); // 0:アンフォラ 1:つぼ 2:水差し
+                for (let i = 0; i <= segs; i++) {
+                    const t = i / segs;
+                    const py = t * ph;
+                    let pr;
+                    if (profile === 0) {
+                        // アンフォラ（細口）
+                        if (t < 0.1) pr = r * (0.5 + t * 3.0);
+                        else if (t < 0.55) pr = r * (0.95 + Math.sin((t - 0.1) * Math.PI / 0.9) * 0.4);
+                        else if (t < 0.85) pr = r * (1.1 - (t - 0.55) * 1.4);
+                        else pr = r * 0.5;
+                    } else if (profile === 1) {
+                        // 丸つぼ
+                        if (t < 0.15) pr = r * (0.55 + t * 2.5);
+                        else if (t < 0.6) pr = r * (1.0 + Math.sin((t - 0.15) * Math.PI / 0.9) * 0.35);
+                        else pr = r * (0.95 - (t - 0.6) * 0.7);
+                    } else {
+                        // 円柱気味
+                        if (t < 0.12) pr = r * (0.7 + t * 2.0);
+                        else if (t < 0.85) pr = r * (0.95 + Math.sin(t * Math.PI * 1.2) * 0.1);
+                        else pr = r * (0.95 - (t - 0.85) * 0.5);
+                    }
+                    points.push(new THREE.Vector2(Math.max(pr, 0.04), py));
+                }
+                const pot = new THREE.Mesh(
+                    new THREE.LatheGeometry(points, 12),
+                    new THREE.MeshStandardMaterial({ color, roughness: 0.85 })
+                );
+                pot.position.set(px, yShelf, pz);
+                pot.rotation.y = Math.random() * Math.PI;
+                pot.castShadow = true;
+                group.add(pot);
+
+                // 装飾帯（壺の中央に細い色帯）
+                if (Math.random() > 0.5) {
+                    const bandColor = accentColors[Math.floor(Math.random() * accentColors.length)];
+                    const band = new THREE.Mesh(
+                        new THREE.CylinderGeometry(r * 1.05, r * 1.05, 0.04, 12),
+                        new THREE.MeshStandardMaterial({ color: bandColor, roughness: 0.85 })
+                    );
+                    band.position.set(px, yShelf + ph * 0.55, pz);
+                    group.add(band);
+                }
+
+                // ハンドル（耳）
+                if (profile === 0 || Math.random() > 0.55) {
+                    for (const sd of [-1, 1]) {
+                        const handle = new THREE.Mesh(
+                            new THREE.TorusGeometry(0.08, 0.018, 4, 10, Math.PI),
+                            new THREE.MeshStandardMaterial({ color, roughness: 0.85 })
+                        );
+                        handle.position.set(px + sd * r * 0.85, yShelf + ph * 0.6, pz);
+                        handle.rotation.y = sd > 0 ? -Math.PI / 2 : Math.PI / 2;
+                        handle.rotation.z = Math.PI / 2;
+                        group.add(handle);
+                    }
+                }
+            }
+        }
+
+        // === 棚の上に飾りの大きな壺（2〜3個） ===
+        const topPotCount = 2 + Math.floor(Math.random() * 2);
+        for (let p = 0; p < topPotCount; p++) {
+            const tr = 0.22 + Math.random() * 0.12;
+            const tph = tr * (2.0 + Math.random() * 0.5);
+            const tColor = potColors[Math.floor(Math.random() * potColors.length)];
+            const pts = [];
+            for (let i = 0; i <= 8; i++) {
+                const t = i / 8;
+                let pr;
+                if (t < 0.1) pr = tr * (0.5 + t * 3.5);
+                else if (t < 0.55) pr = tr * (1.0 + Math.sin((t - 0.1) * Math.PI / 0.9) * 0.4);
+                else pr = tr * (1.0 - (t - 0.55) * 1.0);
+                pts.push(new THREE.Vector2(Math.max(pr, 0.05), t * tph));
+            }
+            const bigPot = new THREE.Mesh(
+                new THREE.LatheGeometry(pts, 12),
+                new THREE.MeshStandardMaterial({ color: tColor, roughness: 0.85 })
+            );
+            const tx = -w / 2 + 0.5 + p * (w - 1) / Math.max(topPotCount - 1, 1);
+            bigPot.position.set(tx, totalH + 0.04, 0);
+            group.add(bigPot);
+        }
+
+        // === 棚の下に床置きの大型アンフォラ（3〜4個、密集） ===
+        const floorPotCount = 3 + Math.floor(Math.random() * 2);
+        for (let p = 0; p < floorPotCount; p++) {
+            const fr = 0.28 + Math.random() * 0.14;
+            const fph = fr * (2.2 + Math.random() * 0.6);
+            const fColor = potColors[Math.floor(Math.random() * potColors.length)];
+            const pts = [];
+            for (let i = 0; i <= 9; i++) {
+                const t = i / 9;
+                let pr;
+                if (t < 0.12) pr = fr * (0.55 + t * 2.5);
+                else if (t < 0.55) pr = fr * (1.0 + Math.sin((t - 0.12) * Math.PI / 0.86) * 0.35);
+                else if (t < 0.85) pr = fr * (1.05 - (t - 0.55) * 1.3);
+                else pr = fr * 0.55;
+                pts.push(new THREE.Vector2(Math.max(pr, 0.06), t * fph));
+            }
+            const pot = new THREE.Mesh(
+                new THREE.LatheGeometry(pts, 14),
+                new THREE.MeshStandardMaterial({ color: fColor, roughness: 0.85 })
+            );
+            pot.position.set(
+                -w / 2 + 0.5 + p * (w - 1) / Math.max(floorPotCount - 1, 1),
+                0,
+                d / 2 + 0.35 + (Math.random() - 0.5) * 0.3
+            );
+            pot.castShadow = true;
+            group.add(pot);
+            // 大壺の取っ手
+            for (const sd of [-1, 1]) {
+                const handle = new THREE.Mesh(
+                    new THREE.TorusGeometry(0.1, 0.025, 4, 10, Math.PI),
+                    new THREE.MeshStandardMaterial({ color: fColor, roughness: 0.85 })
+                );
+                handle.position.set(
+                    pot.position.x + sd * fr * 0.85,
+                    fph * 0.55,
+                    pot.position.z
+                );
+                handle.rotation.y = sd > 0 ? -Math.PI / 2 : Math.PI / 2;
+                handle.rotation.z = Math.PI / 2;
+                group.add(handle);
+            }
+        }
+
+        // 棚の手前に積まれた小壺（散らかし感）
+        const messyCount = 2 + Math.floor(Math.random() * 3);
+        for (let m = 0; m < messyCount; m++) {
+            const mr = 0.12 + Math.random() * 0.08;
+            const mh = mr * 1.5;
+            const mColor = potColors[Math.floor(Math.random() * potColors.length)];
+            const sm = new THREE.Mesh(
+                new THREE.CylinderGeometry(mr, mr * 1.1, mh, 10),
+                new THREE.MeshStandardMaterial({ color: mColor, roughness: 0.85 })
+            );
+            sm.position.set(
+                -w / 2 + 0.4 + Math.random() * (w - 0.8),
+                mh / 2,
+                d / 2 + 0.65 + Math.random() * 0.25
+            );
+            sm.rotation.z = (Math.random() - 0.5) * 0.4;
+            group.add(sm);
+        }
+
+        return group;
+    }
+
+    /** 吊りシミター（壁掛け装飾の湾刀）— 単独でも壁にも置ける */
+    _buildHangingScimitar(group) {
+        // ブレード（湾曲した薄板）
+        const bladeMat = new THREE.MeshStandardMaterial({
+            color: 0xCFCFCF, roughness: 0.4, metalness: 0.85,
+        });
+        // 湾刀のシルエット — 平面を使って曲げる
+        const bladeShape = new THREE.Shape();
+        bladeShape.moveTo(0, 0);
+        bladeShape.quadraticCurveTo(0.6, 0.05, 1.2, -0.15);
+        bladeShape.quadraticCurveTo(0.65, 0.05, 0.0, 0.05);
+        const bladeGeo = new THREE.ShapeGeometry(bladeShape);
+        const blade = new THREE.Mesh(bladeGeo, bladeMat);
+        blade.position.set(-0.6, 1.6, 0);
+        blade.rotation.z = -0.25;
+        group.add(blade);
+
+        // ブレードの背側（暗いライン）
+        const bladeBack = new THREE.Mesh(
+            new THREE.BoxGeometry(1.2, 0.04, 0.02),
+            new THREE.MeshStandardMaterial({ color: 0x9A9A9A, roughness: 0.5, metalness: 0.7 })
+        );
+        bladeBack.position.set(0, 1.65, 0.02);
+        bladeBack.rotation.z = -0.18;
+        group.add(bladeBack);
+
+        // 柄（ハンドル）
+        const handleMat = new THREE.MeshStandardMaterial({ color: 0x6A2810, roughness: 0.85 });
+        const handle = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.05, 0.05, 0.32, 8),
+            handleMat
+        );
+        handle.position.set(-0.7, 1.78, 0);
+        handle.rotation.z = -0.25 + Math.PI / 2;
+        group.add(handle);
+
+        // ガード（鍔）
+        const guardMat = new THREE.MeshStandardMaterial({
+            color: 0xCFA050, roughness: 0.45, metalness: 0.75,
+        });
+        const guard = new THREE.Mesh(
+            new THREE.BoxGeometry(0.08, 0.18, 0.12),
+            guardMat
+        );
+        guard.position.set(-0.55, 1.7, 0);
+        guard.rotation.z = -0.25;
+        group.add(guard);
+
+        // 柄頭（ポンメル）
+        const pommel = new THREE.Mesh(
+            new THREE.SphereGeometry(0.07, 8, 6),
+            guardMat
+        );
+        pommel.position.set(-0.83, 1.85, 0);
+        group.add(pommel);
+
+        // 吊りロープ／革紐（柄から上へ）
+        const ropeMat = new THREE.MeshStandardMaterial({ color: 0x4A2E18, roughness: 1.0 });
+        const rope = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.012, 0.012, 0.6, 4),
+            ropeMat
+        );
+        rope.position.set(-0.83, 2.15, 0);
+        group.add(rope);
+
+        return group;
+    }
+
+    /** 屋根上のサテライト集合（壺・薪・洗濯カゴなど） */
+    _buildRooftopProps(group) {
+        const choice = Math.random();
+        if (choice < 0.4) {
+            // 薪の山
+            const woodMat = new THREE.MeshStandardMaterial({ color: 0x6A4422, roughness: 0.95 });
+            for (let i = 0; i < 6; i++) {
+                const log = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.06, 0.07, 0.55, 6),
+                    woodMat
+                );
+                log.rotation.z = Math.PI / 2;
+                log.position.set((Math.random() - 0.5) * 0.4, 0.06 + Math.floor(i / 3) * 0.13, (Math.random() - 0.5) * 0.4);
+                log.rotation.y = (Math.random() - 0.5) * 0.3;
+                group.add(log);
+            }
+        } else if (choice < 0.75) {
+            // 大壺
+            const potMat = new THREE.MeshStandardMaterial({ color: 0x8B4A20, roughness: 0.85 });
+            const pot = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.22, 0.28, 0.5, 10),
+                potMat
+            );
+            pot.position.y = 0.25;
+            group.add(pot);
+            const lid = new THREE.Mesh(
+                new THREE.SphereGeometry(0.2, 8, 6, 0, Math.PI * 2, 0, Math.PI / 2),
+                potMat
+            );
+            lid.position.y = 0.5;
+            group.add(lid);
+        } else {
+            // 洗濯カゴ
+            const basketMat = new THREE.MeshStandardMaterial({ color: 0x7A5A30, roughness: 1.0 });
+            const basket = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.28, 0.22, 0.3, 10, 1, true),
+                basketMat
+            );
+            basket.position.y = 0.15;
+            group.add(basket);
+            // カゴの中の布
+            const cloth = new THREE.Mesh(
+                new THREE.SphereGeometry(0.22, 8, 5),
+                new THREE.MeshStandardMaterial({ color: 0xC44848, roughness: 0.95 })
+            );
+            cloth.scale.y = 0.4;
+            cloth.position.y = 0.32;
+            group.add(cloth);
+        }
+        return group;
+    }
+
+    /* ========================================================
      *  GROUND - 砂漠の地面（頂点カラーで変化をつける）
      * ======================================================== */
     _buildGround() {
         // メイン地面: 頂点カラーで砂紋の変化をつける
-        const groundGeo = new THREE.PlaneGeometry(200, 40, 50, 10);
+        // 奥行きを ±90 まで拡張して遠景シルエット (z≈+95) と写真パネル (z≈+78) まで
+        // 砂地が連続するようにし、地平線手前の Z ギャップを解消する
+        const groundGeo = new THREE.PlaneGeometry(220, 180, 110, 90);
         const colors = [];
+        // パレットを写真背景のヘイズに馴染むよう、ハイライト/シャドウのコントラストを抑制
         const baseColor = new THREE.Color(0xD4A868);
-        const shadowColor = new THREE.Color(0xA07838);
-        const highlightColor = new THREE.Color(0xECC888);
+        const shadowColor = new THREE.Color(0xA47A40);
+        const highlightColor = new THREE.Color(0xE6C384);
+        const tanColor = new THREE.Color(0xC4965A);
+        const hazeColor = new THREE.Color(0xE8C890); // 遠景の写真と一致する暖色のヘイズ
         const pos = groundGeo.attributes.position;
+        // 簡易フラクタルノイズ
+        const fnoise = (x, y) => (
+            Math.sin(x * 0.18) * 0.45 +
+            Math.sin(y * 0.27 + 1.3) * 0.35 +
+            Math.sin(x * 0.55 + y * 0.22) * 0.18 +
+            Math.sin(x * 1.4 + y * 1.7) * 0.08 +
+            (Math.random() - 0.5) * 0.14
+        );
         for (let i = 0; i < pos.count; i++) {
             const x = pos.getX(i);
             const y = pos.getY(i);
-            // ノイズ風の変化（波+ランダム）
-            const noise = Math.sin(x * 0.18) * 0.5 + Math.sin(y * 0.25 + 1) * 0.5 + Math.random() * 0.3 - 0.15;
+            const n = fnoise(x, y);
             const c = new THREE.Color();
-            if (noise > 0.2) {
-                c.copy(highlightColor).lerp(baseColor, 1 - Math.min(1, noise - 0.2));
-            } else if (noise < -0.2) {
-                c.copy(shadowColor).lerp(baseColor, 1 - Math.min(1, -noise - 0.2));
+            if (n > 0.35) {
+                c.copy(highlightColor).lerp(baseColor, 1 - Math.min(1, (n - 0.35) * 1.5));
+            } else if (n > 0.05) {
+                c.copy(baseColor).lerp(highlightColor, (n - 0.05) * 0.8);
+            } else if (n < -0.35) {
+                c.copy(shadowColor).lerp(tanColor, 1 - Math.min(1, (-n - 0.35) * 1.5));
+            } else if (n < -0.05) {
+                c.copy(tanColor).lerp(shadowColor, (-n - 0.05) * 0.8);
             } else {
                 c.copy(baseColor);
             }
+            // 道路帯（|x|<5）はやや明るく踏み固められた色
+            if (Math.abs(x) < 5) {
+                c.lerp(new THREE.Color(0xC89868), 0.35);
+            }
+            // 遠方の地面（local +Y が大きい = 前方）はヘイズ色に向かってブレンド
+            // 0 → 1 を [30, 80] でフェードして地平線が写真と滑らかに接続される
+            const farT = Math.max(0, Math.min(1, (y - 30) / 50));
+            const hazeStrength = farT * 0.55;
+            if (hazeStrength > 0) c.lerp(hazeColor, hazeStrength);
+            // 後方の地面（local -Y が大きい）は軽くトーンを暗めにして奥行き感を出す
+            const backT = Math.max(0, Math.min(1, (-y - 30) / 50));
+            if (backT > 0) c.lerp(shadowColor, backT * 0.20);
             colors.push(c.r, c.g, c.b);
-            // Y方向にわずかに高さをつけて砂丘風に
-            pos.setZ(i, Math.sin(x * 0.12) * 0.08 + Math.sin(y * 0.3) * 0.04);
+            // 砂丘の起伏 + 細かい砂紋（遠方は起伏を抑えて滑らかに地平線へ繋ぐ）
+            const farDamp = 1 - farT * 0.7;
+            const dune = (Math.sin(x * 0.07) * 0.18 + Math.cos(y * 0.11) * 0.12) * farDamp;
+            const ripple = Math.sin(x * 0.9 + y * 0.4) * 0.025 * farDamp;
+            pos.setZ(i, Math.abs(x) > 6 ? dune + ripple : ripple * 0.4);
         }
         groundGeo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
         groundGeo.computeVertexNormals();
@@ -2410,6 +4989,7 @@ export class World {
             vertexColors: true,
             roughness: 0.98,
             metalness: 0.0,
+            flatShading: false,
         });
         this.groundMesh = new THREE.Mesh(groundGeo, groundMat);
         this.groundMesh.rotation.x = -Math.PI / 2;
@@ -2420,8 +5000,8 @@ export class World {
         // 地面の道路/踏み固められた道（プレイ領域）— +Z 方向に沿って長い帯
         const roadGeo = new THREE.PlaneGeometry(8, 200);
         const roadMat = new THREE.MeshStandardMaterial({
-            color: 0xB8956A,
-            roughness: 0.88,
+            color: 0xBA9466,
+            roughness: 0.92,
         });
         this.roadMesh = new THREE.Mesh(roadGeo, roadMat);
         this.roadMesh.rotation.x = -Math.PI / 2;
@@ -2434,13 +5014,59 @@ export class World {
         for (const xOff of [-2.2, 2.2]) {
             const rut = new THREE.Mesh(
                 new THREE.PlaneGeometry(0.4, 200),
-                new THREE.MeshStandardMaterial({ color: 0x7A5E38, roughness: 0.95 })
+                new THREE.MeshStandardMaterial({ color: 0x6F5028, roughness: 0.95 })
             );
             rut.rotation.x = -Math.PI / 2;
             rut.position.set(xOff, 0.02, 0);
             this.scene.add(rut);
             this.rutMeshes = this.rutMeshes || [];
             this.rutMeshes.push(rut);
+        }
+
+        // 散らばる小石（ホットスタートな静的プロップ。スクロール追従させる）
+        this.pebbleMeshes = [];
+        const pebbleGeoCache = [
+            new THREE.IcosahedronGeometry(0.18, 0),
+            new THREE.IcosahedronGeometry(0.13, 0),
+            new THREE.IcosahedronGeometry(0.22, 0),
+        ];
+        const pebbleMatA = new THREE.MeshStandardMaterial({ color: 0x8C6A3C, roughness: 0.95, flatShading: true });
+        const pebbleMatB = new THREE.MeshStandardMaterial({ color: 0xB89060, roughness: 0.92, flatShading: true });
+        for (let i = 0; i < 60; i++) {
+            const geo = pebbleGeoCache[i % pebbleGeoCache.length];
+            const mat = (i % 2 === 0) ? pebbleMatA : pebbleMatB;
+            const stone = new THREE.Mesh(geo, mat);
+            const lateral = (Math.random() - 0.5) * 80;
+            // 道路上には置かない
+            if (Math.abs(lateral) < 5) continue;
+            stone.position.set(
+                lateral,
+                Math.random() * 0.05,
+                (Math.random() - 0.5) * 90
+            );
+            stone.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+            stone.scale.setScalar(0.6 + Math.random() * 1.1);
+            stone.castShadow = true;
+            stone.receiveShadow = true;
+            this.scene.add(stone);
+            this.pebbleMeshes.push({ mesh: stone, baseZ: stone.position.z });
+        }
+
+        // タイヤ痕（道路に沿った薄い茶色のドット列）
+        this.trackDots = [];
+        const trackMat = new THREE.MeshBasicMaterial({
+            color: 0x6E5028, transparent: true, opacity: 0.55, depthWrite: false,
+        });
+        const trackGeo = new THREE.PlaneGeometry(0.18, 0.6);
+        for (let i = 0; i < 40; i++) {
+            const z = -50 + i * 2.5 + (Math.random() - 0.5) * 0.6;
+            for (const xOff of [-1.6, 1.6]) {
+                const dot = new THREE.Mesh(trackGeo, trackMat);
+                dot.rotation.x = -Math.PI / 2;
+                dot.position.set(xOff, 0.015, z);
+                this.scene.add(dot);
+                this.trackDots.push({ mesh: dot, baseZ: z });
+            }
         }
     }
 
@@ -2452,6 +5078,20 @@ export class World {
     _generateChunk(startZ) {
         const chunk = { startZ, objects: [] };
 
+        const tag = (obj, type, radius, hp = 1, opts = {}) => {
+            obj.userData.obstacle = {
+                type, radius, hp,
+                destroyed: false,
+                explosionVisual: opts.explosionVisual || (opts.explosive ? 'large' : 'small'),
+                explosive: !!opts.explosive,
+                blastRadius: opts.blastRadius || 0,
+                dropChance: opts.dropChance || 0,
+                dropTable: opts.dropTable || null,
+                score: opts.score || 0,
+            };
+            return obj;
+        };
+
         const place = (obj, lateralRange = 10) => {
             obj.position.set(
                 (Math.random() - 0.5) * lateralRange * 2,
@@ -2460,21 +5100,24 @@ export class World {
             );
             this.scene.add(obj);
             chunk.objects.push(obj);
+            return obj;
         };
 
-        // 土嚢（高確率）
-        if (Math.random() > 0.2) place(this._buildSandbags(), 10);
+        // 土嚢（ほぼ毎チャンク・複数列）
+        if (Math.random() > 0.05) tag(place(this._buildSandbags(), 10), 'destructible', 1.2);
+        if (Math.random() > 0.45) tag(place(this._buildSandbags(), 10), 'destructible', 1.2);
         // 木箱
-        if (Math.random() > 0.3) place(this._buildCrates(), 10);
-        // ドラム缶
-        if (Math.random() > 0.4) place(this._buildBarrels(), 10);
+        if (Math.random() > 0.15) tag(place(this._buildCrates(), 10), 'destructible', 0.9);
+        // ドラム缶（赤ドラム量産）
+        if (Math.random() > 0.2) tag(place(this._buildBarrels(), 10), 'destructible', 1.0);
+        if (Math.random() > 0.6) tag(place(this._buildBarrels(), 9), 'destructible', 1.0);
         // 鉄条網
-        if (Math.random() > 0.55) place(this._buildBarbedWire(), 9);
+        if (Math.random() > 0.35) tag(place(this._buildBarbedWire(), 9), 'destructible', 1.4);
         // テント
-        if (Math.random() > 0.65) place(this._buildTent(), 9);
-        // 壊れた壁
-        if (Math.random() > 0.6) place(this._buildBrokenWall(), 9);
-        // 木製の橋/桟橋
+        if (Math.random() > 0.5) tag(place(this._buildTent(), 9), 'destructible', 1.5);
+        // 壊れた壁（弾痕付きにふさわしい数量）
+        if (Math.random() > 0.4) tag(place(this._buildBrokenWall(), 9), 'block', 1.8);
+        // 木製の橋/桟橋（装飾、当たり判定なし）
         if (Math.random() > 0.8) place(this._buildWoodenBridge(), 7);
         // サボテン（砂漠の象徴）- 道の外側に置く
         if (Math.random() > 0.5) {
@@ -2486,24 +5129,709 @@ export class World {
             );
             this.scene.add(cactus);
             chunk.objects.push(cactus);
+            tag(cactus, 'destructible', 0.7);
         }
-        // 岩の塊
-        if (Math.random() > 0.4) place(this._buildRockCluster(), 12);
-        // 砂山
+        // 岩の塊（中型: 戦車では砕けない）
+        if (Math.random() > 0.4) tag(place(this._buildRockCluster(), 12), 'block', 1.2);
+        // 砂山（装飾）
         if (Math.random() > 0.6) place(this._buildSandPile(), 12);
-        // 動物の骨/ドクロ
+        // 動物の骨/ドクロ（装飾）
         if (Math.random() > 0.8) place(this._buildSkullBones(), 10);
-        // 砂丘の低木
+        // 砂丘の低木（装飾）
         if (Math.random() > 0.45) place(this._buildDesertShrubs(), 12);
         // 破れ布の旗杭
-        if (Math.random() > 0.62) place(this._buildTornBannerPost(), 10);
+        if (Math.random() > 0.45) tag(place(this._buildTornBannerPost(), 10), 'destructible', 0.5);
         // 遺跡の柱片
-        if (Math.random() > 0.72) place(this._buildRuinPillar(), 11);
+        if (Math.random() > 0.55) tag(place(this._buildRuinPillar(), 11), 'destructible', 0.6);
         // キャラバン荷車跡
-        if (Math.random() > 0.83) place(this._buildCaravanCart(), 9);
+        if (Math.random() > 0.7) tag(place(this._buildCaravanCart(), 9), 'destructible', 1.5);
+
+        // === アフリカ村プロップ（コンセプト画像 C0mVPN3lN3L6 準拠） ===
+        // 土器の集まり（生活感）
+        if (Math.random() > 0.35) tag(place(this._buildClayPots(new THREE.Group()), 10), 'destructible', 1.1);
+        // 尖った木杭の柵（前景の境界線）— 道の両脇に置きたい
+        if (Math.random() > 0.55) {
+            const fence = this._buildSpikeFence(new THREE.Group());
+            const side = Math.random() > 0.5 ? 1 : -1;
+            fence.position.set(
+                side * (5.5 + Math.random() * 1.2),
+                0,
+                startZ + Math.random() * this.chunkSize
+            );
+            fence.rotation.y = side > 0 ? -Math.PI / 12 : Math.PI / 12;
+            this.scene.add(fence);
+            chunk.objects.push(fence);
+            tag(fence, 'destructible', 1.3);
+        }
+        // 路傍のアカシア（道沿いに）
+        if (Math.random() > 0.55) {
+            const tree = this._buildAcaciaTree(new THREE.Group());
+            const side = Math.random() > 0.5 ? 1 : -1;
+            tree.position.set(
+                side * (7 + Math.random() * 4),
+                0,
+                startZ + Math.random() * this.chunkSize
+            );
+            tree.scale.setScalar(0.7 + Math.random() * 0.4);
+            this.scene.add(tree);
+            chunk.objects.push(tree);
+            tag(tree, 'destructible', 0.8);
+        }
+        // 単独の小屋（地上レベル: 大型建造物 — ダイナミックに大きく）
+        if (Math.random() > 0.7) {
+            const hutRadius = 1.8 + Math.random() * 0.6;
+            const hut = this._buildThatchedHut(new THREE.Group(), {
+                radius: hutRadius,
+                wallH: 1.8 + Math.random() * 0.5,
+                roofH: 3.2 + Math.random() * 0.8,
+            });
+            const side = Math.random() > 0.5 ? 1 : -1;
+            hut.position.set(
+                side * (9 + Math.random() * 3),
+                0,
+                startZ + Math.random() * this.chunkSize
+            );
+            hut.rotation.y = Math.random() * Math.PI * 2;
+            this.scene.add(hut);
+            chunk.objects.push(hut);
+            tag(hut, 'block', hutRadius + 0.4);
+        }
+        // 木製足場
+        if (Math.random() > 0.78) tag(place(this._buildWoodenScaffold(new THREE.Group()), 11), 'destructible', 1.5);
+        // 井戸（稀: 石造で頑丈なので block）
+        if (Math.random() > 0.92) tag(place(this._buildVillageWell(new THREE.Group()), 9), 'block', 1.2);
+
+        // === ジオラマ村プロップ（コンセプト画像 06_metal_slug_diorama 準拠） ===
+        // 物干し（横幅 6.4 になったので少し離す。装飾、当たり判定なし）
+        if (Math.random() > 0.62) {
+            const laundry = this._buildHangingLaundry(new THREE.Group());
+            const side = Math.random() > 0.5 ? 1 : -1;
+            laundry.position.set(
+                side * (7.2 + Math.random() * 1.5),
+                0,
+                startZ + Math.random() * this.chunkSize
+            );
+            laundry.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2;
+            this.scene.add(laundry);
+            chunk.objects.push(laundry);
+        }
+        // 陶器棚（道沿い: 大型化に合わせ少し離す）
+        if (Math.random() > 0.7) {
+            const shelf = this._buildPotteryShelf(new THREE.Group());
+            const side = Math.random() > 0.5 ? 1 : -1;
+            shelf.position.set(
+                side * (6.5 + Math.random() * 1.5),
+                0,
+                startZ + Math.random() * this.chunkSize
+            );
+            shelf.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2;
+            this.scene.add(shelf);
+            chunk.objects.push(shelf);
+            tag(shelf, 'destructible', 2.0);
+        }
+        // 装飾石壁（背景区切り: 大型建造物）
+        if (Math.random() > 0.78) {
+            const dWall = this._buildDecoratedStoneWall(new THREE.Group());
+            const side = Math.random() > 0.5 ? 1 : -1;
+            dWall.position.set(
+                side * (9.5 + Math.random() * 1.5),
+                0,
+                startZ + Math.random() * this.chunkSize
+            );
+            dWall.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2;
+            this.scene.add(dWall);
+            chunk.objects.push(dWall);
+            tag(dWall, 'block', 3.4);
+        }
+        // フラット屋根アドベ家屋（アーケード演出: 巨大化）
+        if (Math.random() > 0.55) {
+            const house = this._buildFlatAdobeHouse(new THREE.Group());
+            const side = Math.random() > 0.5 ? 1 : -1;
+            house.position.set(
+                side * (16 + Math.random() * 4),
+                0,
+                startZ + Math.random() * this.chunkSize
+            );
+            house.rotation.y = side > 0 ? -Math.PI / 2 + (Math.random() - 0.5) * 0.3 : Math.PI / 2 + (Math.random() - 0.5) * 0.3;
+            house.scale.setScalar(1.85 + Math.random() * 0.45);
+            this.scene.add(house);
+            chunk.objects.push(house);
+            tag(house, 'block', 7.2);
+        }
+        // 屋根上のサテライト小道具（高所装飾、当たり判定なし）
+        if (Math.random() > 0.85) {
+            const props = this._buildRooftopProps(new THREE.Group());
+            place(props, 9);
+        }
+
+        // === 後半ステージ専用プロップ ===
+        // late / mid / heavy / final が同時に true になると 1 チャンクあたりプロップ数が
+        // 21 → 35 個前後まで膨張して描画コストが急増するため、チャンクごとに最大 1 系統のみ抽選する。
+        const activeStages = [];
+        if (this._isLateStage(startZ))  activeStages.push('late');
+        if (this._isMidStage(startZ))   activeStages.push('mid');
+        if (this._isHeavyStage(startZ)) activeStages.push('heavy');
+        if (this._isFinalStage(startZ)) activeStages.push('final');
+        const pickedStage = activeStages.length
+            ? activeStages[Math.floor(Math.random() * activeStages.length)]
+            : null;
+
+        // === 後半ステージ専用プロップ（コンセプト画像 m3jxBpfv0qrr 準拠） ===
+        if (pickedStage === 'late') {
+            // 銅赤ドーム宮殿（巨大ランドマーク）
+            if (Math.random() > 0.4) {
+                const palace = this._buildCopperPalace(new THREE.Group());
+                const side = Math.random() > 0.5 ? 1 : -1;
+                palace.position.set(
+                    side * (14 + Math.random() * 4),
+                    0,
+                    startZ + Math.random() * this.chunkSize
+                );
+                palace.rotation.y = side > 0 ? -Math.PI / 2 + 0.15 : Math.PI / 2 - 0.15;
+                palace.scale.setScalar(1.95 + Math.random() * 0.45);
+                this.scene.add(palace);
+                chunk.objects.push(palace);
+                tag(palace, 'block', 7.6);
+            }
+            // 城壁（連続感を強調する巨大化）
+            if (Math.random() > 0.4) {
+                const wall = this._buildFortressWall(new THREE.Group());
+                const side = Math.random() > 0.5 ? 1 : -1;
+                wall.position.set(
+                    side * (11 + Math.random() * 3),
+                    0,
+                    startZ + Math.random() * this.chunkSize
+                );
+                wall.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2;
+                wall.scale.setScalar(1.75 + Math.random() * 0.35);
+                this.scene.add(wall);
+                chunk.objects.push(wall);
+                tag(wall, 'block', 6.5);
+            }
+            // 果物屋台（道沿い）
+            if (Math.random() > 0.5) {
+                const stand = this._buildFruitStand(new THREE.Group());
+                const side = Math.random() > 0.5 ? 1 : -1;
+                stand.position.set(
+                    side * (6 + Math.random() * 1.5),
+                    0,
+                    startZ + Math.random() * this.chunkSize
+                );
+                stand.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2;
+                this.scene.add(stand);
+                chunk.objects.push(stand);
+                tag(stand, 'destructible', 1.4);
+            }
+            // 後半は土器が増える（市場感）
+            if (Math.random() > 0.4) tag(place(this._buildClayPots(new THREE.Group()), 10), 'destructible', 1.1);
+            // アフリカ村の小屋は後半では出ない（意図的に）
+        }
+
+        // ============================================
+        // STREET-SCAPE PROPS（コンセプト QD9QMPq1JWHb / 0bSNIrGdkOIk から抽出）
+        // 砲弾で破壊可能・確率でアイテムドロップ
+        // ============================================
+        const dropCommon = ['score', 'score', 'grenade', 'health', 'power_SPREAD'];
+        const dropMilitary = ['grenade', 'grenade', 'health', 'score', 'weapon_H', 'power_BIG'];
+        const dropExplosive = ['grenade', 'health', 'score_big', 'weapon_R', 'power_FLAME'];
+        const dropTower = ['weapon_H', 'weapon_R', 'weapon_S', 'grenade', 'health', 'power_BIG', 'power_SPREAD', 'power_FLAME'];
+
+        // 高床式監視櫓（巨大ランドマーク）
+        if (Math.random() > 0.55) {
+            const tower = this._buildStiltWatchtower(new THREE.Group());
+            const side = Math.random() > 0.5 ? 1 : -1;
+            tower.position.set(
+                side * (12 + Math.random() * 3),
+                0,
+                startZ + Math.random() * this.chunkSize
+            );
+            tower.rotation.y = side > 0 ? -Math.PI / 2 + (Math.random() - 0.5) * 0.4 : Math.PI / 2 + (Math.random() - 0.5) * 0.4;
+            tower.scale.setScalar(1.75 + Math.random() * 0.35);
+            this.scene.add(tower);
+            chunk.objects.push(tower);
+            tag(tower, 'destructible', 3.8, 35, {
+                explosionVisual: 'large',
+                dropChance: 0.6, dropTable: dropTower, score: 1000,
+            });
+        }
+
+        // 赤いオイルドラム集積（爆発物）— 砂漠基地の象徴的小道具
+        if (Math.random() > 0.35) {
+            const rack = this._buildOilDrumRack(new THREE.Group());
+            const side = Math.random() > 0.5 ? 1 : -1;
+            rack.position.set(
+                side * (5.5 + Math.random() * 1.8),
+                0,
+                startZ + Math.random() * this.chunkSize
+            );
+            rack.rotation.y = (Math.random() - 0.5) * 0.6;
+            this.scene.add(rack);
+            chunk.objects.push(rack);
+            tag(rack, 'destructible', 1.5, 8, {
+                explosive: true, explosionVisual: 'mega',
+                blastRadius: 5.0,
+                dropChance: 0.45, dropTable: dropExplosive, score: 400,
+            });
+        }
+
+        // スクラップ金属の山（砂漠基地のジャンクヤード感）
+        if (Math.random() > 0.4) {
+            const pile = this._buildScrapMetalPile(new THREE.Group());
+            const side = Math.random() > 0.5 ? 1 : -1;
+            pile.position.set(
+                side * (6 + Math.random() * 2),
+                0,
+                startZ + Math.random() * this.chunkSize
+            );
+            pile.rotation.y = Math.random() * Math.PI * 2;
+            this.scene.add(pile);
+            chunk.objects.push(pile);
+            tag(pile, 'destructible', 1.6, 18, {
+                dropChance: 0.35, dropTable: dropCommon, score: 250,
+            });
+        }
+
+        // 廃棄ジープ（軍用車両）
+        if (Math.random() > 0.6) {
+            const jeep = this._buildWreckedJeep(new THREE.Group());
+            const side = Math.random() > 0.5 ? 1 : -1;
+            jeep.position.set(
+                side * (5.5 + Math.random() * 2),
+                0,
+                startZ + Math.random() * this.chunkSize
+            );
+            jeep.rotation.y = (Math.random() - 0.5) * Math.PI;
+            this.scene.add(jeep);
+            chunk.objects.push(jeep);
+            tag(jeep, 'destructible', 1.6, 25, {
+                explosive: true, explosionVisual: 'large',
+                blastRadius: 3.5,
+                dropChance: 0.55, dropTable: dropMilitary, score: 600,
+            });
+        }
+
+        // 弾薬箱の山積み
+        if (Math.random() > 0.25) {
+            const stack = this._buildAmmoCrateStack(new THREE.Group());
+            const side = Math.random() > 0.5 ? 1 : -1;
+            stack.position.set(
+                side * (4.5 + Math.random() * 2),
+                0,
+                startZ + Math.random() * this.chunkSize
+            );
+            stack.rotation.y = (Math.random() - 0.5) * 0.8;
+            this.scene.add(stack);
+            chunk.objects.push(stack);
+            tag(stack, 'destructible', 1.0, 12, {
+                dropChance: 0.7, dropTable: dropMilitary, score: 300,
+            });
+        }
+
+        // 軍用標識ポスト
+        if (Math.random() > 0.45) {
+            const sign = this._buildMilitarySignpost(new THREE.Group());
+            const side = Math.random() > 0.5 ? 1 : -1;
+            sign.position.set(
+                side * (4 + Math.random() * 1.5),
+                0,
+                startZ + Math.random() * this.chunkSize
+            );
+            sign.rotation.y = (Math.random() - 0.5) * 0.8;
+            this.scene.add(sign);
+            chunk.objects.push(sign);
+            tag(sign, 'destructible', 0.5, 4, {
+                dropChance: 0.15, dropTable: dropCommon, score: 100,
+            });
+        }
+
+        // 無線アンテナ／無線小屋
+        if (Math.random() > 0.6) {
+            const antenna = this._buildRadioAntenna(new THREE.Group());
+            const side = Math.random() > 0.5 ? 1 : -1;
+            antenna.position.set(
+                side * (8 + Math.random() * 2),
+                0,
+                startZ + Math.random() * this.chunkSize
+            );
+            this.scene.add(antenna);
+            chunk.objects.push(antenna);
+            tag(antenna, 'destructible', 1.4, 18, {
+                explosionVisual: 'large',
+                dropChance: 0.4, dropTable: dropMilitary, score: 350,
+            });
+        }
+
+        // ============================================
+        // 後半〜終盤ステージのダイナミックなランドマーク
+        // ============================================
+        // 動的プロップ用配置ヘルパー（dynamicProps の最終 push を obj.userData にリンク）
+        const placeDynamic = (builder, lateralRange, opts = {}) => {
+            const beforeLen = this.dynamicProps.length;
+            const obj = builder.call(this, new THREE.Group());
+            const side = (opts.farSide !== false)
+                ? (Math.random() > 0.5 ? 1 : -1)
+                : 0;
+            const dist = opts.dist !== undefined ? opts.dist : (8 + Math.random() * 2);
+            obj.position.set(
+                side ? side * dist : (Math.random() - 0.5) * lateralRange * 2,
+                0,
+                startZ + Math.random() * this.chunkSize
+            );
+            if (opts.faceRoad && side) {
+                obj.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2;
+            } else {
+                obj.rotation.y = Math.random() * Math.PI * 2;
+            }
+            if (opts.scale !== undefined) {
+                obj.scale.setScalar(opts.scale);
+            }
+            this.scene.add(obj);
+            chunk.objects.push(obj);
+            // 追加した動的参照を obj に紐付け（チャンク削除で arr から外すため）
+            if (this.dynamicProps.length > beforeLen) {
+                obj.userData.dynamicRef = this.dynamicProps[this.dynamicProps.length - 1];
+            }
+            return obj;
+        };
+
+        // === Mid stage（z > 220）: 軍事工業地帯 ===
+        if (pickedStage === 'mid') {
+            // 工業煙突（背景・巨大化で迫力）
+            if (Math.random() > 0.55) {
+                const sm = placeDynamic(this._buildSmokestack, 0, {
+                    dist: 14 + Math.random() * 3, faceRoad: true,
+                    scale: 1.7 + Math.random() * 0.5,
+                });
+                tag(sm, 'block', 2.5);
+            }
+            // ガントリークレーン（道路をまたぐ巨大鉄骨）
+            if (Math.random() > 0.65) {
+                const cr = placeDynamic(this._buildGantryCrane, 0, {
+                    dist: 12 + Math.random() * 2, faceRoad: true,
+                    scale: 1.55 + Math.random() * 0.35,
+                });
+                tag(cr, 'block', 5.0);
+            }
+            // 蒸気噴出パイプ（道沿い）
+            if (Math.random() > 0.4) {
+                const sv = placeDynamic(this._buildSteamVent, 0, { dist: 5 + Math.random() * 1.5, faceRoad: true });
+                tag(sv, 'destructible', 0.6, 6, {
+                    explosionVisual: 'small',
+                    dropChance: 0.20, dropTable: dropCommon, score: 150,
+                });
+            }
+        }
+
+        // === Heavy stage（z > 450）: 戦地・廃墟 ===
+        if (pickedStage === 'heavy') {
+            // 燃える石油櫓（夜空に映える巨大炎柱）
+            if (Math.random() > 0.55) {
+                const dr = placeDynamic(this._buildBurningDerrick, 0, {
+                    dist: 13 + Math.random() * 3, faceRoad: false,
+                    scale: 1.55 + Math.random() * 0.4,
+                });
+                tag(dr, 'block', 3.2);
+            }
+            // 撃破された Di-Cokka 戦車残骸（道路のすぐ脇）
+            if (Math.random() > 0.45) {
+                const wk = placeDynamic(this._buildWreckedTank, 0, {
+                    dist: 4.5 + Math.random() * 1.5,
+                    scale: 1.2 + Math.random() * 0.3,
+                });
+                tag(wk, 'destructible', 2.2, 10, {
+                    explosionVisual: 'large', dropChance: 0.5, dropTable: dropMilitary, score: 700,
+                });
+            }
+            // 対空砲台（道路から離れた位置）
+            if (Math.random() > 0.55) {
+                const aa = placeDynamic(this._buildAntiAirGun, 0, {
+                    dist: 7 + Math.random() * 2, faceRoad: true,
+                    scale: 1.3 + Math.random() * 0.3,
+                });
+                tag(aa, 'destructible', 2.6, 35, {
+                    explosionVisual: 'large', explosive: true, blastRadius: 3.0,
+                    dropChance: 0.6, dropTable: dropExplosive, score: 900,
+                });
+            }
+            // 崩落高層廃墟（巨大化でスカイラインを支配）
+            if (Math.random() > 0.6) {
+                const ruin = this._buildCollapsedHighrise(new THREE.Group());
+                const side = Math.random() > 0.5 ? 1 : -1;
+                ruin.position.set(
+                    side * (14 + Math.random() * 3),
+                    0,
+                    startZ + Math.random() * this.chunkSize
+                );
+                ruin.rotation.y = side > 0 ? -Math.PI / 2 + (Math.random() - 0.5) * 0.25 : Math.PI / 2 + (Math.random() - 0.5) * 0.25;
+                ruin.scale.setScalar(1.55 + Math.random() * 0.4);
+                this.scene.add(ruin);
+                chunk.objects.push(ruin);
+                tag(ruin, 'block', 5.5);
+            }
+        }
+
+        // === Final stage（z > 680）: 反乱軍要塞 ===
+        if (pickedStage === 'final') {
+            // 巨大反逆軍旗（要塞の象徴）
+            if (Math.random() > 0.55) {
+                const bn = placeDynamic(this._buildRebelBanner, 0, { dist: 8 + Math.random() * 2, faceRoad: false });
+                tag(bn, 'destructible', 1.0, 6, {
+                    dropChance: 0.4, dropTable: dropMilitary, score: 500,
+                });
+            }
+            // サーチライト塔（夜陣地のような演出）
+            if (Math.random() > 0.65) {
+                const sl = placeDynamic(this._buildSearchlightTower, 0, { dist: 9 + Math.random() * 2, faceRoad: false });
+                tag(sl, 'destructible', 1.6, 25, {
+                    explosionVisual: 'large', dropChance: 0.5, dropTable: dropTower, score: 900,
+                });
+            }
+            // 古代ピラミッド遺跡（巨大ランドマーク、当たり判定なし背景物）
+            if (Math.random() > 0.55) {
+                const py = this._buildPyramidRuin(new THREE.Group());
+                const side = Math.random() > 0.5 ? 1 : -1;
+                py.position.set(side * (17 + Math.random() * 4), 0,
+                    startZ + Math.random() * this.chunkSize);
+                py.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2;
+                py.scale.setScalar(1.6 + Math.random() * 0.4);
+                this.scene.add(py);
+                chunk.objects.push(py);
+                tag(py, 'block', 7.0);
+            }
+            // 装甲ゲート（巨大要塞門）
+            if (Math.random() > 0.55) {
+                const gate = placeDynamic(this._buildFortressGate, 0, {
+                    dist: 13 + Math.random() * 3, faceRoad: true,
+                    scale: 1.5 + Math.random() * 0.35,
+                });
+                tag(gate, 'destructible', 4.0, 40, {
+                    explosionVisual: 'large', dropChance: 0.55, dropTable: dropTower, score: 1100,
+                });
+            }
+            // レーダードーム（巨大化で回転索敵感を強調）
+            if (Math.random() > 0.55) {
+                const dome = placeDynamic(this._buildRadarDome, 0, {
+                    dist: 16 + Math.random() * 3, faceRoad: false,
+                    scale: 1.55 + Math.random() * 0.4,
+                });
+                tag(dome, 'block', 4.5);
+            }
+        }
+
+        // === Endgame stage（Wave 13〜22）: 地形・大型物を密に追加 ===
+        const endgamePhase = this._getEndgamePhase(startZ);
+        if (endgamePhase >= 0) {
+            const density = Math.min(0.90, 0.58 + endgamePhase * 0.06);
+
+            // 砲撃跡クレーター帯（荒廃した地形）
+            if (Math.random() < density) {
+                const crater = this._buildCraterBelt(new THREE.Group(), 2 + endgamePhase);
+                place(crater, 7);
+                tag(crater, 'block', 2.2 + endgamePhase * 0.25);
+            }
+
+            // 塹壕バリケード（道路脇の防衛線）
+            if (Math.random() < density) {
+                const trench = this._buildTrenchBarricade(new THREE.Group(), endgamePhase);
+                const side = Math.random() > 0.5 ? 1 : -1;
+                trench.position.set(
+                    side * (6.8 + Math.random() * 2.2),
+                    0,
+                    startZ + Math.random() * this.chunkSize
+                );
+                trench.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2;
+                this.scene.add(trench);
+                chunk.objects.push(trench);
+                tag(trench, 'block', 2.8 + endgamePhase * 0.2);
+            }
+
+            // 重装バンカー（巨大化で要塞感を強調）
+            if (Math.random() < Math.min(0.88, 0.55 + endgamePhase * 0.08)) {
+                const bunker = this._buildFortifiedBunker(new THREE.Group());
+                const side = Math.random() > 0.5 ? 1 : -1;
+                bunker.position.set(
+                    side * (11 + Math.random() * 2.5),
+                    0,
+                    startZ + Math.random() * this.chunkSize
+                );
+                bunker.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2;
+                bunker.scale.setScalar(1.45 + Math.random() * 0.35);
+                this.scene.add(bunker);
+                chunk.objects.push(bunker);
+                tag(bunker, 'destructible', 4.4, 45, {
+                    explosionVisual: 'large',
+                    dropChance: 0.55, dropTable: dropTower, score: 1200,
+                });
+            }
+
+            // 崩落高架（巨大スカイブリッジ風）
+            if (endgamePhase >= 1 && Math.random() < Math.min(0.9, 0.6 + endgamePhase * 0.06)) {
+                const overpass = this._buildBrokenOverpass(new THREE.Group(), endgamePhase);
+                overpass.position.set(
+                    (Math.random() - 0.5) * 3.5,
+                    0,
+                    startZ + Math.random() * this.chunkSize
+                );
+                overpass.rotation.y = (Math.random() - 0.5) * 0.35;
+                overpass.scale.setScalar(1.35 + Math.random() * 0.3);
+                this.scene.add(overpass);
+                chunk.objects.push(overpass);
+                tag(overpass, 'block', 5.8 + endgamePhase * 0.3);
+            }
+
+            // 警報サイレン塔（Wave 15+）
+            if (endgamePhase >= 2 && Math.random() < Math.min(0.82, 0.5 + endgamePhase * 0.04)) {
+                const siren = placeDynamic(this._buildSirenMast, 0, {
+                    dist: 10 + Math.random() * 3,
+                    faceRoad: false,
+                });
+                tag(siren, 'destructible', 1.5, 20, {
+                    explosionVisual: 'large',
+                    dropChance: 0.5, dropTable: dropMilitary, score: 800,
+                });
+            }
+
+            // Wave16〜17 は追加で巨大廃墟を高頻度化
+            if (endgamePhase >= 3 && Math.random() < 0.7) {
+                const ruin2 = this._buildCollapsedHighrise(new THREE.Group());
+                const side = Math.random() > 0.5 ? 1 : -1;
+                ruin2.position.set(
+                    side * (15 + Math.random() * 2.5),
+                    0,
+                    startZ + Math.random() * this.chunkSize
+                );
+                ruin2.rotation.y = side > 0 ? -Math.PI / 2 + (Math.random() - 0.5) * 0.18 : Math.PI / 2 + (Math.random() - 0.5) * 0.18;
+                ruin2.scale.setScalar(1.6 + Math.random() * 0.4);
+                this.scene.add(ruin2);
+                chunk.objects.push(ruin2);
+                tag(ruin2, 'block', 6.5);
+            }
+
+            // Wave18+ 深部要塞: 工場・発射施設・エネルギー設備を追加
+            if (endgamePhase >= 5) {
+                const deepDensity = Math.min(0.78, 0.38 + (endgamePhase - 5) * 0.08);
+
+                if (Math.random() < deepDensity) {
+                    const factory = this._buildWarFactoryFacade(new THREE.Group(), endgamePhase);
+                    const side = Math.random() > 0.5 ? 1 : -1;
+                    factory.position.set(
+                        side * (16 + Math.random() * 3.5),
+                        0,
+                        startZ + Math.random() * this.chunkSize
+                    );
+                    factory.rotation.y = side > 0 ? -Math.PI / 2 + (Math.random() - 0.5) * 0.16 : Math.PI / 2 + (Math.random() - 0.5) * 0.16;
+                    factory.scale.setScalar(1.5 + Math.random() * 0.4);
+                    this.scene.add(factory);
+                    chunk.objects.push(factory);
+                    tag(factory, 'block', 7.5);
+                }
+
+                if (Math.random() < deepDensity * 0.75) {
+                    const rail = this._buildRailYardBarricade(new THREE.Group(), endgamePhase);
+                    rail.position.set(
+                        (Math.random() - 0.5) * 5.5,
+                        0,
+                        startZ + Math.random() * this.chunkSize
+                    );
+                    rail.rotation.y = (Math.random() - 0.5) * 0.35;
+                    this.scene.add(rail);
+                    chunk.objects.push(rail);
+                    tag(rail, 'block', 3.8 + endgamePhase * 0.08);
+                }
+
+                if (Math.random() < deepDensity * 0.62) {
+                    const cannon = placeDynamic(this._buildMegaCannonEmplacement, 0, {
+                        dist: 11 + Math.random() * 3,
+                        faceRoad: true,
+                    });
+                    tag(cannon, 'destructible', 2.6, 55, {
+                        explosive: true, explosionVisual: 'mega',
+                        blastRadius: 4.5, dropChance: 0.65, dropTable: dropExplosive, score: 1500,
+                    });
+                }
+
+                if (Math.random() < deepDensity * 0.58) {
+                    const gen = placeDynamic(this._buildShieldGenerator, 0, {
+                        dist: 12 + Math.random() * 3.5,
+                        faceRoad: false,
+                    });
+                    tag(gen, 'destructible', 2.2, 42, {
+                        explosionVisual: 'large',
+                        dropChance: 0.6, dropTable: dropTower, score: 1300,
+                    });
+                }
+
+                if (endgamePhase >= 7 && Math.random() < deepDensity * 0.56) {
+                    const silo = placeDynamic(this._buildMissileSiloCluster, 0, {
+                        dist: 13 + Math.random() * 3,
+                        faceRoad: false,
+                    });
+                    tag(silo, 'destructible', 2.8, 48, {
+                        explosive: true, explosionVisual: 'mega',
+                        blastRadius: 4.2, dropChance: 0.65, dropTable: dropExplosive, score: 1600,
+                    });
+                }
+            }
+        }
 
         this.chunks.push(chunk);
         this.lastChunkZ = startZ;
+        this._obstacleCacheDirty = true;
+    }
+
+    /**
+     * 障害物のリストを返す（戦車との衝突判定用）。
+     * 後半は毎フレーム数百件ループされるため、配列とエントリを再利用する。
+     * チャンク追加/削除・破壊時に dirty にして再構築。
+     * @returns {{obj: THREE.Object3D, info: {type:'block'|'destructible', radius:number, hp:number, destroyed:boolean}}[]}
+     */
+    getObstacles() {
+        if (!this._obstacleCacheDirty) return this._obstacleCache;
+        const cache = this._obstacleCache;
+        cache.length = 0;
+        for (const chunk of this.chunks) {
+            for (const obj of chunk.objects) {
+                const info = obj.userData.obstacle;
+                if (info && !info.destroyed) {
+                    cache.push({ obj, info });
+                }
+            }
+        }
+        this._obstacleCacheDirty = false;
+        return cache;
+    }
+
+    /**
+     * 障害物を破壊（チャンクから除去・リソース解放）
+     * @param {THREE.Object3D} obj
+     */
+    destroyObstacle(obj) {
+        const info = obj.userData.obstacle;
+        if (!info || info.destroyed) return;
+        info.destroyed = true;
+        this.scene.remove(obj);
+        // dynamicProps からも除去（解放済 mesh を update() が触らないように）
+        obj.traverse(child => {
+            if (child.userData && child.userData.dynamicRef) {
+                const idx = this.dynamicProps.indexOf(child.userData.dynamicRef);
+                if (idx >= 0) this.dynamicProps.splice(idx, 1);
+            }
+            if (child.isMesh) {
+                const g = child.geometry;
+                if (g && g.dispose && !(g.userData && g.userData.shared)) g.dispose();
+                const mat = child.material;
+                if (mat && mat.dispose && !(mat.userData && mat.userData.shared)) mat.dispose();
+            }
+        });
+        for (const chunk of this.chunks) {
+            const idx = chunk.objects.indexOf(obj);
+            if (idx !== -1) {
+                chunk.objects.splice(idx, 1);
+                this._obstacleCacheDirty = true;
+                return;
+            }
+        }
+        this._obstacleCacheDirty = true;
     }
 
     _buildDesertShrubs() {
@@ -2823,7 +6151,7 @@ export class World {
 
     _buildSandbags() {
         const group = new THREE.Group();
-        const bagMat = new THREE.MeshStandardMaterial({ color: 0xAA9966, roughness: 0.95 });
+        const bagMat = _sharedMat('sandbag', () => new THREE.MeshStandardMaterial({ color: 0xAA9966, roughness: 0.95 }));
         const rows = 2 + Math.floor(Math.random() * 2);
         for (let row = 0; row < rows; row++) {
             const bagsInRow = 3 - row;
@@ -2839,8 +6167,9 @@ export class World {
 
     _buildCrates() {
         const group = new THREE.Group();
-        const crateMat = new THREE.MeshStandardMaterial({ color: 0x8B6B3B, roughness: 0.85 });
-        const stripeMat = new THREE.MeshStandardMaterial({ color: 0x6B5B3B, roughness: 0.9 });
+        const crateMat  = _sharedMat('crate_body',   () => new THREE.MeshStandardMaterial({ color: 0x8B6B3B, roughness: 0.85 }));
+        const stripeMat = _sharedMat('crate_stripe', () => new THREE.MeshStandardMaterial({ color: 0x6B5B3B, roughness: 0.9 }));
+        const starMat   = _sharedMat('crate_star',   () => new THREE.MeshStandardMaterial({ color: 0xDDDD88, side: THREE.DoubleSide }));
         const count = 1 + Math.floor(Math.random() * 3);
         for (let i = 0; i < count; i++) {
             const size = 0.6 + Math.random() * 0.4;
@@ -2859,10 +6188,7 @@ export class World {
 
         // 軍用マーキング（星マーク）
         if (Math.random() > 0.5) {
-            const star = new THREE.Mesh(
-                new THREE.CircleGeometry(0.15, 5),
-                new THREE.MeshStandardMaterial({ color: 0xDDDD88, side: THREE.DoubleSide })
-            );
+            const star = new THREE.Mesh(new THREE.CircleGeometry(0.15, 5), starMat);
             star.position.set(0, 0.5, 0.52);
             group.add(star);
         }
@@ -2871,15 +6197,16 @@ export class World {
 
     _buildBarrels() {
         const group = new THREE.Group();
+        const redBody    = _sharedMat('barrel_red_body',    () => new THREE.MeshStandardMaterial({ color: 0xAA3333, roughness: 0.6, metalness: 0.3 }));
+        const greenBody  = _sharedMat('barrel_green_body',  () => new THREE.MeshStandardMaterial({ color: 0x556655, roughness: 0.6, metalness: 0.3 }));
+        const redLabel   = _sharedMat('barrel_red_label',   () => new THREE.MeshStandardMaterial({ color: 0xDD5555, roughness: 0.5 }));
+        const greenLabel = _sharedMat('barrel_green_label', () => new THREE.MeshStandardMaterial({ color: 0x667766, roughness: 0.5 }));
         const count = 1 + Math.floor(Math.random() * 3);
         for (let i = 0; i < count; i++) {
             const isRed = Math.random() > 0.5;
             const barrel = new THREE.Mesh(
                 new THREE.CylinderGeometry(0.35, 0.35, 0.9, 10),
-                new THREE.MeshStandardMaterial({
-                    color: isRed ? 0xAA3333 : 0x556655,
-                    roughness: 0.6, metalness: 0.3,
-                })
+                isRed ? redBody : greenBody,
             );
             barrel.position.set((Math.random() - 0.5) * 1.5, 0.45, (Math.random() - 0.5) * 1);
             if (Math.random() > 0.7) {
@@ -2892,10 +6219,7 @@ export class World {
             // ラベル/ストライプ
             const label = new THREE.Mesh(
                 new THREE.CylinderGeometry(0.36, 0.36, 0.15, 10),
-                new THREE.MeshStandardMaterial({
-                    color: isRed ? 0xDD5555 : 0x667766,
-                    roughness: 0.5,
-                })
+                isRed ? redLabel : greenLabel,
             );
             label.position.copy(barrel.position);
             label.rotation.copy(barrel.rotation);
@@ -2906,13 +6230,13 @@ export class World {
 
     _buildBarbedWire() {
         const group = new THREE.Group();
-        const postMat = new THREE.MeshStandardMaterial({ color: 0x5A5A5A, roughness: 0.6, metalness: 0.4 });
+        const postMat = _sharedMat('barbed_post', () => new THREE.MeshStandardMaterial({ color: 0x5A5A5A, roughness: 0.6, metalness: 0.4 }));
+        const wireMat = _sharedMat('barbed_wire', () => new THREE.MeshBasicMaterial({ color: 0x888888 }));
         for (let i = 0; i < 3; i++) {
             const post = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 1.5, 4), postMat);
             post.position.set(i * 1.5, 0.75, 0);
             group.add(post);
         }
-        const wireMat = new THREE.MeshBasicMaterial({ color: 0x888888 });
         for (let h = 0.5; h <= 1.3; h += 0.4) {
             const wire = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 3, 4), wireMat);
             wire.rotation.z = Math.PI / 2;
@@ -2924,54 +6248,224 @@ export class World {
 
     _buildTent() {
         const group = new THREE.Group();
-        const tentMat = new THREE.MeshStandardMaterial({
-            color: 0x7B8B5B, roughness: 0.9, side: THREE.DoubleSide,
-        });
-        const tentShape = new THREE.Shape();
-        tentShape.moveTo(-2, 0);
-        tentShape.lineTo(0, 2);
-        tentShape.lineTo(2, 0);
-        const tentGeo = new THREE.ExtrudeGeometry(tentShape, { depth: 2.5, bevelEnabled: false });
-        const tent = new THREE.Mesh(tentGeo, tentMat);
-        tent.position.set(0, 0, -1.25);
-        group.add(tent);
+        const clothMain = _sharedMat('tent_cloth_main', () => new THREE.MeshStandardMaterial({
+            color: 0x6C7B4A, roughness: 0.92, side: THREE.DoubleSide,
+        }));
+        const clothShade = _sharedMat('tent_cloth_shade', () => new THREE.MeshStandardMaterial({
+            color: 0x4E5A36, roughness: 0.95, side: THREE.DoubleSide,
+        }));
+        const groundSheetMat = _sharedMat('tent_groundsheet', () => new THREE.MeshStandardMaterial({
+            color: 0x3F4A34, roughness: 0.95, side: THREE.DoubleSide,
+        }));
+        const poleMat = _sharedMat('tent_pole', () => new THREE.MeshStandardMaterial({ color: 0x5A4A3A, roughness: 0.8 }));
+        const ropeMat = _sharedMat('tent_rope', () => new THREE.MeshBasicMaterial({ color: 0x8E846A }));
+        const pegMat = _sharedMat('tent_peg', () => new THREE.MeshStandardMaterial({ color: 0x4A3828, roughness: 0.9 }));
+        const openingMat = _sharedMat('tent_opening', () => new THREE.MeshBasicMaterial({ color: 0x1B1712, side: THREE.DoubleSide }));
 
-        // ポール
-        const pole = new THREE.Mesh(
-            new THREE.CylinderGeometry(0.05, 0.05, 2.2, 4),
-            new THREE.MeshStandardMaterial({ color: 0x5A4A3A, roughness: 0.8 })
-        );
-        pole.position.set(0, 1.1, 0);
-        group.add(pole);
+        const width = 2.6 + Math.random() * 0.7;
+        const length = 2.7 + Math.random() * 0.9;
+        const height = 1.55 + Math.random() * 0.35;
+        const halfW = width * 0.5;
+        const halfL = length * 0.5;
+        const slopeLen = Math.hypot(halfW, height);
+        const tilt = Math.atan2(halfW, height);
+
+        // 下に敷くグラウンドシート
+        const groundSheet = new THREE.Mesh(new THREE.PlaneGeometry(width * 0.92, length * 0.88), groundSheetMat);
+        groundSheet.rotation.x = -Math.PI / 2;
+        groundSheet.position.y = 0.03;
+        group.add(groundSheet);
+
+        // 屋根布（左右2面）
+        const panelGeo = new THREE.BoxGeometry(0.08, slopeLen, length);
+        const leftPanel = new THREE.Mesh(panelGeo, clothMain);
+        leftPanel.position.set(-halfW * 0.5, height * 0.5, 0);
+        leftPanel.rotation.z = -tilt;
+        leftPanel.castShadow = true;
+        group.add(leftPanel);
+
+        const rightPanel = new THREE.Mesh(panelGeo, clothShade);
+        rightPanel.position.set(halfW * 0.5, height * 0.5, 0);
+        rightPanel.rotation.z = tilt;
+        rightPanel.castShadow = true;
+        group.add(rightPanel);
+
+        // 前後の三角エンド
+        const endShape = new THREE.Shape();
+        endShape.moveTo(-halfW, 0);
+        endShape.lineTo(0, height);
+        endShape.lineTo(halfW, 0);
+        endShape.lineTo(-halfW, 0);
+        const endGeo = new THREE.ShapeGeometry(endShape);
+
+        const frontEnd = new THREE.Mesh(endGeo, clothMain);
+        frontEnd.position.z = -halfL;
+        group.add(frontEnd);
+
+        const backEnd = new THREE.Mesh(endGeo, clothShade);
+        backEnd.position.z = halfL;
+        backEnd.rotation.y = Math.PI;
+        group.add(backEnd);
+
+        // 入口（暗い開口）とフラップ
+        const openingShape = new THREE.Shape();
+        openingShape.moveTo(-halfW * 0.32, 0);
+        openingShape.lineTo(0, height * 0.62);
+        openingShape.lineTo(halfW * 0.32, 0);
+        openingShape.lineTo(-halfW * 0.32, 0);
+        const opening = new THREE.Mesh(new THREE.ShapeGeometry(openingShape), openingMat);
+        opening.position.set(0, 0.02, -halfL - 0.01);
+        group.add(opening);
+
+        const flapGeo = new THREE.PlaneGeometry(0.52, height * 0.72);
+        const leftFlap = new THREE.Mesh(flapGeo, clothShade);
+        leftFlap.position.set(-0.18, height * 0.36, -halfL - 0.02);
+        leftFlap.rotation.y = 0.45;
+        leftFlap.rotation.z = -0.08;
+        group.add(leftFlap);
+
+        const rightFlap = new THREE.Mesh(flapGeo, clothShade);
+        rightFlap.position.set(0.18, height * 0.36, -halfL - 0.02);
+        rightFlap.rotation.y = -0.45;
+        rightFlap.rotation.z = 0.08;
+        group.add(rightFlap);
+
+        // 棟木ポール + 前後支柱
+        const ridgePole = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, length, 6), poleMat);
+        ridgePole.rotation.x = Math.PI / 2;
+        ridgePole.position.y = height + 0.03;
+        group.add(ridgePole);
+
+        for (const z of [-halfL + 0.05, halfL - 0.05]) {
+            const support = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, height, 5), poleMat);
+            support.position.set(0, height * 0.5, z);
+            group.add(support);
+        }
+
+        // ガイロープ + ペグ
+        const addRope = (sx, sy, sz, ex, ey, ez) => {
+            const dir = new THREE.Vector3(ex - sx, ey - sy, ez - sz);
+            const len = dir.length();
+            const rope = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, len, 5), ropeMat);
+            rope.position.set((sx + ex) * 0.5, (sy + ey) * 0.5, (sz + ez) * 0.5);
+            rope.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+            group.add(rope);
+            const peg = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.2, 0.05), pegMat);
+            peg.position.set(ex, 0.1, ez);
+            peg.rotation.z = (Math.random() - 0.5) * 0.25;
+            group.add(peg);
+        };
+        addRope(-0.12, height * 0.9, -halfL + 0.08, -halfW - 0.5, 0.08, -halfL - 0.15);
+        addRope(0.12, height * 0.9, -halfL + 0.08, halfW + 0.5, 0.08, -halfL - 0.15);
+        addRope(-0.12, height * 0.9, halfL - 0.08, -halfW - 0.5, 0.08, halfL + 0.15);
+        addRope(0.12, height * 0.9, halfL - 0.08, halfW + 0.5, 0.08, halfL + 0.15);
+
+        // 補強パッチ（布の縫い目っぽさ）
+        for (const z of [-halfL * 0.45, 0, halfL * 0.45]) {
+            const patch = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.12, 0.28), clothShade);
+            patch.position.set(0.02, height * 0.78, z);
+            patch.rotation.z = 0.08;
+            group.add(patch);
+        }
+
         return group;
     }
 
     _buildBrokenWall() {
         const group = new THREE.Group();
-        const wallMat = new THREE.MeshStandardMaterial({ color: 0x9B8B7B, roughness: 0.95 });
-        // 壊れた壁の断片
-        const h = 1.5 + Math.random() * 2;
-        const w = 2 + Math.random() * 2;
-        const wall = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.4), wallMat);
-        wall.position.y = h / 2;
-        wall.rotation.y = (Math.random() - 0.5) * 0.3;
-        group.add(wall);
+        const blockMat = _sharedMat('block_wall_main', () => new THREE.MeshStandardMaterial({
+            color: 0x927B5A, roughness: 0.96,
+        }));
+        const mortarMat = _sharedMat('block_wall_mortar', () => new THREE.MeshStandardMaterial({
+            color: 0x675A49, roughness: 0.98,
+        }));
+        const capMat = _sharedMat('block_wall_cap', () => new THREE.MeshStandardMaterial({
+            color: 0xB09A75, roughness: 0.9,
+        }));
 
-        // 壊れた端（不規則な形）
-        for (let d = 0; d < 3; d++) {
-            const debSize = 0.2 + Math.random() * 0.4;
+        const cols = 7 + Math.floor(Math.random() * 3); // 7〜9個/段
+        const rows = 3 + Math.floor(Math.random() * 2); // 3〜4段
+        const blockW = 0.34 + Math.random() * 0.05;
+        const blockH = 0.2 + Math.random() * 0.03;
+        const blockD = 0.26;
+        const joint = 0.018;
+        const width = cols * blockW + (cols - 1) * joint;
+        const height = rows * blockH + (rows - 1) * joint;
+        const baseH = 0.28;
+
+        // モルタル下地 + 基礎
+        const backPlate = new THREE.Mesh(
+            new THREE.BoxGeometry(width + 0.12, height + 0.05, blockD - 0.06),
+            mortarMat
+        );
+        backPlate.position.set(0, baseH + (height + 0.05) * 0.5, -0.01);
+        group.add(backPlate);
+
+        const base = new THREE.Mesh(new THREE.BoxGeometry(width + 0.32, baseH, blockD + 0.14), mortarMat);
+        base.position.y = baseH * 0.5;
+        group.add(base);
+
+        // 積みブロック（千鳥配置）
+        const missingChance = 0.08 + Math.random() * 0.07;
+        for (let r = 0; r < rows; r++) {
+            const rowOffset = (r % 2) * (blockW + joint) * 0.5;
+            const y = baseH + blockH * 0.5 + r * (blockH + joint);
+            for (let c = 0; c < cols; c++) {
+                const x = -width * 0.5 + blockW * 0.5 + c * (blockW + joint) + rowOffset;
+                if (x > width * 0.5 - blockW * 0.45) continue;
+                if (r > 0 && r < rows - 1 && Math.random() < missingChance) continue;
+
+                const bw = blockW * (0.92 + Math.random() * 0.14);
+                const bh = blockH * (0.9 + Math.random() * 0.14);
+                const block = new THREE.Mesh(
+                    new THREE.BoxGeometry(bw, bh, blockD),
+                    Math.random() < 0.16 ? capMat : blockMat
+                );
+                block.position.set(
+                    x + (Math.random() - 0.5) * 0.02,
+                    y + (Math.random() - 0.5) * 0.01,
+                    0.01 + (Math.random() - 0.5) * 0.015
+                );
+                block.rotation.y = (Math.random() - 0.5) * 0.02;
+                group.add(block);
+            }
+        }
+
+        // 上部笠木
+        const coping = new THREE.Mesh(
+            new THREE.BoxGeometry(width + 0.26, 0.12, blockD + 0.12),
+            capMat
+        );
+        coping.position.set(0, baseH + height + 0.08, 0.01);
+        group.add(coping);
+
+        // 端部の控え壁
+        for (const side of [-1, 1]) {
+            const buttress = new THREE.Mesh(
+                new THREE.BoxGeometry(0.24, height * 0.78, blockD + 0.18),
+                mortarMat
+            );
+            buttress.position.set(side * (width * 0.5 + 0.06), baseH + height * 0.39, 0);
+            group.add(buttress);
+        }
+
+        // 破損片（少量）で「壊れた塀」感は維持
+        for (let d = 0; d < 2; d++) {
+            const debSize = 0.16 + Math.random() * 0.2;
             const deb = new THREE.Mesh(
                 new THREE.BoxGeometry(debSize, debSize, debSize),
-                wallMat
+                blockMat
             );
             deb.position.set(
-                (Math.random() - 0.5) * w,
-                Math.random() * 0.5,
-                (Math.random() - 0.5) * 0.5
+                -width * 0.35 + Math.random() * width * 0.7,
+                0.05 + Math.random() * 0.2,
+                (Math.random() - 0.5) * 0.35
             );
             deb.rotation.set(Math.random(), Math.random(), Math.random());
             group.add(deb);
         }
+
+        group.rotation.y = (Math.random() - 0.5) * 0.24;
         return group;
     }
 
@@ -3031,10 +6525,1156 @@ export class World {
             });
         });
         this.chunks = [];
+        // ダイナミックプロップは全てチャンクの子なのでここで参照だけ全捨て
+        // （捨てないと update() が解放済 Mesh を触ってメモリリーク+描画破綻の原因になる）
+        this.dynamicProps = [];
         this.lastChunkZ = scrollZ - this.chunkSize;
         for (let z = scrollZ - this.chunkSize; z <= scrollZ + this.chunkSize * 2; z += this.chunkSize) {
             this._generateChunk(z);
         }
+    }
+
+    /* ========================================================
+     *  LATE-STAGE DYNAMIC PROPS（Metal Slug 後半ステージ精緻化）
+     *  各ビルダー関数は g (THREE.Group) にメッシュを追加して g を返す。
+     *  動的要素（炎・煙・揺れ等）は this.dynamicProps に登録し update で更新。
+     * ======================================================== */
+
+    // 燃える石油櫓: 4本の鉄骨タワー + 上部の炎 + 黒煙
+    _buildBurningDerrick(g) {
+        const towerMat = new THREE.MeshStandardMaterial({ color: 0x3A3225, roughness: 0.85, metalness: 0.4 });
+        const beamGeo = new THREE.BoxGeometry(0.18, 7.0, 0.18);
+        // 4 本の脚（外向き傾斜）
+        const legs = [];
+        for (let i = 0; i < 4; i++) {
+            const ang = (i / 4) * Math.PI * 2 + Math.PI / 4;
+            const leg = new THREE.Mesh(beamGeo, towerMat);
+            leg.position.set(Math.cos(ang) * 1.0, 3.5, Math.sin(ang) * 1.0);
+            leg.rotation.x = Math.sin(ang) * 0.12;
+            leg.rotation.z = -Math.cos(ang) * 0.12;
+            g.add(leg);
+            legs.push(leg);
+        }
+        // 横補強（X 字 x3 段）
+        const braceGeo = new THREE.BoxGeometry(2.2, 0.08, 0.08);
+        for (let y = 1.4; y < 6.5; y += 1.5) {
+            for (let r = 0; r < 4; r++) {
+                const b = new THREE.Mesh(braceGeo, towerMat);
+                b.position.y = y;
+                b.rotation.y = (r * Math.PI / 2);
+                b.position.x = Math.cos(r * Math.PI / 2) * 1.0;
+                b.position.z = Math.sin(r * Math.PI / 2) * 1.0;
+                b.rotation.z = (r % 2) * 0.15;
+                g.add(b);
+            }
+        }
+        // パイプ（中央）
+        const pipe = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.18, 0.18, 7.5, 10),
+            new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.6, roughness: 0.5 })
+        );
+        pipe.position.y = 3.75;
+        g.add(pipe);
+        // 炎（複数の重ねた半透明スプライト風）
+        const flameLayers = [];
+        for (let i = 0; i < 5; i++) {
+            const f = new THREE.Mesh(
+                new THREE.ConeGeometry(0.6 - i * 0.06, 1.2 + i * 0.2, 8),
+                new THREE.MeshBasicMaterial({
+                    color: i < 2 ? 0xFFEE88 : (i < 4 ? 0xFF7722 : 0xCC2211),
+                    transparent: true, opacity: 0.85 - i * 0.08,
+                })
+            );
+            f.position.y = 7.0 + i * 0.25;
+            g.add(f);
+            flameLayers.push(f);
+        }
+        // 黒煙（円盤を上空に重ねる）
+        const smokePuffs = [];
+        for (let i = 0; i < 4; i++) {
+            const s = new THREE.Mesh(
+                new THREE.SphereGeometry(0.7 + i * 0.15, 8, 6),
+                new THREE.MeshBasicMaterial({
+                    color: 0x222222, transparent: true, opacity: 0.55 - i * 0.1,
+                })
+            );
+            s.position.set((Math.random() - 0.5) * 0.6, 8.5 + i * 0.6, (Math.random() - 0.5) * 0.6);
+            g.add(s);
+            smokePuffs.push({ mesh: s, baseY: s.position.y, phase: Math.random() * Math.PI * 2 });
+        }
+        this.dynamicProps.push({ type: 'derrick', flameLayers, smokePuffs, time: 0 });
+        return g;
+    }
+
+    // 工業煙突（赤白縞）+ 立ち昇る煙
+    _buildSmokestack(g) {
+        const stripe1 = new THREE.MeshStandardMaterial({ color: 0xC4C4C4, roughness: 0.85 });
+        const stripe2 = new THREE.MeshStandardMaterial({ color: 0xB13322, roughness: 0.8 });
+        // 8 段の縞
+        for (let i = 0; i < 8; i++) {
+            const r = 0.65 - i * 0.025;
+            const seg = new THREE.Mesh(new THREE.CylinderGeometry(r, r + 0.02, 0.85, 12), i % 2 ? stripe2 : stripe1);
+            seg.position.y = 0.4 + i * 0.85;
+            g.add(seg);
+        }
+        // 上端のリム
+        const rim = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.50, 0.55, 0.18, 14),
+            new THREE.MeshStandardMaterial({ color: 0x3A3A3A, metalness: 0.6, roughness: 0.4 })
+        );
+        rim.position.y = 7.3;
+        g.add(rim);
+        // 煙（複数の黒灰色玉）
+        const smokePuffs = [];
+        for (let i = 0; i < 5; i++) {
+            const s = new THREE.Mesh(
+                new THREE.SphereGeometry(0.55 + i * 0.18, 8, 6),
+                new THREE.MeshBasicMaterial({
+                    color: i < 2 ? 0x444444 : 0x666666, transparent: true, opacity: 0.7 - i * 0.1,
+                })
+            );
+            s.position.set(0, 7.6 + i * 0.7, 0);
+            g.add(s);
+            smokePuffs.push({ mesh: s, baseY: s.position.y, phase: Math.random() * Math.PI * 2 });
+        }
+        // ベースのコンクリート土台
+        const base = new THREE.Mesh(
+            new THREE.BoxGeometry(2.0, 0.6, 2.0),
+            new THREE.MeshStandardMaterial({ color: 0x6A6A60, roughness: 0.95 })
+        );
+        base.position.y = 0.3;
+        g.add(base);
+        this.dynamicProps.push({ type: 'smokestack', smokePuffs, time: 0 });
+        return g;
+    }
+
+    // ガントリークレーン: 4本脚アーチ + 揺れる吊り鎖 + 鉄製フック
+    _buildGantryCrane(g) {
+        const steelMat = new THREE.MeshStandardMaterial({ color: 0x6B5520, roughness: 0.7, metalness: 0.4 });
+        // アーチの4本柱
+        const legGeo = new THREE.BoxGeometry(0.3, 6.0, 0.3);
+        for (let x of [-2.5, 2.5]) {
+            for (let z of [-1, 1]) {
+                const leg = new THREE.Mesh(legGeo, steelMat);
+                leg.position.set(x, 3.0, z);
+                g.add(leg);
+            }
+        }
+        // 上部の梁（横長）
+        const topBeam = new THREE.Mesh(new THREE.BoxGeometry(6.5, 0.4, 0.5), steelMat);
+        topBeam.position.set(0, 6.0, 0);
+        g.add(topBeam);
+        // トラス補強（上面）
+        for (let i = 0; i < 5; i++) {
+            const t = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 1.2), steelMat);
+            t.position.set(-2.5 + i * 1.25, 6.0, 0);
+            t.rotation.x = i % 2 ? 0.5 : -0.5;
+            g.add(t);
+        }
+        // 中央のキャリッジ + 吊り鎖（揺れる）
+        const carriage = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.3, 0.7), steelMat);
+        carriage.position.set(0, 5.7, 0);
+        g.add(carriage);
+        const chainGroup = new THREE.Group();
+        chainGroup.position.set(0, 5.6, 0);
+        g.add(chainGroup);
+        // 鎖のリング 5 個
+        const linkMat = new THREE.MeshStandardMaterial({ color: 0x444444, metalness: 0.7, roughness: 0.4 });
+        for (let i = 0; i < 5; i++) {
+            const link = new THREE.Mesh(new THREE.TorusGeometry(0.08, 0.018, 5, 10), linkMat);
+            link.position.y = -0.15 - i * 0.15;
+            link.rotation.x = (i % 2) ? Math.PI / 2 : 0;
+            chainGroup.add(link);
+        }
+        // フック
+        const hook = new THREE.Mesh(
+            new THREE.TorusGeometry(0.18, 0.04, 6, 10, Math.PI * 1.4),
+            new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.6, roughness: 0.5 })
+        );
+        hook.position.y = -0.95;
+        hook.rotation.x = Math.PI / 2;
+        chainGroup.add(hook);
+        // 警告ストライプ
+        const warnMat = new THREE.MeshStandardMaterial({ color: 0xE2C24A, roughness: 0.7 });
+        const warn = new THREE.Mesh(new THREE.BoxGeometry(6.5, 0.12, 0.1), warnMat);
+        warn.position.set(0, 5.78, 0.30);
+        g.add(warn);
+        this.dynamicProps.push({ type: 'crane', chainGroup, time: Math.random() * 5 });
+        return g;
+    }
+
+    // 撃破された Di-Cokka 戦車（くすぶる残骸）
+    _buildWreckedTank(g) {
+        const hullMat = new THREE.MeshStandardMaterial({ color: 0x3A3A28, roughness: 0.95 });
+        const burntMat = new THREE.MeshStandardMaterial({ color: 0x1A1810, roughness: 1.0 });
+        // 焦げた車体
+        const hull = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.7, 1.5), hullMat);
+        hull.position.y = 0.5;
+        hull.rotation.z = 0.08;
+        g.add(hull);
+        // 焦げた砲塔（ひっくり返り気味）
+        const turret = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.6, 1.2), burntMat);
+        turret.position.set(0.2, 1.0, 0);
+        turret.rotation.z = 0.25;
+        turret.rotation.y = 0.4;
+        g.add(turret);
+        // 折れた砲身
+        const barrel = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.11, 0.11, 1.4, 8),
+            burntMat
+        );
+        barrel.rotation.z = Math.PI / 2 + 0.5; // 折れ曲がり
+        barrel.position.set(1.3, 1.1, 0);
+        g.add(barrel);
+        // 砕けたキャタピラ片
+        const trackMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.95 });
+        for (let s of [-1, 1]) {
+            const track = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.25, 0.3), trackMat);
+            track.position.set(0, 0.13, s * 0.85);
+            track.rotation.z = s * 0.05;
+            g.add(track);
+            // 千切れたパッド
+            for (let i = 0; i < 3; i++) {
+                const pad = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.08, 0.28), trackMat);
+                pad.position.set(-1.2 + i * 0.5, 0.05, s * 1.1);
+                pad.rotation.y = Math.random() * 0.5;
+                pad.rotation.z = (Math.random() - 0.5) * 0.4;
+                g.add(pad);
+            }
+        }
+        // 焦げ穴（黒い円盤を車体に貼る）
+        const hole = new THREE.Mesh(
+            new THREE.CircleGeometry(0.2, 8),
+            new THREE.MeshBasicMaterial({ color: 0x080604 })
+        );
+        hole.position.set(0.3, 0.7, 0.76);
+        hole.rotation.y = -0.1;
+        g.add(hole);
+        // くすぶる細い煙
+        const smokePuffs = [];
+        for (let i = 0; i < 3; i++) {
+            const s = new THREE.Mesh(
+                new THREE.SphereGeometry(0.25 + i * 0.10, 7, 5),
+                new THREE.MeshBasicMaterial({
+                    color: 0x4a4a4a, transparent: true, opacity: 0.55 - i * 0.12,
+                })
+            );
+            s.position.set(0.3, 1.5 + i * 0.5, 0);
+            g.add(s);
+            smokePuffs.push({ mesh: s, baseY: s.position.y, phase: Math.random() * Math.PI * 2 });
+        }
+        // 残り火（小さな赤点）
+        const ember = new THREE.Mesh(
+            new THREE.SphereGeometry(0.10, 6, 4),
+            new THREE.MeshBasicMaterial({ color: 0xFF5522 })
+        );
+        ember.position.set(0.3, 0.7, 0.78);
+        g.add(ember);
+        this.dynamicProps.push({ type: 'wreck', smokePuffs, ember, time: Math.random() * 3 });
+        return g;
+    }
+
+    // 対空砲台: 土嚢で囲まれた高射砲（旋回する銃身）
+    _buildAntiAirGun(g) {
+        // 土嚢サークル
+        const sandMat = new THREE.MeshStandardMaterial({ color: 0x9B8B5B, roughness: 0.95 });
+        for (let i = 0; i < 12; i++) {
+            const a = (i / 12) * Math.PI * 2;
+            for (let layer = 0; layer < 2; layer++) {
+                const sb = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.28, 0.32), sandMat);
+                sb.position.set(Math.cos(a) * 1.6, 0.15 + layer * 0.30, Math.sin(a) * 1.6);
+                sb.rotation.y = a + Math.PI / 2;
+                g.add(sb);
+            }
+        }
+        // 中央のコンクリート基礎
+        const base = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.7, 0.8, 0.4, 14),
+            new THREE.MeshStandardMaterial({ color: 0x5a5a4a, roughness: 0.9 })
+        );
+        base.position.y = 0.20;
+        g.add(base);
+        // 砲塔（旋回部）
+        const gunGroup = new THREE.Group();
+        gunGroup.position.y = 0.4;
+        g.add(gunGroup);
+        const turret = new THREE.Mesh(
+            new THREE.BoxGeometry(0.7, 0.4, 0.9),
+            new THREE.MeshStandardMaterial({ color: 0x3a4828, roughness: 0.6, metalness: 0.4 })
+        );
+        turret.position.y = 0.25;
+        gunGroup.add(turret);
+        // 4 連装の銃身（上向き）
+        const barrelMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, metalness: 0.6, roughness: 0.4 });
+        for (let i = 0; i < 4; i++) {
+            const bx = (i % 2 - 0.5) * 0.18;
+            const bz = (Math.floor(i / 2) - 0.5) * 0.18;
+            const b = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1.4, 8), barrelMat);
+            b.position.set(bx, 1.15, bz);
+            gunGroup.add(b);
+            // 冷却リブ
+            for (let r = 0; r < 4; r++) {
+                const rib = new THREE.Mesh(new THREE.TorusGeometry(0.07, 0.01, 5, 10), barrelMat);
+                rib.position.set(bx, 0.7 + r * 0.2, bz);
+                rib.rotation.x = Math.PI / 2;
+                gunGroup.add(rib);
+            }
+        }
+        // 砲口（暗い円）
+        const muzzle = new THREE.Mesh(new THREE.CircleGeometry(0.10, 8),
+            new THREE.MeshBasicMaterial({ color: 0x080604 }));
+        muzzle.position.set(0, 1.85, 0);
+        muzzle.rotation.x = Math.PI / 2;
+        gunGroup.add(muzzle);
+        // 弾薬箱
+        const ammoMat = new THREE.MeshStandardMaterial({ color: 0x4A4A2A, roughness: 0.9 });
+        const ammo = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.3, 0.5), ammoMat);
+        ammo.position.set(-1.2, 0.5, 0.5);
+        g.add(ammo);
+        this.dynamicProps.push({ type: 'aagun', gunGroup, time: Math.random() * 5 });
+        return g;
+    }
+
+    // 巨大反逆軍旗（風になびく赤旗 + ロゴ星）
+    _buildRebelBanner(g) {
+        const poleMat = new THREE.MeshStandardMaterial({ color: 0x3A2818, roughness: 0.85 });
+        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.10, 0.12, 7.0, 10), poleMat);
+        pole.position.y = 3.5;
+        g.add(pole);
+        // 旗本体（揺れる: 個別 group で動かす）
+        const flagGroup = new THREE.Group();
+        flagGroup.position.set(0, 6.0, 0.55);
+        g.add(flagGroup);
+        const flagMat = new THREE.MeshStandardMaterial({
+            color: 0xB12822, side: THREE.DoubleSide, roughness: 0.85,
+        });
+        // 旗をセグメントに分割（波打ち表現）
+        const segs = [];
+        for (let i = 0; i < 5; i++) {
+            const seg = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 1.6), flagMat);
+            seg.position.set(0.3 + i * 0.6, 0, 0);
+            seg.rotation.y = Math.PI / 2;
+            flagGroup.add(seg);
+            segs.push(seg);
+        }
+        // 星章（黄色）
+        const starMat = new THREE.MeshStandardMaterial({ color: 0xE2C24A, metalness: 0.6, roughness: 0.4 });
+        const star = new THREE.Mesh(new THREE.SphereGeometry(0.30, 8, 6), starMat);
+        star.position.set(1.3, 0, -0.05);
+        star.scale.set(1.0, 1.0, 0.2);
+        flagGroup.add(star);
+        // ポールの上端の球飾り
+        const knob = new THREE.Mesh(
+            new THREE.SphereGeometry(0.16, 8, 6),
+            new THREE.MeshStandardMaterial({ color: 0xCFAE54, metalness: 0.7, roughness: 0.3 })
+        );
+        knob.position.y = 7.1;
+        g.add(knob);
+        // ベース
+        const base = new THREE.Mesh(
+            new THREE.BoxGeometry(0.8, 0.4, 0.8),
+            new THREE.MeshStandardMaterial({ color: 0x5a5a4a, roughness: 0.9 })
+        );
+        base.position.y = 0.20;
+        g.add(base);
+        this.dynamicProps.push({ type: 'banner', flagGroup, segs, time: Math.random() * 10 });
+        return g;
+    }
+
+    // サーチライト塔（回転する光線）
+    _buildSearchlightTower(g) {
+        const steelMat = new THREE.MeshStandardMaterial({ color: 0x4A4A4A, metalness: 0.5, roughness: 0.6 });
+        // 4本足のトラス塔
+        for (let x of [-0.7, 0.7]) {
+            for (let z of [-0.7, 0.7]) {
+                const leg = new THREE.Mesh(new THREE.BoxGeometry(0.14, 6.0, 0.14), steelMat);
+                leg.position.set(x * 0.7, 3.0, z * 0.7);
+                leg.rotation.x = z * 0.05;
+                leg.rotation.z = -x * 0.05;
+                g.add(leg);
+            }
+        }
+        // X ブレース
+        for (let y = 1.2; y < 5.8; y += 1.5) {
+            for (let r = 0; r < 4; r++) {
+                const b = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.06, 0.06), steelMat);
+                b.position.y = y;
+                b.position.x = Math.cos(r * Math.PI / 2) * 0.5;
+                b.position.z = Math.sin(r * Math.PI / 2) * 0.5;
+                b.rotation.y = r * Math.PI / 2;
+                b.rotation.z = (r % 2 ? 0.4 : -0.4);
+                g.add(b);
+            }
+        }
+        // 上部プラットフォーム
+        const platform = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.15, 1.4), steelMat);
+        platform.position.y = 6.0;
+        g.add(platform);
+        // 回転する灯火（円筒 + 前面のレンズ）
+        const lightGroup = new THREE.Group();
+        lightGroup.position.set(0, 6.4, 0);
+        g.add(lightGroup);
+        const housing = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.4, 0.4, 0.6, 12),
+            new THREE.MeshStandardMaterial({ color: 0x2a2a2a, metalness: 0.5, roughness: 0.5 })
+        );
+        housing.rotation.z = Math.PI / 2;
+        lightGroup.add(housing);
+        const lens = new THREE.Mesh(
+            new THREE.CircleGeometry(0.36, 14),
+            new THREE.MeshBasicMaterial({ color: 0xFFF8B0 })
+        );
+        lens.position.x = 0.31;
+        lens.rotation.y = -Math.PI / 2;
+        lightGroup.add(lens);
+        // 光線（円錐、半透明）
+        const beam = new THREE.Mesh(
+            new THREE.ConeGeometry(1.2, 8, 14, 1, true),
+            new THREE.MeshBasicMaterial({
+                color: 0xFFF4A0, transparent: true, opacity: 0.18,
+                side: THREE.DoubleSide, depthWrite: false,
+            })
+        );
+        beam.rotation.z = -Math.PI / 2;
+        beam.position.x = 4.2;
+        lightGroup.add(beam);
+        this.dynamicProps.push({ type: 'searchlight', lightGroup, time: Math.random() * 10 });
+        return g;
+    }
+
+    // 装甲ゲート（左右の重スライド扉 + 警告灯）
+    _buildFortressGate(g) {
+        const concreteMat = _sharedMat('gate_concrete', () => new THREE.MeshStandardMaterial({ color: 0x6A675E, roughness: 0.92 }));
+        const steelMat = _sharedMat('gate_steel', () => new THREE.MeshStandardMaterial({ color: 0x3A3F45, roughness: 0.55, metalness: 0.45 }));
+        const stripeMat = _sharedMat('gate_stripe', () => new THREE.MeshStandardMaterial({ color: 0xC28A24, roughness: 0.85 }));
+
+        const base = new THREE.Mesh(new THREE.BoxGeometry(4.8, 0.5, 2.4), concreteMat);
+        base.position.y = 0.25;
+        g.add(base);
+
+        for (const x of [-2.0, 2.0]) {
+            const pillar = new THREE.Mesh(new THREE.BoxGeometry(1.1, 4.6, 1.2), concreteMat);
+            pillar.position.set(x, 2.3, 0);
+            g.add(pillar);
+        }
+
+        const lintel = new THREE.Mesh(new THREE.BoxGeometry(5.1, 0.9, 1.3), concreteMat);
+        lintel.position.y = 4.8;
+        g.add(lintel);
+
+        const leftDoor = new THREE.Mesh(new THREE.BoxGeometry(1.7, 3.7, 0.22), steelMat);
+        leftDoor.position.set(-0.9, 2.15, 0);
+        g.add(leftDoor);
+        const rightDoor = new THREE.Mesh(new THREE.BoxGeometry(1.7, 3.7, 0.22), steelMat);
+        rightDoor.position.set(0.9, 2.15, 0);
+        g.add(rightDoor);
+
+        for (let i = 0; i < 4; i++) {
+            const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.65, 0.03), stripeMat);
+            stripe.position.set(-0.2 + i * 0.4, 2.2, 0.13);
+            stripe.rotation.z = Math.PI / 6;
+            g.add(stripe);
+        }
+
+        const lampMats = [];
+        for (const x of [-2.25, 2.25]) {
+            const lampMat = new THREE.MeshBasicMaterial({ color: 0xFF3311, transparent: true, opacity: 0.9 });
+            lampMats.push(lampMat);
+            const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.16, 8, 6), lampMat);
+            lamp.position.set(x, 5.35, 0.45);
+            g.add(lamp);
+        }
+
+        this.dynamicProps.push({ type: 'fortress_gate', leftDoor, rightDoor, lampMats, time: Math.random() * 10 });
+        return g;
+    }
+
+    // レーダードーム（回転皿 + 警告ビーコン）
+    _buildRadarDome(g) {
+        const domeMat = _sharedMat('radar_dome', () => new THREE.MeshStandardMaterial({ color: 0x868B90, roughness: 0.6, metalness: 0.3 }));
+        const baseMat = _sharedMat('radar_base', () => new THREE.MeshStandardMaterial({ color: 0x5E6368, roughness: 0.85 }));
+        const dishMat = _sharedMat('radar_dish', () => new THREE.MeshStandardMaterial({ color: 0xB6BDC4, roughness: 0.45, metalness: 0.55 }));
+
+        const base = new THREE.Mesh(new THREE.CylinderGeometry(2.0, 2.2, 1.1, 16), baseMat);
+        base.position.y = 0.55;
+        g.add(base);
+
+        const dome = new THREE.Mesh(new THREE.SphereGeometry(1.7, 18, 12, 0, Math.PI * 2, 0, Math.PI * 0.52), domeMat);
+        dome.position.y = 1.35;
+        g.add(dome);
+
+        const radarGroup = new THREE.Group();
+        radarGroup.position.set(0, 2.1, 0);
+        g.add(radarGroup);
+
+        const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 1.0, 8), baseMat);
+        mast.position.y = 0.5;
+        radarGroup.add(mast);
+
+        const dish = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.08, 0.28, 16), dishMat);
+        dish.position.y = 1.1;
+        dish.rotation.z = -0.35;
+        radarGroup.add(dish);
+
+        const arm = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.08, 0.08), baseMat);
+        arm.position.y = 1.1;
+        arm.position.x = 0.42;
+        radarGroup.add(arm);
+
+        const beaconMats = [];
+        for (const z of [-1.5, 1.5]) {
+            const lampMat = new THREE.MeshBasicMaterial({ color: 0xFF4422, transparent: true, opacity: 0.5 });
+            beaconMats.push(lampMat);
+            const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.11, 7, 5), lampMat);
+            beacon.position.set(0, 0.95, z);
+            g.add(beacon);
+        }
+
+        this.dynamicProps.push({ type: 'radar', radarGroup, beaconMats, time: Math.random() * 10 });
+        return g;
+    }
+
+    // 古代の砂漠ピラミッド遺跡（風化した破損形状）
+    _buildPyramidRuin(g) {
+        const stoneMat = new THREE.MeshStandardMaterial({ color: 0xA89668, roughness: 0.95 });
+        // 4 層の積み重ね（上に行くほど狭く、欠損気味）
+        const layers = [
+            { w: 5.0, h: 0.9, off: 0 },
+            { w: 4.0, h: 0.8, off: 0.05 },
+            { w: 3.0, h: 0.7, off: -0.10 },
+            { w: 2.0, h: 0.6, off: 0.08 },
+        ];
+        let y = 0;
+        for (let i = 0; i < layers.length; i++) {
+            const L = layers[i];
+            const block = new THREE.Mesh(new THREE.BoxGeometry(L.w, L.h, L.w), stoneMat);
+            block.position.set(L.off, y + L.h / 2, L.off);
+            block.rotation.y = (i % 2) * 0.04;
+            g.add(block);
+            y += L.h;
+        }
+        // 頂上欠損: 斜め切り風の小さなブロック
+        const topChunk = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.4, 1.0), stoneMat);
+        topChunk.position.set(0.2, y + 0.2, -0.1);
+        topChunk.rotation.y = 0.4;
+        topChunk.rotation.z = 0.2;
+        g.add(topChunk);
+        // 入口（黒い四角穴）
+        const door = new THREE.Mesh(
+            new THREE.BoxGeometry(0.6, 1.0, 0.05),
+            new THREE.MeshBasicMaterial({ color: 0x100A06 })
+        );
+        door.position.set(0, 0.5, 2.51);
+        g.add(door);
+        // 風化のひび（細い暗い帯）
+        const crackMat = new THREE.MeshBasicMaterial({ color: 0x5a4828 });
+        for (let i = 0; i < 4; i++) {
+            const c = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.5 + Math.random() * 0.5, 0.02), crackMat);
+            c.position.set((Math.random() - 0.5) * 4, 1.0 + Math.random() * 1.5, 2.51);
+            c.rotation.z = (Math.random() - 0.5) * 0.4;
+            g.add(c);
+        }
+        // ヒエログリフ風の浅い装飾（金色帯）
+        const goldMat = new THREE.MeshStandardMaterial({ color: 0xCFAE54, metalness: 0.5, roughness: 0.6 });
+        const band = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.10, 0.05), goldMat);
+        band.position.set(0, 0.3, 2.52);
+        g.add(band);
+        return g;
+    }
+
+    // 崩落高層廃墟（斜めに傾いた多層ブロック）
+    _buildCollapsedHighrise(g) {
+        const wallMat = _sharedMat('highrise_wall', () => new THREE.MeshStandardMaterial({ color: 0x7A7468, roughness: 0.92 }));
+        const frameMat = _sharedMat('highrise_frame', () => new THREE.MeshStandardMaterial({ color: 0x4F4A42, roughness: 0.75, metalness: 0.2 }));
+        const windowMat = _sharedMat('highrise_window', () => new THREE.MeshStandardMaterial({ color: 0x1D252D, roughness: 0.35, metalness: 0.25 }));
+
+        const core = new THREE.Mesh(new THREE.BoxGeometry(4.2, 7.4, 2.8), wallMat);
+        core.position.set(0, 3.7, 0);
+        core.rotation.z = -0.10;
+        g.add(core);
+
+        const annex = new THREE.Mesh(new THREE.BoxGeometry(2.2, 4.6, 2.4), wallMat);
+        annex.position.set(-2.2, 2.3, 0.1);
+        annex.rotation.z = 0.14;
+        g.add(annex);
+
+        for (let y = 1.0; y <= 6.2; y += 1.1) {
+            for (let z = -0.9; z <= 0.9; z += 0.9) {
+                const win = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.55, 0.42), windowMat);
+                win.position.set(2.06, y, z);
+                win.rotation.z = -0.10;
+                g.add(win);
+            }
+        }
+
+        for (let i = 0; i < 6; i++) {
+            const beam = new THREE.Mesh(new THREE.BoxGeometry(0.14, 1.0 + Math.random() * 1.2, 0.14), frameMat);
+            beam.position.set(-1.0 + i * 0.4, 0.5 + Math.random() * 1.1, -1.1 + Math.random() * 2.2);
+            beam.rotation.set((Math.random() - 0.5) * 0.5, Math.random() * Math.PI, (Math.random() - 0.5) * 0.7);
+            g.add(beam);
+        }
+
+        return g;
+    }
+
+    // 砲撃跡クレーター帯（終盤の地形変化）
+    _buildCraterBelt(g, intensity = 2) {
+        const dirtMat = _sharedMat('crater_dirt', () => new THREE.MeshStandardMaterial({ color: 0x7B5E3A, roughness: 0.96 }));
+        const rimMat = _sharedMat('crater_rim', () => new THREE.MeshStandardMaterial({ color: 0x9B7347, roughness: 0.94 }));
+        const coreMat = _sharedMat('crater_core', () => new THREE.MeshBasicMaterial({ color: 0x2A2218 }));
+        const steelMat = _sharedMat('crater_steel', () => new THREE.MeshStandardMaterial({ color: 0x454545, roughness: 0.6, metalness: 0.4 }));
+
+        const craterCount = 2 + Math.min(4, intensity);
+        for (let i = 0; i < craterCount; i++) {
+            const radius = 0.75 + Math.random() * (0.45 + intensity * 0.08);
+            const cg = new THREE.Group();
+            cg.position.set((Math.random() - 0.5) * 5.2, 0, (Math.random() - 0.5) * 2.6);
+
+            const core = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.78, radius * 0.92, 0.05, 12), coreMat);
+            core.position.y = 0.02;
+            cg.add(core);
+
+            const rim = new THREE.Mesh(new THREE.TorusGeometry(radius, 0.11 + Math.random() * 0.04, 6, 14), rimMat);
+            rim.position.y = 0.05;
+            rim.rotation.x = Math.PI / 2;
+            cg.add(rim);
+
+            // 飛散した土塊・鉄片
+            const debrisCount = 3 + Math.floor(Math.random() * 4);
+            for (let d = 0; d < debrisCount; d++) {
+                const isSteel = Math.random() > 0.68;
+                const piece = new THREE.Mesh(
+                    isSteel
+                        ? new THREE.BoxGeometry(0.10 + Math.random() * 0.2, 0.05 + Math.random() * 0.08, 0.05 + Math.random() * 0.18)
+                        : new THREE.DodecahedronGeometry(0.09 + Math.random() * 0.13, 0),
+                    isSteel ? steelMat : dirtMat
+                );
+                const a = Math.random() * Math.PI * 2;
+                const r = radius * (1.1 + Math.random() * 0.8);
+                piece.position.set(Math.cos(a) * r, 0.06 + Math.random() * 0.2, Math.sin(a) * r);
+                piece.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+                cg.add(piece);
+            }
+
+            g.add(cg);
+        }
+        return g;
+    }
+
+    // 塹壕 + 土嚢 + 鉄条線の複合バリケード
+    _buildTrenchBarricade(g, phase = 0) {
+        const soilMat = _sharedMat('trench_soil', () => new THREE.MeshStandardMaterial({ color: 0x8B6B44, roughness: 0.97 }));
+        const darkSoil = _sharedMat('trench_dark', () => new THREE.MeshStandardMaterial({ color: 0x3A2E1F, roughness: 1.0 }));
+        const bagMat = _sharedMat('trench_bag', () => new THREE.MeshStandardMaterial({ color: 0xA78E62, roughness: 0.95 }));
+        const poleMat = _sharedMat('trench_pole', () => new THREE.MeshStandardMaterial({ color: 0x4E3A24, roughness: 0.9 }));
+        const wireMat = _sharedMat('trench_wire', () => new THREE.MeshBasicMaterial({ color: 0x888888 }));
+
+        const len = 4.2 + phase * 0.7;
+        const trenchFloor = new THREE.Mesh(new THREE.BoxGeometry(len, 0.06, 1.6), darkSoil);
+        trenchFloor.position.y = 0.03;
+        g.add(trenchFloor);
+        const sideA = new THREE.Mesh(new THREE.BoxGeometry(len, 0.45, 0.48), soilMat);
+        sideA.position.set(0, 0.22, -1.0);
+        g.add(sideA);
+        const sideB = new THREE.Mesh(new THREE.BoxGeometry(len, 0.45, 0.48), soilMat);
+        sideB.position.set(0, 0.22, 1.0);
+        g.add(sideB);
+
+        // 塹壕前縁の土嚢列
+        const bagCount = 6 + phase;
+        for (let i = 0; i < bagCount; i++) {
+            const b = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.22, 0.28), bagMat);
+            b.position.set(-len / 2 + 0.35 + i * (len / bagCount), 0.42 + (i % 2) * 0.05, 1.18);
+            b.rotation.y = (Math.random() - 0.5) * 0.18;
+            g.add(b);
+        }
+
+        // 鉄条線
+        const postCount = 4 + phase;
+        for (let i = 0; i < postCount; i++) {
+            const x = -len / 2 + i * (len / Math.max(1, postCount - 1));
+            const post = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.05, 0.95, 5), poleMat);
+            post.position.set(x, 0.48, 1.52);
+            post.rotation.z = (Math.random() - 0.5) * 0.12;
+            g.add(post);
+            for (let h = 0.28; h <= 0.72; h += 0.22) {
+                const wire = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 0.9, 4), wireMat);
+                wire.position.set(x + 0.45, h, 1.52);
+                wire.rotation.y = Math.PI / 2;
+                g.add(wire);
+            }
+        }
+
+        return g;
+    }
+
+    // 重装バンカー（終盤の大型防衛建造物）
+    _buildFortifiedBunker(g) {
+        const concreteMat = _sharedMat('bunker_concrete', () => new THREE.MeshStandardMaterial({ color: 0x6F6A61, roughness: 0.94 }));
+        const steelMat = _sharedMat('bunker_steel', () => new THREE.MeshStandardMaterial({ color: 0x3A3F44, roughness: 0.55, metalness: 0.5 }));
+        const darkMat = _sharedMat('bunker_dark', () => new THREE.MeshBasicMaterial({ color: 0x14100C }));
+        const stripeMat = _sharedMat('bunker_stripe', () => new THREE.MeshStandardMaterial({ color: 0xB7832A, roughness: 0.86 }));
+
+        const body = new THREE.Mesh(new THREE.BoxGeometry(3.8, 1.8, 2.6), concreteMat);
+        body.position.y = 0.9;
+        g.add(body);
+        const roof = new THREE.Mesh(new THREE.BoxGeometry(4.2, 0.36, 2.9), concreteMat);
+        roof.position.y = 1.95;
+        g.add(roof);
+
+        // 射撃スリット
+        for (const z of [-0.75, 0.0, 0.75]) {
+            const slit = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.22, 0.5), darkMat);
+            slit.position.set(1.92, 1.05, z);
+            g.add(slit);
+        }
+
+        // 側面補強
+        for (const z of [-1.15, 1.15]) {
+            const butt = new THREE.Mesh(new THREE.BoxGeometry(3.2, 1.2, 0.35), concreteMat);
+            butt.position.set(-0.15, 0.7, z);
+            g.add(butt);
+        }
+
+        // 上部ハッチ
+        const hatch = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.12, 10), steelMat);
+        hatch.position.set(-0.6, 2.2, 0);
+        g.add(hatch);
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(0.36, 0.03, 6, 14), steelMat);
+        ring.position.set(-0.6, 2.26, 0);
+        ring.rotation.x = Math.PI / 2;
+        g.add(ring);
+
+        // 警告マーキング
+        for (let i = 0; i < 3; i++) {
+            const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.5, 0.05), stripeMat);
+            stripe.position.set(1.94, 0.65 + i * 0.45, -1.22);
+            stripe.rotation.z = Math.PI / 5;
+            g.add(stripe);
+        }
+        return g;
+    }
+
+    // 崩落高架（波打つ終盤地形）
+    _buildBrokenOverpass(g, phase = 0) {
+        const concreteMat = _sharedMat('overpass_concrete', () => new THREE.MeshStandardMaterial({ color: 0x7A7468, roughness: 0.95 }));
+        const rustMat = _sharedMat('overpass_rust', () => new THREE.MeshStandardMaterial({ color: 0x6A3E22, roughness: 0.92, metalness: 0.25 }));
+
+        const span = 6.5 + phase * 0.6;
+        const deckA = new THREE.Mesh(new THREE.BoxGeometry(span * 0.58, 0.38, 2.2), concreteMat);
+        deckA.position.set(-span * 0.15, 2.9, 0);
+        deckA.rotation.z = -0.24;
+        g.add(deckA);
+        const deckB = new THREE.Mesh(new THREE.BoxGeometry(span * 0.46, 0.34, 2.0), concreteMat);
+        deckB.position.set(span * 0.25, 2.2, 0.35);
+        deckB.rotation.z = 0.33;
+        g.add(deckB);
+
+        for (const x of [-2.4, 0.2, 2.1]) {
+            const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.7, 2.4 + Math.random() * 1.2, 0.9), concreteMat);
+            pillar.position.set(x, 1.1 + Math.random() * 0.35, -0.65 + Math.random() * 1.3);
+            pillar.rotation.z = (Math.random() - 0.5) * 0.12;
+            g.add(pillar);
+        }
+
+        // 飛び出した鉄筋
+        for (let i = 0; i < 6 + phase; i++) {
+            const rebar = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.6 + Math.random() * 0.8, 5), rustMat);
+            rebar.position.set(1.2 + (Math.random() - 0.5) * 2.2, 2.4 + Math.random() * 1.0, (Math.random() - 0.5) * 1.6);
+            rebar.rotation.set(Math.random(), Math.random() * Math.PI, Math.random());
+            g.add(rebar);
+        }
+        return g;
+    }
+
+    // 警報サイレン塔（回転ヘッド + 点滅灯）
+    _buildSirenMast(g) {
+        const mastMat = _sharedMat('siren_mast', () => new THREE.MeshStandardMaterial({ color: 0x454A52, roughness: 0.62, metalness: 0.45 }));
+        const baseMat = _sharedMat('siren_base', () => new THREE.MeshStandardMaterial({ color: 0x6A665C, roughness: 0.9 }));
+        const lampCore = _sharedMat('siren_core', () => new THREE.MeshStandardMaterial({ color: 0xAA2918, roughness: 0.35, metalness: 0.35, emissive: 0x330A08 }));
+
+        const base = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.9, 0.55, 12), baseMat);
+        base.position.y = 0.28;
+        g.add(base);
+
+        const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, 4.8, 8), mastMat);
+        mast.position.y = 2.7;
+        g.add(mast);
+
+        const headGroup = new THREE.Group();
+        headGroup.position.set(0, 5.15, 0);
+        g.add(headGroup);
+        const bar = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.16, 0.22), mastMat);
+        headGroup.add(bar);
+        const hornL = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.45, 8), mastMat);
+        hornL.position.x = 0.72;
+        hornL.rotation.z = -Math.PI / 2;
+        headGroup.add(hornL);
+        const hornR = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.45, 8), mastMat);
+        hornR.position.x = -0.72;
+        hornR.rotation.z = Math.PI / 2;
+        headGroup.add(hornR);
+
+        const lampMats = [];
+        for (const z of [-0.24, 0.24]) {
+            const lm = lampCore.clone();
+            const glow = new THREE.MeshBasicMaterial({ color: 0xFF3B1A, transparent: true, opacity: 0.4 });
+            lampMats.push({ core: lm, glow });
+
+            const lens = new THREE.Mesh(new THREE.SphereGeometry(0.11, 7, 5), lm);
+            lens.position.set(0, 5.35, z);
+            g.add(lens);
+            const halo = new THREE.Mesh(new THREE.SphereGeometry(0.18, 7, 5), glow);
+            halo.position.set(0, 5.35, z);
+            g.add(halo);
+        }
+
+        this.dynamicProps.push({ type: 'siren', headGroup, lampMats, time: Math.random() * 10 });
+        return g;
+    }
+
+    // 蒸気噴出パイプ（地面から立ち上がる L 字管 + 蒸気）
+    _buildSteamVent(g) {
+        const pipeMat = new THREE.MeshStandardMaterial({ color: 0x6a6a6a, metalness: 0.5, roughness: 0.55 });
+        const rustMat = new THREE.MeshStandardMaterial({ color: 0x8a4a2a, roughness: 0.85 });
+        // 縦管
+        const vpipe = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 1.6, 10), pipeMat);
+        vpipe.position.y = 0.8;
+        g.add(vpipe);
+        // L 字曲がり（球）
+        const elbow = new THREE.Mesh(new THREE.SphereGeometry(0.20, 10, 8), pipeMat);
+        elbow.position.y = 1.6;
+        g.add(elbow);
+        // 横管
+        const hpipe = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.8, 10), pipeMat);
+        hpipe.position.set(0.4, 1.6, 0);
+        hpipe.rotation.z = Math.PI / 2;
+        g.add(hpipe);
+        // 出口リング
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.03, 6, 12), rustMat);
+        ring.position.set(0.85, 1.6, 0);
+        ring.rotation.y = Math.PI / 2;
+        g.add(ring);
+        // バルブハンドル
+        const valve = new THREE.Mesh(new THREE.TorusGeometry(0.14, 0.018, 6, 12), rustMat);
+        valve.position.y = 0.6;
+        valve.rotation.y = Math.PI / 2;
+        g.add(valve);
+        // 蒸気（白い半透明球、複数）
+        const steamPuffs = [];
+        for (let i = 0; i < 5; i++) {
+            const s = new THREE.Mesh(
+                new THREE.SphereGeometry(0.18 + i * 0.06, 7, 5),
+                new THREE.MeshBasicMaterial({
+                    color: 0xEEEEEE, transparent: true, opacity: 0.55 - i * 0.10,
+                })
+            );
+            s.position.set(0.85 + i * 0.20, 1.6, 0);
+            g.add(s);
+            steamPuffs.push({ mesh: s, basePos: s.position.clone(), phase: Math.random() * Math.PI * 2 });
+        }
+        this.dynamicProps.push({ type: 'steam', steamPuffs, time: Math.random() * 5 });
+        return g;
+    }
+
+    // 深部要塞の巨大工場ファサード。道路脇の遠景ランドマークとして使う。
+    _buildWarFactoryFacade(g, phase = 5) {
+        const wallMat = _sharedMat('war_factory_wall', () => new THREE.MeshStandardMaterial({ color: 0x5F625B, roughness: 0.9, metalness: 0.12 }));
+        const darkMat = _sharedMat('war_factory_dark', () => new THREE.MeshBasicMaterial({ color: 0x11100E }));
+        const steelMat = _sharedMat('war_factory_steel', () => new THREE.MeshStandardMaterial({ color: 0x3D4348, roughness: 0.55, metalness: 0.55 }));
+        const rustMat = _sharedMat('war_factory_rust', () => new THREE.MeshStandardMaterial({ color: 0x7B4524, roughness: 0.9, metalness: 0.28 }));
+        const warnMat = _sharedMat('war_factory_warn', () => new THREE.MeshStandardMaterial({ color: 0xD0A12A, roughness: 0.78 }));
+        const lampMat = _sharedMat('war_factory_lamp', () => new THREE.MeshBasicMaterial({ color: 0xFF3B1E }));
+
+        const h = 6.2 + Math.min(4, phase - 5) * 0.45;
+        const main = new THREE.Mesh(new THREE.BoxGeometry(6.8, h, 2.8), wallMat);
+        main.position.y = h / 2;
+        g.add(main);
+
+        const annex = new THREE.Mesh(new THREE.BoxGeometry(3.0, h * 0.72, 2.6), wallMat);
+        annex.position.set(-4.2, h * 0.36, 0.15);
+        annex.rotation.z = -0.04;
+        g.add(annex);
+
+        const roof = new THREE.Mesh(new THREE.BoxGeometry(7.4, 0.45, 3.2), steelMat);
+        roof.position.y = h + 0.2;
+        g.add(roof);
+
+        for (let y = 1.1; y < h - 0.4; y += 1.0) {
+            for (let z = -0.95; z <= 0.95; z += 0.48) {
+                const win = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.42, 0.25), darkMat);
+                win.position.set(3.43, y, z);
+                g.add(win);
+            }
+        }
+
+        // 外付け配管とタンク
+        for (const z of [-1.45, 1.45]) {
+            const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, h * 0.92, 8), rustMat);
+            pipe.position.set(3.58, h * 0.47, z);
+            g.add(pipe);
+            for (let y = 1.2; y < h; y += 1.35) {
+                const clamp = new THREE.Mesh(new THREE.TorusGeometry(0.10, 0.014, 5, 10), steelMat);
+                clamp.position.set(3.58, y, z);
+                clamp.rotation.x = Math.PI / 2;
+                g.add(clamp);
+            }
+        }
+
+        for (let i = 0; i < 3; i++) {
+            const vent = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.18, 0.55), steelMat);
+            vent.position.set(3.55, h + 0.55, -0.75 + i * 0.75);
+            vent.rotation.z = 0.08;
+            g.add(vent);
+            const glow = new THREE.Mesh(new THREE.SphereGeometry(0.08, 6, 4), lampMat);
+            glow.position.set(3.95, h + 0.62, -0.75 + i * 0.75);
+            g.add(glow);
+        }
+
+        // 前面のキャットウォークと斜め補強
+        const walk = new THREE.Mesh(new THREE.BoxGeometry(7.4, 0.12, 0.55), steelMat);
+        walk.position.set(3.62, 3.1, 0);
+        g.add(walk);
+        for (let z = -1.2; z <= 1.2; z += 0.4) {
+            const rail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.55, 0.04), steelMat);
+            rail.position.set(3.66, 3.42, z);
+            g.add(rail);
+        }
+        for (let i = 0; i < 5; i++) {
+            const brace = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.0, 0.08), steelMat);
+            brace.position.set(3.70, 2.6, -1.05 + i * 0.52);
+            brace.rotation.z = i % 2 ? 0.38 : -0.38;
+            g.add(brace);
+        }
+
+        // 警告ストライプ付き搬入口
+        const door = new THREE.Mesh(new THREE.BoxGeometry(0.10, 1.7, 1.4), darkMat);
+        door.position.set(3.48, 0.88, 0);
+        g.add(door);
+        for (let i = 0; i < 6; i++) {
+            const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.32, 0.06), i % 2 ? warnMat : steelMat);
+            stripe.position.set(3.55, 0.25 + i * 0.25, -0.72);
+            stripe.rotation.z = Math.PI / 5;
+            g.add(stripe);
+        }
+
+        return g;
+    }
+
+    // 深部要塞の線路・コンクリート障害物。道路中央にも出せる地形変化。
+    _buildRailYardBarricade(g, phase = 5) {
+        const railMat = _sharedMat('rail_yard_rail', () => new THREE.MeshStandardMaterial({ color: 0x3A3A3A, roughness: 0.45, metalness: 0.75 }));
+        const sleeperMat = _sharedMat('rail_yard_sleeper', () => new THREE.MeshStandardMaterial({ color: 0x4A2D1A, roughness: 0.92 }));
+        const concreteMat = _sharedMat('rail_yard_concrete', () => new THREE.MeshStandardMaterial({ color: 0x777169, roughness: 0.94 }));
+        const hazardMat = _sharedMat('rail_yard_hazard', () => new THREE.MeshStandardMaterial({ color: 0xC5972A, roughness: 0.82 }));
+
+        const len = 6.0 + Math.min(4, phase - 5) * 0.7;
+        for (const z of [-0.52, 0.52]) {
+            const rail = new THREE.Mesh(new THREE.BoxGeometry(len, 0.10, 0.08), railMat);
+            rail.position.set(0, 0.12, z);
+            rail.rotation.z = (Math.random() - 0.5) * 0.04;
+            g.add(rail);
+        }
+        for (let i = 0; i < 9; i++) {
+            const sleeper = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.12, 1.55), sleeperMat);
+            sleeper.position.set(-len / 2 + i * (len / 8), 0.06, 0);
+            sleeper.rotation.y = (Math.random() - 0.5) * 0.16;
+            g.add(sleeper);
+        }
+
+        for (const x of [-2.0, 0.2, 2.3]) {
+            const block = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.55, 0.9), concreteMat);
+            block.position.set(x, 0.34, 1.15 + (Math.random() - 0.5) * 0.4);
+            block.rotation.y = (Math.random() - 0.5) * 0.35;
+            g.add(block);
+            const plate = new THREE.Mesh(new THREE.BoxGeometry(1.12, 0.06, 0.92), hazardMat);
+            plate.position.set(x, 0.65, block.position.z);
+            plate.rotation.y = block.rotation.y;
+            g.add(plate);
+        }
+
+        for (let i = 0; i < 5; i++) {
+            const mine = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.20, 0.08, 10), railMat);
+            mine.position.set(-2.5 + i * 1.1, 0.08, -1.12 + (i % 2) * 0.35);
+            g.add(mine);
+            const cap = new THREE.Mesh(new THREE.SphereGeometry(0.04, 5, 4), hazardMat);
+            cap.position.set(mine.position.x, 0.15, mine.position.z);
+            g.add(cap);
+        }
+
+        return g;
+    }
+
+    // 旋回する巨大砲座。深部要塞の破壊可能ランドマーク。
+    _buildMegaCannonEmplacement(g) {
+        const concreteMat = _sharedMat('mega_cannon_concrete', () => new THREE.MeshStandardMaterial({ color: 0x696962, roughness: 0.94 }));
+        const steelMat = _sharedMat('mega_cannon_steel', () => new THREE.MeshStandardMaterial({ color: 0x343A40, roughness: 0.48, metalness: 0.62 }));
+        const darkMat = _sharedMat('mega_cannon_dark', () => new THREE.MeshBasicMaterial({ color: 0x090909 }));
+        const warnMat = _sharedMat('mega_cannon_warn', () => new THREE.MeshStandardMaterial({ color: 0xC79A2E, roughness: 0.75 }));
+
+        const base = new THREE.Mesh(new THREE.CylinderGeometry(1.9, 2.25, 0.65, 18), concreteMat);
+        base.position.y = 0.33;
+        g.add(base);
+
+        for (let i = 0; i < 10; i++) {
+            const a = i / 10 * Math.PI * 2;
+            const bag = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.26, 0.32), concreteMat);
+            bag.position.set(Math.cos(a) * 2.25, 0.75, Math.sin(a) * 2.25);
+            bag.rotation.y = a;
+            g.add(bag);
+        }
+
+        const turretGroup = new THREE.Group();
+        turretGroup.position.y = 0.75;
+        g.add(turretGroup);
+
+        const turret = new THREE.Mesh(new THREE.BoxGeometry(1.65, 0.75, 1.45), steelMat);
+        turret.position.y = 0.45;
+        turretGroup.add(turret);
+        const barrelGroup = new THREE.Group();
+        barrelGroup.position.set(0.75, 0.48, 0);
+        turretGroup.add(barrelGroup);
+
+        for (const z of [-0.16, 0.16]) {
+            const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.13, 2.55, 10), steelMat);
+            barrel.rotation.z = Math.PI / 2;
+            barrel.position.set(1.15, 0.0, z);
+            barrelGroup.add(barrel);
+            const muzzle = new THREE.Mesh(new THREE.RingGeometry(0.10, 0.15, 12), darkMat);
+            muzzle.position.set(2.45, 0.0, z);
+            muzzle.rotation.y = Math.PI / 2;
+            barrelGroup.add(muzzle);
+        }
+
+        const ammoDrum = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.38, 0.52, 12), steelMat);
+        ammoDrum.position.set(-0.82, 0.42, 0);
+        ammoDrum.rotation.z = Math.PI / 2;
+        turretGroup.add(ammoDrum);
+
+        const lampMats = [];
+        for (const z of [-0.62, 0.62]) {
+            const lm = new THREE.MeshBasicMaterial({ color: 0xFF321A, transparent: true, opacity: 0.65 });
+            lampMats.push(lm);
+            const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.08, 6, 4), lm);
+            lamp.position.set(0.55, 1.15, z);
+            turretGroup.add(lamp);
+        }
+
+        for (let i = 0; i < 5; i++) {
+            const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.38, 0.04), i % 2 ? warnMat : darkMat);
+            stripe.position.set(0.75, 0.74, -0.72 + i * 0.36);
+            stripe.rotation.z = Math.PI / 5;
+            turretGroup.add(stripe);
+        }
+
+        this.dynamicProps.push({ type: 'mega_cannon', turretGroup, barrelGroup, lampMats, time: Math.random() * 10 });
+        return g;
+    }
+
+    // パルス式シールド発生器。透明なリングとコアが脈動する。
+    _buildShieldGenerator(g) {
+        const baseMat = _sharedMat('shield_gen_base', () => new THREE.MeshStandardMaterial({ color: 0x4F565A, roughness: 0.78, metalness: 0.35 }));
+        const coilMat = _sharedMat('shield_gen_coil', () => new THREE.MeshStandardMaterial({ color: 0x2E3238, roughness: 0.44, metalness: 0.7 }));
+        const copperMat = _sharedMat('shield_gen_copper', () => new THREE.MeshStandardMaterial({ color: 0xB46A2A, roughness: 0.45, metalness: 0.65 }));
+
+        const base = new THREE.Mesh(new THREE.CylinderGeometry(1.05, 1.25, 0.55, 16), baseMat);
+        base.position.y = 0.28;
+        g.add(base);
+
+        const rings = [];
+        for (let i = 0; i < 3; i++) {
+            const ring = new THREE.Mesh(new THREE.TorusGeometry(0.82 - i * 0.16, 0.035, 8, 18), coilMat);
+            ring.position.y = 1.05 + i * 0.52;
+            ring.rotation.x = Math.PI / 2;
+            g.add(ring);
+            rings.push(ring);
+        }
+
+        for (let i = 0; i < 4; i++) {
+            const a = i / 4 * Math.PI * 2 + Math.PI / 4;
+            const pylon = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, 2.2, 8), coilMat);
+            pylon.position.set(Math.cos(a) * 0.82, 1.25, Math.sin(a) * 0.82);
+            g.add(pylon);
+            const wire = new THREE.Mesh(new THREE.TorusGeometry(0.12, 0.014, 5, 10), copperMat);
+            wire.position.set(Math.cos(a) * 0.82, 1.95, Math.sin(a) * 0.82);
+            wire.rotation.x = Math.PI / 2;
+            g.add(wire);
+        }
+
+        const coreMat = new THREE.MeshBasicMaterial({ color: 0x66E8FF, transparent: true, opacity: 0.78 });
+        const core = new THREE.Mesh(new THREE.SphereGeometry(0.32, 12, 8), coreMat);
+        core.position.y = 1.78;
+        g.add(core);
+
+        const shieldMat = new THREE.MeshBasicMaterial({
+            color: 0x66CCFF, transparent: true, opacity: 0.13,
+            blending: THREE.AdditiveBlending, depthWrite: false,
+            side: THREE.DoubleSide,
+        });
+        const shield = new THREE.Mesh(new THREE.SphereGeometry(1.65, 18, 10), shieldMat);
+        shield.position.y = 1.6;
+        shield.scale.set(1.0, 0.78, 1.0);
+        g.add(shield);
+
+        this.dynamicProps.push({ type: 'shield_generator', rings, core, coreMat, shield, shieldMat, time: Math.random() * 10 });
+        return g;
+    }
+
+    // ミサイルサイロ群。ハッチと警告灯が周期的に動く。
+    _buildMissileSiloCluster(g) {
+        const concreteMat = _sharedMat('silo_concrete', () => new THREE.MeshStandardMaterial({ color: 0x66625B, roughness: 0.94 }));
+        const steelMat = _sharedMat('silo_steel', () => new THREE.MeshStandardMaterial({ color: 0x30343A, roughness: 0.52, metalness: 0.55 }));
+        const missileMat = _sharedMat('silo_missile', () => new THREE.MeshStandardMaterial({ color: 0xD0D0C8, roughness: 0.48, metalness: 0.32 }));
+        const tipMat = _sharedMat('silo_tip', () => new THREE.MeshStandardMaterial({ color: 0xBB2B1E, roughness: 0.5, metalness: 0.22 }));
+
+        const hatches = [];
+        const missileGroups = [];
+        const beaconMats = [];
+
+        for (let i = 0; i < 3; i++) {
+            const x = -1.25 + i * 1.25;
+            const silo = new THREE.Mesh(new THREE.CylinderGeometry(0.52, 0.62, 0.9, 16), concreteMat);
+            silo.position.set(x, 0.45, 0);
+            g.add(silo);
+
+            const rim = new THREE.Mesh(new THREE.TorusGeometry(0.53, 0.055, 8, 16), steelMat);
+            rim.position.set(x, 0.94, 0);
+            rim.rotation.x = Math.PI / 2;
+            g.add(rim);
+
+            const hatch = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.08, 0.95), steelMat);
+            hatch.position.set(x - 0.16, 1.04, 0);
+            g.add(hatch);
+            hatches.push({ mesh: hatch, baseX: hatch.position.x, side: i % 2 ? -1 : 1 });
+
+            const missileGroup = new THREE.Group();
+            missileGroup.position.set(x, 0.82, 0);
+            g.add(missileGroup);
+            const body = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 1.05, 10), missileMat);
+            body.position.y = 0.5;
+            missileGroup.add(body);
+            const tip = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.28, 10), tipMat);
+            tip.position.y = 1.16;
+            missileGroup.add(tip);
+            missileGroups.push({ group: missileGroup, baseY: missileGroup.position.y, phase: i * 0.55 });
+
+            const lm = new THREE.MeshBasicMaterial({ color: 0xFF3A1F, transparent: true, opacity: 0.45 });
+            beaconMats.push(lm);
+            const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.07, 6, 4), lm);
+            beacon.position.set(x + 0.42, 1.18, 0.42);
+            g.add(beacon);
+        }
+
+        const pipeMat = _sharedMat('silo_pipe', () => new THREE.MeshStandardMaterial({ color: 0x454545, roughness: 0.55, metalness: 0.58 }));
+        for (const z of [-0.72, 0.72]) {
+            const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 3.4, 8), pipeMat);
+            pipe.position.set(0, 0.38, z);
+            pipe.rotation.z = Math.PI / 2;
+            g.add(pipe);
+        }
+
+        this.dynamicProps.push({ type: 'missile_silo', hatches, missileGroups, beaconMats, time: Math.random() * 10 });
+        return g;
     }
 
     /* ========================================================
@@ -3046,17 +7686,73 @@ export class World {
         if (this.roadMesh) this.roadMesh.position.z = scrollZ;
         if (this.skyMesh) this.skyMesh.position.z = scrollZ;
         if (this.skyPhotoMesh) this.skyPhotoMesh.position.z = scrollZ;
+        if (this.sunHalo) {
+            // 太陽ハローもスクロールに追従、常に sunDir の方向
+            const sd = this.skyMesh && this.skyMesh.material.uniforms
+                ? this.skyMesh.material.uniforms.sunDir.value
+                : null;
+            if (sd) {
+                this.sunHalo.position.set(sd.x * 150, sd.y * 150, scrollZ + sd.z * 150);
+                this.sunHalo.lookAt(0, this.sunHalo.position.y * 0.5, scrollZ);
+            }
+        }
         if (this.rutMeshes) {
             this.rutMeshes.forEach(r => r.position.z = scrollZ);
+        }
+        if (this.pebbleMeshes) {
+            this.pebbleMeshes.forEach(p => {
+                const relZ = p.mesh.position.z - scrollZ;
+                if (relZ < -50) p.mesh.position.z += 90;
+                else if (relZ > 50) p.mesh.position.z -= 90;
+            });
+        }
+        if (this.trackDots) {
+            this.trackDots.forEach(t => {
+                const relZ = t.mesh.position.z - scrollZ;
+                if (relZ < -50) t.mesh.position.z += 100;
+                else if (relZ > 50) t.mesh.position.z -= 100;
+            });
+        }
+        if (this.farSilhouettes) {
+            this.farSilhouettes.forEach(s => {
+                if (s.lateralRow) {
+                    // 横方向の遠景は scrollZ にゆるく追従
+                    s.mesh.position.z = s.baseZOffset + scrollZ * (1 - s.parallax);
+                } else {
+                    // 前後の遠景: 指定オフセットに scrollZ を加算
+                    s.mesh.position.z = s.baseZOffset + scrollZ;
+                }
+            });
+        }
+        if (this.heatShimmers) {
+            this.heatShimmers.forEach(s => {
+                s.phase += dt * s.speed;
+                s.mesh.position.y = s.baseY + Math.sin(s.phase) * s.amp;
+                const offsetY = Math.sin(s.phase * 1.5) * 0.05;
+                s.mesh.scale.set(1 + offsetY, 1, 1);
+                // スクロールに追従してラップ
+                const relZ = s.mesh.position.z - scrollZ;
+                if (relZ < -45) s.mesh.position.z += 90;
+                else if (relZ > 45) s.mesh.position.z -= 90;
+            });
+        }
+        if (this.sandDrift) {
+            this.sandDrift.forEach(g => {
+                g.phase += dt * 2.0;
+                g.mesh.position.x += g.vx * dt;
+                g.mesh.position.y += Math.sin(g.phase) * g.bobAmp * dt + g.vy * dt;
+                if (g.mesh.position.x > 35) g.mesh.position.x = -35;
+                if (g.mesh.position.y < 0.1) g.mesh.position.y = 2.0;
+                if (g.mesh.position.y > 2.5) g.mesh.position.y = 0.2;
+                const relZ = g.mesh.position.z - scrollZ;
+                if (relZ < -40) g.mesh.position.z += 80;
+                else if (relZ > 40) g.mesh.position.z -= 80;
+            });
         }
 
         if (this.photoForegroundMeshes.length > 0) {
             this.photoForegroundMeshes.forEach((entry) => {
-                if (entry.isFront) {
-                    entry.mesh.position.z = scrollZ + 56;
-                } else {
-                    entry.mesh.position.z = scrollZ;
-                }
+                entry.mesh.position.z = scrollZ + (entry.zOffset || 0);
             });
         }
 
@@ -3076,26 +7772,526 @@ export class World {
             });
         });
 
+        // ダイナミックプロップのアニメーション
+        for (let i = this.dynamicProps.length - 1; i >= 0; i--) {
+            const p = this.dynamicProps[i];
+            p.time += dt;
+            switch (p.type) {
+                case 'derrick': {
+                    // 炎: 上下に揺らぎ、明滅
+                    p.flameLayers.forEach((f, idx) => {
+                        const flick = 0.85 + Math.sin(p.time * (8 + idx * 1.3) + idx) * 0.25 + (Math.random() - 0.5) * 0.15;
+                        f.scale.set(flick, 0.85 + Math.cos(p.time * 6 + idx) * 0.20, flick);
+                        f.rotation.y = Math.sin(p.time * 4 + idx) * 0.15;
+                    });
+                    p.smokePuffs.forEach((s, idx) => {
+                        s.phase += dt * 0.6;
+                        s.mesh.position.y = s.baseY + Math.sin(s.phase) * 0.4 + p.time * 0.3 % 2;
+                        s.mesh.position.x = Math.sin(s.phase * 0.5 + idx) * 0.5;
+                        const sc = 1.0 + Math.sin(s.phase) * 0.15;
+                        s.mesh.scale.set(sc, sc, sc);
+                    });
+                    break;
+                }
+                case 'smokestack': {
+                    p.smokePuffs.forEach((s, idx) => {
+                        s.phase += dt * 0.5;
+                        s.mesh.position.y = s.baseY + (p.time * 0.4 + idx * 0.3) % 1.5;
+                        s.mesh.position.x = Math.sin(s.phase) * 0.4;
+                        const sc = 1.0 + Math.sin(s.phase) * 0.12;
+                        s.mesh.scale.set(sc, sc, sc);
+                    });
+                    break;
+                }
+                case 'crane': {
+                    // 鎖が左右にゆっくり揺れる
+                    p.chainGroup.rotation.x = Math.sin(p.time * 0.8) * 0.18;
+                    p.chainGroup.rotation.z = Math.cos(p.time * 0.6) * 0.10;
+                    break;
+                }
+                case 'wreck': {
+                    p.smokePuffs.forEach((s, idx) => {
+                        s.phase += dt * 0.7;
+                        s.mesh.position.y = s.baseY + Math.sin(s.phase) * 0.25 + (p.time * 0.3 + idx) % 1.0;
+                        s.mesh.position.x = 0.3 + Math.sin(s.phase * 0.5) * 0.3;
+                    });
+                    if (p.ember) {
+                        // 残り火の明滅
+                        const f = 0.8 + Math.sin(p.time * 12) * 0.4 + Math.random() * 0.2;
+                        p.ember.scale.set(f, f, f);
+                    }
+                    break;
+                }
+                case 'aagun': {
+                    // 砲塔がゆっくり左右へ旋回（不気味な索敵）
+                    p.gunGroup.rotation.y = Math.sin(p.time * 0.4) * 0.6;
+                    break;
+                }
+                case 'banner': {
+                    // 旗のセグメントが順次波打つ
+                    p.segs.forEach((seg, idx) => {
+                        seg.rotation.x = Math.sin(p.time * 2.5 + idx * 0.8) * 0.18;
+                        seg.position.z = Math.sin(p.time * 2.5 + idx * 0.8) * 0.06;
+                    });
+                    p.flagGroup.rotation.y = Math.sin(p.time * 0.6) * 0.05;
+                    break;
+                }
+                case 'searchlight': {
+                    // ゆっくり旋回
+                    p.lightGroup.rotation.y = p.time * 0.6;
+                    break;
+                }
+                case 'steam': {
+                    // 蒸気が右方向へ流れて消えていく
+                    p.steamPuffs.forEach((s, idx) => {
+                        s.phase += dt * 1.5;
+                        const t = (p.time * 0.6 + idx * 0.25) % 1.5;
+                        s.mesh.position.x = s.basePos.x + t * 1.2;
+                        s.mesh.position.y = s.basePos.y + Math.sin(s.phase) * 0.2 + t * 0.3;
+                        const fade = Math.max(0, 1 - t / 1.5);
+                        s.mesh.material.opacity = fade * 0.55;
+                        const sc = 1.0 + t * 1.5;
+                        s.mesh.scale.set(sc, sc, sc);
+                    });
+                    break;
+                }
+                case 'fortress_gate': {
+                    const spread = 0.12 + (Math.sin(p.time * 0.9) * 0.5 + 0.5) * 0.55;
+                    p.leftDoor.position.z = -spread;
+                    p.rightDoor.position.z = spread;
+                    const blink = Math.max(0.25, Math.sin(p.time * 9) * 0.5 + 0.5);
+                    p.lampMats.forEach((m, idx) => {
+                        m.opacity = idx % 2 === 0 ? blink : (1 - blink * 0.75);
+                    });
+                    break;
+                }
+                case 'radar': {
+                    p.radarGroup.rotation.y += dt * 1.5;
+                    const pulse = Math.max(0.2, Math.sin(p.time * 5.5) * 0.5 + 0.5);
+                    p.beaconMats.forEach((m, idx) => {
+                        const phase = idx === 0 ? pulse : (1 - pulse * 0.8);
+                        m.opacity = phase;
+                    });
+                    break;
+                }
+                case 'siren': {
+                    p.headGroup.rotation.y += dt * 1.8;
+                    const pulse = Math.max(0.2, Math.sin(p.time * 8.5) * 0.5 + 0.5);
+                    p.lampMats.forEach((m, idx) => {
+                        const ph = idx === 0 ? pulse : (1 - pulse * 0.75);
+                        m.core.emissiveIntensity = 0.25 + ph * 0.8;
+                        m.glow.opacity = 0.15 + ph * 0.55;
+                    });
+                    break;
+                }
+                case 'mega_cannon': {
+                    p.turretGroup.rotation.y = Math.sin(p.time * 0.48) * 0.75;
+                    p.barrelGroup.position.x = 0.75 - Math.max(0, Math.sin(p.time * 2.6)) * 0.12;
+                    const blink = Math.max(0.18, Math.sin(p.time * 8.0) * 0.5 + 0.5);
+                    p.lampMats.forEach((m, idx) => {
+                        m.opacity = idx % 2 === 0 ? blink : (1 - blink * 0.65);
+                    });
+                    break;
+                }
+                case 'shield_generator': {
+                    p.rings.forEach((ring, idx) => {
+                        ring.rotation.z += dt * (0.7 + idx * 0.35) * (idx % 2 ? -1 : 1);
+                        const sc = 1 + Math.sin(p.time * 2.0 + idx) * 0.04;
+                        ring.scale.set(sc, sc, sc);
+                    });
+                    const pulse = Math.max(0.25, Math.sin(p.time * 4.0) * 0.5 + 0.5);
+                    p.core.scale.setScalar(0.85 + pulse * 0.45);
+                    p.coreMat.opacity = 0.45 + pulse * 0.35;
+                    p.shield.scale.set(1.0 + pulse * 0.08, 0.78 + pulse * 0.05, 1.0 + pulse * 0.08);
+                    p.shieldMat.opacity = 0.06 + pulse * 0.12;
+                    break;
+                }
+                case 'missile_silo': {
+                    const open = Math.max(0, Math.sin(p.time * 0.9)) * 0.42;
+                    p.hatches.forEach(h => {
+                        h.mesh.position.x = h.baseX + h.side * open;
+                    });
+                    p.missileGroups.forEach(m => {
+                        const lift = Math.max(0, Math.sin(p.time * 0.9 + m.phase)) * 0.35;
+                        m.group.position.y = m.baseY + lift;
+                    });
+                    const blink = Math.max(0.18, Math.sin(p.time * 7.5) * 0.5 + 0.5);
+                    p.beaconMats.forEach((m, idx) => {
+                        m.opacity = idx % 2 === 0 ? blink : (1 - blink * 0.65);
+                    });
+                    break;
+                }
+            }
+        }
+
         // チャンク生成（前方 +Z）
         while (this.lastChunkZ < scrollZ + this.viewRange) {
             this._generateChunk(this.lastChunkZ + this.chunkSize);
         }
 
         // チャンク削除（後方 -Z）
+        // 1 フレームあたり maxChunkDisposesPerFrame 個までに制限し、解放コストを分散する。
+        // 残ったチャンクは次フレーム以降に処理されるため、メモリ蓄積は数フレーム遅延するだけ。
+        let disposedThisFrame = 0;
         for (let i = this.chunks.length - 1; i >= 0; i--) {
+            if (disposedThisFrame >= this.maxChunkDisposesPerFrame) break;
             const chunk = this.chunks[i];
             if (chunk.startZ + this.chunkSize < scrollZ - this.cleanupRange) {
                 chunk.objects.forEach(obj => {
                     this.scene.remove(obj);
+                    // 関連するダイナミックプロップを除去（子孫も走査）
                     obj.traverse(child => {
+                        if (child.userData && child.userData.dynamicRef) {
+                            const idx = this.dynamicProps.indexOf(child.userData.dynamicRef);
+                            if (idx >= 0) this.dynamicProps.splice(idx, 1);
+                        }
                         if (child.isMesh) {
-                            child.geometry.dispose();
-                            if (child.material.dispose) child.material.dispose();
+                            const g = child.geometry;
+                            if (g && !(g.userData && g.userData.shared)) g.dispose();
+                            const mat = child.material;
+                            if (mat && mat.dispose && !(mat.userData && mat.userData.shared)) mat.dispose();
                         }
                     });
                 });
                 this.chunks.splice(i, 1);
+                disposedThisFrame++;
+                this._obstacleCacheDirty = true;
             }
         }
+
+        // ダイナミックプロップ上限（防衛的）— 想定外の蓄積を防ぐ
+        // 各プロップの mesh 参照は破棄済み chunk と共に既に dispose されているので
+        // ここでは配列から外すのみで安全。
+        const MAX_DYNAMIC_PROPS = 32;
+        if (this.dynamicProps.length > MAX_DYNAMIC_PROPS) {
+            this.dynamicProps.splice(0, this.dynamicProps.length - MAX_DYNAMIC_PROPS);
+        }
+    }
+
+    // ============================================
+    // STREET-SCAPE PROP BUILDERS
+    // ============================================
+
+    /** 高床式監視櫓: 4本の木柱 + プラットフォーム + 茅葺き屋根 */
+    _buildStiltWatchtower(group) {
+        const woodMat   = _sharedMat('stilt_wood',   () => new THREE.MeshStandardMaterial({ color: 0x6B4A2A, roughness: 0.9 }));
+        const darkWood  = _sharedMat('stilt_dark',   () => new THREE.MeshStandardMaterial({ color: 0x4A331E, roughness: 0.92 }));
+        const thatchMat = _sharedMat('stilt_thatch', () => new THREE.MeshStandardMaterial({ color: 0xC79858, roughness: 0.95, flatShading: true }));
+        const railMat   = _sharedMat('stilt_rail',   () => new THREE.MeshStandardMaterial({ color: 0x5C3A20, roughness: 0.92 }));
+
+        // 4本の傾いた支柱
+        for (let i = 0; i < 4; i++) {
+            const sx = (i % 2 === 0) ? -1 : 1;
+            const sz = (i < 2) ? -1 : 1;
+            const post = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.16, 4.6, 6), woodMat);
+            post.position.set(sx * 1.0, 2.3, sz * 1.0);
+            post.rotation.z = sx * 0.06;
+            post.rotation.x = sz * 0.06;
+            group.add(post);
+        }
+        // クロスブレース
+        for (let i = 0; i < 2; i++) {
+            const brace = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 2.5), darkWood);
+            brace.position.set(i === 0 ? -1.0 : 1.0, 1.4, 0);
+            brace.rotation.x = Math.PI / 4 * (i === 0 ? 1 : -1);
+            group.add(brace);
+        }
+        // プラットフォーム床
+        const floor = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.18, 2.6), woodMat);
+        floor.position.y = 4.55;
+        group.add(floor);
+        // 床板の縞
+        for (let i = -1; i <= 1; i++) {
+            const plank = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.05, 0.25), darkWood);
+            plank.position.set(0, 4.66, i * 0.7);
+            group.add(plank);
+        }
+        // 手摺
+        for (let s of [-1, 1]) {
+            const rail = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.05, 0.05), railMat);
+            rail.position.set(0, 5.15, s * 1.25);
+            group.add(rail);
+            for (let i = -1; i <= 1; i++) {
+                const post2 = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.6, 0.06), railMat);
+                post2.position.set(i * 1.1, 4.85, s * 1.25);
+                group.add(post2);
+            }
+        }
+        // 茅葺き円錐屋根（4面）
+        const roof = new THREE.Mesh(new THREE.ConeGeometry(2.2, 1.6, 4), thatchMat);
+        roof.position.y = 5.95;
+        roof.rotation.y = Math.PI / 4;
+        group.add(roof);
+        // 屋根の毛羽（雰囲気）
+        for (let i = 0; i < 12; i++) {
+            const a = (i / 12) * Math.PI * 2;
+            const tuft = new THREE.Mesh(new THREE.ConeGeometry(0.18, 0.5, 4), thatchMat);
+            tuft.position.set(Math.cos(a) * 1.7, 5.45, Math.sin(a) * 1.7);
+            tuft.rotation.z = Math.cos(a) * 0.25;
+            tuft.rotation.x = Math.sin(a) * 0.25;
+            group.add(tuft);
+        }
+        // 梯子
+        const ladderRail = _sharedMat('stilt_ladder', () => new THREE.MeshStandardMaterial({ color: 0x5A3818, roughness: 0.9 }));
+        for (let s of [-1, 1]) {
+            const r = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 4.6, 5), ladderRail);
+            r.position.set(s * 0.2, 2.3, -1.4);
+            r.rotation.x = -0.25;
+            group.add(r);
+        }
+        for (let i = 0; i < 8; i++) {
+            const rung = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.45, 4), ladderRail);
+            rung.position.set(0, 0.3 + i * 0.55, -1.4 - i * 0.13);
+            rung.rotation.z = Math.PI / 2;
+            group.add(rung);
+        }
+        return group;
+    }
+
+    /** オイルドラム集積（赤色・爆発物） */
+    _buildOilDrumRack(group) {
+        const palletMat = _sharedMat('oildrum_pallet', () => new THREE.MeshStandardMaterial({ color: 0x6B4A2A, roughness: 0.92 }));
+        const drumColors = [0xC23022, 0xA82A1F, 0xD0381E, 0x8E2418];
+        const bandMat = _sharedMat('oildrum_band', () => new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.8 }));
+        const warnMat = _sharedMat('oildrum_warn', () => new THREE.MeshBasicMaterial({ color: 0xFFCC22 }));
+        // 木製パレット
+        const pallet = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.18, 1.4), palletMat);
+        pallet.position.y = 0.09;
+        group.add(pallet);
+        // ドラム缶 6 本（3列 x 2列）
+        const positions = [
+            [-0.85, -0.42], [0, -0.42], [0.85, -0.42],
+            [-0.85,  0.42], [0,  0.42], [0.85,  0.42],
+        ];
+        positions.forEach(([px, pz], i) => {
+            const drumMat = _sharedMat('oildrum_' + (i % drumColors.length), () => new THREE.MeshStandardMaterial({
+                color: drumColors[i % drumColors.length],
+                roughness: 0.55, metalness: 0.6,
+                emissive: 0x220a05, emissiveIntensity: 0.18,
+            }));
+            const drum = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 1.3, 12), drumMat);
+            drum.position.set(px, 0.83, pz);
+            group.add(drum);
+            // 帯
+            const band = new THREE.Mesh(new THREE.TorusGeometry(0.43, 0.03, 4, 14), bandMat);
+            band.rotation.x = Math.PI / 2;
+            band.position.set(px, 0.83, pz);
+            group.add(band);
+            // 引火マーク（黄色三角）
+            const warn = new THREE.Mesh(new THREE.CircleGeometry(0.12, 3), warnMat);
+            warn.position.set(px, 0.95, pz + 0.43);
+            group.add(warn);
+        });
+        return group;
+    }
+
+    /** スクラップ金属の山 */
+    _buildScrapMetalPile(group) {
+        const rustyMats = [
+            _sharedMat('scrap_0', () => new THREE.MeshStandardMaterial({ color: 0x6E4329, roughness: 0.95, metalness: 0.4 })),
+            _sharedMat('scrap_1', () => new THREE.MeshStandardMaterial({ color: 0x5B3A24, roughness: 0.92, metalness: 0.5 })),
+            _sharedMat('scrap_2', () => new THREE.MeshStandardMaterial({ color: 0x3F2A1C, roughness: 0.88, metalness: 0.6 })),
+            _sharedMat('scrap_3', () => new THREE.MeshStandardMaterial({ color: 0x8B5A2B, roughness: 0.9, metalness: 0.45 })),
+        ];
+        // ベースの山
+        const base = new THREE.Mesh(new THREE.ConeGeometry(1.6, 0.6, 7), rustyMats[1]);
+        base.position.y = 0.3;
+        group.add(base);
+        // 散らばった鉄板/パイプ
+        for (let i = 0; i < 14; i++) {
+            const m = rustyMats[i % rustyMats.length];
+            const isPipe = Math.random() < 0.35;
+            const piece = isPipe
+                ? new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.6 + Math.random() * 0.7, 6), m)
+                : new THREE.Mesh(new THREE.BoxGeometry(0.4 + Math.random() * 0.6, 0.08 + Math.random() * 0.18, 0.3 + Math.random() * 0.5), m);
+            const a = Math.random() * Math.PI * 2;
+            const r = Math.random() * 1.0;
+            piece.position.set(Math.cos(a) * r, 0.4 + Math.random() * 0.7, Math.sin(a) * r);
+            piece.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+            group.add(piece);
+        }
+        // 上に突き出す鉄骨
+        const beam = new THREE.Mesh(new THREE.BoxGeometry(0.18, 1.6, 0.18), rustyMats[2]);
+        beam.position.set(0.2, 1.1, -0.1);
+        beam.rotation.z = 0.4;
+        group.add(beam);
+        return group;
+    }
+
+    /** 廃棄ジープ（コンセプト 0bSNIrGdkOIk の軍用車両） */
+    _buildWreckedJeep(group) {
+        const bodyMat = _sharedMat('jeep_body',  () => new THREE.MeshStandardMaterial({ color: 0x4A5A3A, roughness: 0.88, metalness: 0.4 }));
+        const dark    = _sharedMat('jeep_dark',  () => new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.85 }));
+        const rust    = _sharedMat('jeep_rust',  () => new THREE.MeshStandardMaterial({ color: 0x6B3A20, roughness: 0.95, metalness: 0.3 }));
+        const glassMat= _sharedMat('jeep_glass', () => new THREE.MeshStandardMaterial({ color: 0x223040, roughness: 0.3, metalness: 0.4, transparent: true, opacity: 0.6 }));
+
+        // 車体（傾けて廃棄感を出す）
+        const body = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.7, 1.3), bodyMat);
+        body.position.set(0, 0.55, 0);
+        group.add(body);
+        // ボンネット
+        const hood = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.5, 1.2), bodyMat);
+        hood.position.set(1.2, 0.45, 0);
+        group.add(hood);
+        // 後部
+        const trunk = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.85, 1.25), rust);
+        trunk.position.set(-1.0, 0.55, 0);
+        group.add(trunk);
+        // フロントガラス
+        const windshield = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.55, 1.1), glassMat);
+        windshield.position.set(0.65, 1.05, 0);
+        windshield.rotation.z = -0.3;
+        group.add(windshield);
+        // 4輪（やや潰れた）
+        const wheelMat = dark;
+        const wheelPositions = [[1.05, -0.6], [1.05, 0.6], [-1.05, -0.6], [-1.05, 0.6]];
+        wheelPositions.forEach(([wx, wz], i) => {
+            const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.22, 12), wheelMat);
+            wheel.rotation.x = Math.PI / 2;
+            wheel.position.set(wx, 0.32 - (i === 1 ? 0.1 : 0), wz);
+            group.add(wheel);
+        });
+        // 焦げた残骸エンジン
+        const engine = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.35, 0.9), dark);
+        engine.position.set(1.2, 0.8, 0);
+        group.add(engine);
+        // 煙突き残骸
+        const stack = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.5, 5), dark);
+        stack.position.set(1.4, 1.05, 0.4);
+        group.add(stack);
+        // 全体に焦げ感のため全体を少し傾ける
+        group.rotation.z = -0.06;
+        return group;
+    }
+
+    /** 弾薬箱の山積み */
+    _buildAmmoCrateStack(group) {
+        const woodMat    = _sharedMat('ammo_wood',    () => new THREE.MeshStandardMaterial({ color: 0x6E5034, roughness: 0.92 }));
+        const dark       = _sharedMat('ammo_dark',    () => new THREE.MeshStandardMaterial({ color: 0x4A3422, roughness: 0.92 }));
+        const stencilMat = _sharedMat('ammo_stencil', () => new THREE.MeshBasicMaterial({ color: 0xD0BC78 }));
+        // 下段 2 個
+        for (let i = -1; i <= 1; i += 2) {
+            const c = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.55, 0.65), woodMat);
+            c.position.set(i * 0.5, 0.28, 0);
+            c.rotation.y = (Math.random() - 0.5) * 0.2;
+            group.add(c);
+            // 補強帯
+            const strip = new THREE.Mesh(new THREE.BoxGeometry(0.97, 0.07, 0.67), dark);
+            strip.position.copy(c.position);
+            strip.position.y = 0.28;
+            strip.rotation.copy(c.rotation);
+            group.add(strip);
+            // ステンシル（マーク）
+            const mark = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.18), stencilMat);
+            mark.position.set(c.position.x, 0.4, 0.34);
+            mark.rotation.copy(c.rotation);
+            group.add(mark);
+        }
+        // 上段 1 個（ずれて）
+        const top = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.55, 0.65), woodMat);
+        top.position.set(-0.1, 0.83, -0.05);
+        top.rotation.y = 0.2;
+        group.add(top);
+        const topStrip = new THREE.Mesh(new THREE.BoxGeometry(0.97, 0.07, 0.67), dark);
+        topStrip.position.copy(top.position);
+        topStrip.rotation.copy(top.rotation);
+        group.add(topStrip);
+        const topMark = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.18), stencilMat);
+        topMark.position.set(-0.1, 0.93, 0.3);
+        topMark.rotation.copy(top.rotation);
+        group.add(topMark);
+        return group;
+    }
+
+    /** 軍用標識ポスト（複数の方向矢印） */
+    _buildMilitarySignpost(group) {
+        const postMat = _sharedMat('signpost_post', () => new THREE.MeshStandardMaterial({ color: 0x5A3A20, roughness: 0.92 }));
+        const baseMat = _sharedMat('signpost_base', () => new THREE.MeshStandardMaterial({ color: 0x3A2810, roughness: 0.9 }));
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.08, 2.6, 6), postMat);
+        post.position.y = 1.3;
+        group.add(post);
+        const arrowColors = [0x8B2A20, 0x5A6A3A, 0x2A4060, 0xAA8830];
+        const labels = 4;
+        for (let i = 0; i < labels; i++) {
+            const arrowMat = _sharedMat('signpost_arrow_' + (i % arrowColors.length),
+                () => new THREE.MeshStandardMaterial({ color: arrowColors[i % arrowColors.length], roughness: 0.85 }));
+            const arrow = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.28, 0.05), arrowMat);
+            const yawDir = (i / labels) * Math.PI * 2 + Math.random() * 0.2;
+            arrow.position.set(Math.cos(yawDir) * 0.42, 1.4 + i * 0.32, Math.sin(yawDir) * 0.42);
+            arrow.rotation.y = yawDir;
+            group.add(arrow);
+            // 矢じり
+            const tip = new THREE.Mesh(new THREE.ConeGeometry(0.18, 0.28, 3), arrowMat);
+            tip.rotation.z = -Math.PI / 2;
+            tip.position.set(Math.cos(yawDir) * 0.95, 1.4 + i * 0.32, Math.sin(yawDir) * 0.95);
+            tip.rotation.y = yawDir;
+            group.add(tip);
+        }
+        // ポスト基部
+        const base = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.22, 0.18, 8), baseMat);
+        base.position.y = 0.09;
+        group.add(base);
+        return group;
+    }
+
+    /** 無線アンテナ */
+    _buildRadioAntenna(group) {
+        const metalMat = _sharedMat('antenna_metal', () => new THREE.MeshStandardMaterial({ color: 0x707880, roughness: 0.6, metalness: 0.7 }));
+        const wireMat  = _sharedMat('antenna_wire',  () => new THREE.MeshBasicMaterial({ color: 0x222222 }));
+        const baseMat  = _sharedMat('antenna_base',  () => new THREE.MeshStandardMaterial({ color: 0x4A4A50, roughness: 0.85 }));
+        const dishMat  = _sharedMat('antenna_dish',  () => new THREE.MeshStandardMaterial({ color: 0xCFCFCF, roughness: 0.45, metalness: 0.7 }));
+        const lampMat  = _sharedMat('antenna_lamp',  () => new THREE.MeshBasicMaterial({ color: 0xFF3322 }));
+        // ベース
+        const base = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.4, 1.4), baseMat);
+        base.position.y = 0.2;
+        group.add(base);
+        // タワー本体（4本柱 + クロスブレース）
+        const towerH = 5.2;
+        for (let i = 0; i < 4; i++) {
+            const sx = (i % 2 === 0) ? -1 : 1;
+            const sz = (i < 2) ? -1 : 1;
+            const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, towerH, 4), metalMat);
+            leg.position.set(sx * 0.4, 0.4 + towerH / 2, sz * 0.4);
+            leg.rotation.z = sx * 0.04;
+            leg.rotation.x = sz * 0.04;
+            group.add(leg);
+        }
+        // ジグザグの斜材
+        for (let h = 0; h < 5; h++) {
+            const y = 0.6 + h * 0.95;
+            for (let s = 0; s < 4; s++) {
+                const a1 = (s / 4) * Math.PI * 2;
+                const a2 = ((s + 1) / 4) * Math.PI * 2;
+                const x1 = Math.cos(a1) * 0.42, z1 = Math.sin(a1) * 0.42;
+                const x2 = Math.cos(a2) * 0.42, z2 = Math.sin(a2) * 0.42;
+                const len = Math.hypot(x2 - x1, 0.5, z2 - z1);
+                const brace = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, len, 3), metalMat);
+                brace.position.set((x1 + x2) / 2, y, (z1 + z2) / 2);
+                brace.lookAt(x2, y + 0.5, z2);
+                brace.rotateX(Math.PI / 2);
+                group.add(brace);
+            }
+        }
+        // 上部のお皿アンテナ
+        const dish = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.05, 0.18, 12), dishMat);
+        dish.position.y = towerH + 0.6;
+        dish.rotation.z = -0.4;
+        group.add(dish);
+        // 細長スパイク
+        const spike = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.2, 4), metalMat);
+        spike.position.y = towerH + 1.2;
+        group.add(spike);
+        // 赤い航空灯
+        const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.09, 6, 5), lampMat);
+        lamp.position.y = towerH + 1.85;
+        group.add(lamp);
+        // ガイワイヤ（装飾）
+        for (let s of [-1, 1]) {
+            const w = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 5.5, 3), wireMat);
+            w.position.set(s * 1.2, 2.0, 0);
+            w.rotation.z = s * Math.PI / 6;
+            group.add(w);
+        }
+        return group;
     }
 }

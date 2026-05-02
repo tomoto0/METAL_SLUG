@@ -52,6 +52,9 @@ export class UIManager {
         this.aimAngleText = document.getElementById('aim-angle-text');
         this.aimModeText = document.getElementById('aim-mode-text');
 
+        this.lockOnReticleEl = document.getElementById('lock-on-reticle');
+        this._lockReticleVec = null;
+
         this.comboCount = 0;
         this.comboTimer = 0;
         this.comboTimeout = 2.0;
@@ -73,7 +76,22 @@ export class UIManager {
             'AIR RAID',
             'TOTAL WAR',
             'SKY DOMINION',
-            'FINAL STAND',
+            'BOSS CROSSROAD',
+            'UNDEAD CHARGE',
+            'STORM STRIKE',
+            'IRON PHALANX',
+            'OVERDRIVE FRONT',
+            'SCORCHED MARCH',
+            'SANDSTORM LINE',
+            'BLOOD BRIGADE',
+            'FORTRESS BREAK',
+            'DOOM LEGION',
+            'ARMORED RAIDERS',
+            'DEMOLITION FIRELINE',
+            'GUNSHIP MAELSTROM',
+            'SIEGE ENCIRCLEMENT',
+            'LAST DEFENSE GRID',
+            'ETERNAL ONSLAUGHT',
         ];
 
         this.stageNames = [
@@ -84,7 +102,22 @@ export class UIManager {
             'SKYBREACH',
             'FORTRESS LINE',
             'ASHEN STRAIT',
-            'LAST BASTION',
+            'BOSS FURNACE',
+            'RUINED CATACOMB',
+            'THUNDER PASS',
+            'STEEL DELTA',
+            'SCARLAND',
+            'DUST HARBOR',
+            'GALE RIDGE',
+            'REBEL CITADEL',
+            'BLACK SUN KEEP',
+            'INFERNO LOOP',
+            'RAVEN YARD',
+            'BLASTWORKS',
+            'SKY CITADEL',
+            'TITAN APPROACH',
+            'OBSIDIAN GRID',
+            'ENDLESS FRONT',
         ];
 
         this._buildHpPips();
@@ -153,6 +186,44 @@ export class UIManager {
         this._updateCharge(player);
         this._updateWeapons(player);
         this._updateAimIndicator(player);
+        this._updateLockOnReticle(player);
+    }
+
+    _updateLockOnReticle(player) {
+        const el = this.lockOnReticleEl;
+        if (!el || !this.camera) return;
+        const target = player && player.lockTarget;
+        const pos = player && player.lockTargetPos;
+        if (!target || !pos) {
+            if (el.classList.contains('visible')) el.classList.remove('visible');
+            return;
+        }
+
+        // 3D → 2D 投影 (NDC) - pos は THREE.Vector3。Vector3 を再利用して GC を抑える
+        if (!this._lockReticleVec) this._lockReticleVec = pos.clone();
+        const v = this._lockReticleVec;
+        v.copy(pos);
+        v.project(this.camera);
+        // NDC z > 1 はカメラ後方
+        if (v.z > 1 || v.z < -1) {
+            if (el.classList.contains('visible')) el.classList.remove('visible');
+            return;
+        }
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+        const sx = (v.x * 0.5 + 0.5) * w;
+        const sy = (1 - (v.y * 0.5 + 0.5)) * h;
+        // 中央配置: 64px の半分オフセット
+        const lx = Math.round(sx - 32);
+        const ly = Math.round(sy - 32);
+        el.style.setProperty('--lx', `${lx}px`);
+        el.style.setProperty('--ly', `${ly}px`);
+        el.style.transform = `translate(${lx}px, ${ly}px)`;
+        if (!el.classList.contains('visible')) el.classList.add('visible');
+
+        // チャージ中はカラー変化
+        const charging = !!player.cannonCharging;
+        el.classList.toggle('charging', charging);
     }
 
     updateScrollProgress(progress) {
@@ -352,7 +423,13 @@ export class UIManager {
 
     _updateArms(player) {
         if (!this.armsEl) return;
-        if (player.specialWeapon) {
+        if (player.powerUp) {
+            const names = { BIG: 'BIG-SHOT', SPREAD: '3-WAY', FLAME: 'FLAME' };
+            const colors = { BIG: '#FF44AA', SPREAD: '#44CCFF', FLAME: '#FF7711' };
+            const sec = Math.max(0, player.powerUpTimer).toFixed(1);
+            this.armsEl.textContent = `${names[player.powerUp] || player.powerUp} ${sec}s`;
+            this.armsEl.style.color = colors[player.powerUp] || '#FFFFFF';
+        } else if (player.specialWeapon) {
             const names = { H: 'H.M.GUN', R: 'ROCKET', F: 'FLAME', S: 'SHOTGUN' };
             this.armsEl.textContent = `${names[player.specialWeapon] || player.specialWeapon} ×${player.specialAmmo}`;
             this.armsEl.style.color = '#FFCC33';
@@ -379,14 +456,41 @@ export class UIManager {
     }
 
     _updateCharge(player) {
+        const CHARGE_MIN_RATIO = 0.5;
         const ratio = player.cannonCharging
             ? Math.max(0, Math.min(1, player.cannonCharge / player.cannonChargeMax))
             : 0;
         if (this.chargeMeterFill) {
             this.chargeMeterFill.style.transform = `scaleX(${ratio.toFixed(3)})`;
+            // 発射可能閾値でゲージ色が変化
+            if (player.cannonCharging) {
+                if (ratio >= 0.75) {
+                    // 高チャージ: 青白パルス
+                    this.chargeMeterFill.className = 'resource-meter-fill charge-fill charge-high';
+                } else if (ratio >= CHARGE_MIN_RATIO) {
+                    // 発射可能: 明るいオレンジ
+                    this.chargeMeterFill.className = 'resource-meter-fill charge-fill charge-ready';
+                } else {
+                    // 閾値未満: デフォルト（暗い）
+                    this.chargeMeterFill.className = 'resource-meter-fill charge-fill charge-low';
+                }
+            } else {
+                this.chargeMeterFill.className = 'resource-meter-fill charge-fill';
+            }
         }
         if (this.chargeStateEl) {
-            this.chargeStateEl.textContent = player.cannonCharging ? `${Math.round(ratio * 100)}%` : 'READY';
+            if (player.cannonCharging) {
+                if (ratio >= CHARGE_MIN_RATIO) {
+                    this.chargeStateEl.textContent = `${Math.round(ratio * 100)}% ▶ FIRE`;
+                    this.chargeStateEl.style.color = ratio >= 0.75 ? '#66CCFF' : '#FFAA33';
+                } else {
+                    this.chargeStateEl.textContent = `${Math.round(ratio * 100)}% CHARGING`;
+                    this.chargeStateEl.style.color = '';
+                }
+            } else {
+                this.chargeStateEl.textContent = 'READY';
+                this.chargeStateEl.style.color = '';
+            }
         }
     }
 
@@ -472,12 +576,25 @@ export class UIManager {
             'infantry-grenade': 'GRENADIER',
             'infantry-machinegun': 'GUNNER',
             'infantry-officer': 'OFFICER',
+            'infantry-flamethrower': 'FLAMER',
+            'infantry-mummy': 'MUMMY',
+            'infantry-sniper': 'SNIPER',
+            'infantry-hunter': 'HUNTER',
+            'infantry-ninja': 'NINJA',
+            'infantry-juggernaut': 'JUGGERNAUT',
+            'infantry-commando': 'COMMANDO',
+            'infantry-demolition': 'DEMOLITION',
             'tank-light': 'LIGHT TANK',
             'tank-heavy': 'HEAVY TANK',
+            'tank-flak': 'FLAK TANK',
+            'tank-siege': 'SIEGE TANK',
             'aircraft-scout_heli': 'SCOUT HELI',
             'aircraft-attack_heli': 'ATTACK HELI',
             'aircraft-bomber': 'BOMBER',
             'aircraft-fighter': 'FIGHTER',
+            'aircraft-drone': 'RAZOR DRONE',
+            'aircraft-interceptor': 'INTERCEPTOR',
+            'aircraft-gunship': 'GUNSHIP',
         };
 
         const key = `${enemyType}-${subType}`;
@@ -568,13 +685,14 @@ export class UIManager {
         this.aimDot.setAttribute('cy', ey.toFixed(1));
 
         this.aimAngleText.textContent = `${facingRight ? 'R' : 'L'} ${angleDeg}\u00b0`;
-        this.aimModeText.textContent = aimMode === 'keyboard' ? 'KEY AIM' : 'MOUSE';
+        const locked = !!(player && player.lockTarget);
+        this.aimModeText.textContent = locked ? 'LOCK ON' : 'SCAN';
 
         if (this.aimIndicator) {
-            this.aimIndicator.classList.toggle('active-keyboard', aimMode === 'keyboard');
+            this.aimIndicator.classList.toggle('active-keyboard', locked);
         }
 
-        const lineColor = aimMode === 'keyboard' ? '#FFD700' : '#FF7442';
+        const lineColor = locked ? '#FF3322' : '#FF7442';
         this.aimLine.setAttribute('stroke', lineColor);
         this.aimDot.setAttribute('fill', lineColor);
     }

@@ -17,8 +17,13 @@ export class ItemDrop {
         this.group = new THREE.Group();
         this._buildModel();
 
+        // 既存ビルダのバランスを維持しつつ全体を大型化（見えやすさ重視）
+        const ITEM_SCALE = 2.0;
+        this.modelScale = ITEM_SCALE;
+        this.group.scale.setScalar(ITEM_SCALE);
+
         this.group.position.copy(position);
-        this.group.position.y = 1.0;
+        this.group.position.y = 1.4;
         this.scene.add(this.group);
 
         // 光のエフェクト
@@ -31,10 +36,37 @@ export class ItemDrop {
             weapon_F: 0xFF6611,
             weapon_S: 0x33CC99,
             score_big: 0xFFDD44,
+            power_BIG: 0xFF44AA,
+            power_SPREAD: 0x44CCFF,
+            power_FLAME: 0xFF7711,
         };
-        this.glow = new THREE.PointLight(lightColors[type] || 0xFFFFFF, 0.8, 5);
-        this.glow.position.set(0, 0.5, 0);
+        const glowColor = lightColors[type] || 0xFFFFFF;
+        this.glowColor = glowColor;
+        this.glow = new THREE.PointLight(glowColor, 2.0, 10);
+        this.glow.position.set(0, 0.6, 0);
         this.group.add(this.glow);
+
+        // 上向き光柱（地上から立ち上るビーム）。子は group に乗っているので
+        // group.scale で一緒に拡大される — sizes はモデル原寸ベースで指定。
+        const beamGeo = new THREE.CylinderGeometry(0.18, 0.32, 3.6, 12, 1, true);
+        const beamMat = new THREE.MeshBasicMaterial({
+            color: glowColor, transparent: true, opacity: 0.32,
+            blending: THREE.AdditiveBlending, side: THREE.DoubleSide, depthWrite: false,
+        });
+        this.beam = new THREE.Mesh(beamGeo, beamMat);
+        this.beam.position.y = 1.4;
+        this.group.add(this.beam);
+
+        // 接地リング（自分の足元を強調）
+        const ringGeo = new THREE.RingGeometry(0.5, 0.85, 28);
+        const ringMat = new THREE.MeshBasicMaterial({
+            color: glowColor, transparent: true, opacity: 0.55,
+            side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false,
+        });
+        this.ring = new THREE.Mesh(ringGeo, ringMat);
+        this.ring.rotation.x = -Math.PI / 2;
+        this.ring.position.y = -1.4;  // 地面 (Y≈0) に置くため group ローカル -1.4
+        this.group.add(this.ring);
     }
 
     _buildModel() {
@@ -61,6 +93,64 @@ export class ItemDrop {
             case 'weapon_S':
                 this._buildWeaponIcon('S', 0x33CC99);
                 break;
+            case 'power_BIG':
+                this._buildPowerUpIcon('P', 0xFF44AA);  // POWER
+                break;
+            case 'power_SPREAD':
+                this._buildPowerUpIcon('3', 0x44CCFF);  // 3-WAY
+                break;
+            case 'power_FLAME':
+                this._buildPowerUpIcon('F', 0xFF7711);  // FLAME
+                break;
+        }
+    }
+
+    _buildPowerUpIcon(letter, color) {
+        // パワーアップは八面体で武器カプセルと差別化（時限を強調）
+        const core = new THREE.Mesh(
+            new THREE.OctahedronGeometry(0.5, 0),
+            new THREE.MeshStandardMaterial({
+                color, emissive: new THREE.Color(color), emissiveIntensity: 0.7,
+                roughness: 0.25, metalness: 0.4,
+            })
+        );
+        this.group.add(core);
+
+        // 二重リング（パワーアップの特別感）
+        for (const tilt of [0, Math.PI / 2]) {
+            const ring = new THREE.Mesh(
+                new THREE.TorusGeometry(0.55, 0.05, 6, 14),
+                new THREE.MeshStandardMaterial({
+                    color: 0xFFFFFF,
+                    emissive: new THREE.Color(0xFFFFFF), emissiveIntensity: 0.6,
+                })
+            );
+            ring.rotation.x = Math.PI / 2;
+            ring.rotation.z = tilt;
+            this.group.add(ring);
+        }
+
+        // 文字プレート
+        const canvas = document.createElement('canvas');
+        canvas.width = 64; canvas.height = 64;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#222';
+        ctx.fillRect(0, 0, 64, 64);
+        ctx.fillStyle = '#FFF';
+        ctx.font = 'bold 48px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(letter, 32, 34);
+        const tex = new THREE.CanvasTexture(canvas);
+
+        for (const zSign of [1, -1]) {
+            const plate = new THREE.Mesh(
+                new THREE.PlaneGeometry(0.5, 0.5),
+                new THREE.MeshBasicMaterial({ map: tex, transparent: true })
+            );
+            plate.position.z = 0.42 * zSign;
+            if (zSign < 0) plate.rotation.y = Math.PI;
+            this.group.add(plate);
         }
     }
 
@@ -186,11 +276,21 @@ export class ItemDrop {
         this.group.rotation.y += dt * 3;
 
         // ふわふわ浮遊
-        this.group.position.y = 1.0 + Math.sin(this.age * 3) * 0.15;
+        this.group.position.y = 1.4 + Math.sin(this.age * 3) * 0.2;
 
-        // 光の点滅
+        // 光の点滅（可視性重視で常時強め）
         if (this.glow) {
-            this.glow.intensity = 0.5 + Math.sin(this.age * 5) * 0.3;
+            this.glow.intensity = 1.6 + Math.sin(this.age * 5) * 0.6;
+        }
+
+        // 光柱・リング演出
+        if (this.beam) {
+            this.beam.material.opacity = 0.28 + Math.sin(this.age * 4) * 0.1;
+        }
+        if (this.ring) {
+            const s = 1.0 + Math.sin(this.age * 4) * 0.18;
+            this.ring.scale.setScalar(s);
+            this.ring.material.opacity = 0.4 + Math.sin(this.age * 4) * 0.2;
         }
 
         // 消滅前の点滅（残り3秒）
@@ -214,7 +314,7 @@ export class ItemDrop {
         const dz = this.group.position.z - playerPos.z;
         const distSq = dx * dx + dz * dz;
 
-        if (distSq < 2.5 * 2.5) {
+        if (distSq < 3.2 * 3.2) {
             this.collected = true;
             this.alive = false;
             return true;
@@ -228,6 +328,8 @@ export class ItemDrop {
     applyEffect(player) {
         // Metal Slug 原作準拠の弾数 (H=200, R=30, F=50, S=30)
         const weaponAmmo = { weapon_H: 200, weapon_R: 30, weapon_F: 50, weapon_S: 30 };
+        // パワーアップの効果時間（秒）
+        const powerDur = { power_BIG: 12, power_SPREAD: 14, power_FLAME: 10 };
         switch (this.type) {
             case 'health':
                 player.hp = Math.min(player.hp + 30, player.maxHp);
@@ -241,7 +343,10 @@ export class ItemDrop {
             case 'score_big':
                 return 5000; // 大ボーナス (捕虜救出 reward 相当)
             default:
-                if (this.type.startsWith('weapon_') && player.equipSpecial) {
+                if (this.type.startsWith('power_') && player.applyPowerUp) {
+                    const code = this.type.split('_')[1];
+                    player.applyPowerUp(code, powerDur[this.type] || 10);
+                } else if (this.type.startsWith('weapon_') && player.equipSpecial) {
                     const code = this.type.split('_')[1];
                     player.equipSpecial(code, weaponAmmo[this.type] || 50);
                 }
@@ -251,7 +356,17 @@ export class ItemDrop {
     }
 
     destroy() {
+        if (!this.alive && !this.group.parent) return;
         this.alive = false;
         this.scene.remove(this.group);
+        this.group.traverse(child => {
+            if (child.isMesh) {
+                if (child.geometry) child.geometry.dispose();
+                if (child.material) {
+                    if (Array.isArray(child.material)) child.material.forEach(m => m.dispose());
+                    else child.material.dispose();
+                }
+            }
+        });
     }
 }

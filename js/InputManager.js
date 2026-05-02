@@ -17,20 +17,45 @@ export class InputManager {
         // バルカン自動射撃モード（V キーでトグル。デフォルトON）
         this.autoFireMode = true;
 
+        // ゲーム入力で消費するキーのみ preventDefault する。
+        // ブラウザショートカット（Ctrl+W, Ctrl+T, Cmd+R 等）と修飾キー組み合わせは透過させる。
+        const GAME_KEY_CODES = new Set([
+            'KeyW', 'KeyA', 'KeyS', 'KeyD',
+            'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+            'Space',
+            'KeyC', 'ControlLeft', 'ControlRight',
+            'ShiftLeft', 'ShiftRight',
+            'KeyE', 'KeyF', 'KeyG', 'KeyQ', 'KeyV', 'KeyM', 'KeyR',
+        ]);
+
         window.addEventListener('keydown', (e) => {
             if (!this.keys[e.code]) {
                 this.justPressedKeys.add(e.code);
             }
             this.keys[e.code] = true;
-            // ゲーム中に効くキーはデフォルト動作を止める
-            // （ただし F5/F12 等のブラウザ機能は許可）
-            if (!e.code.startsWith('F') || e.code === 'KeyF') {
+            // ブラウザショートカット（修飾キー併用）はゲーム側で握りつぶさない
+            const hasModifier = e.ctrlKey || e.metaKey || e.altKey;
+            if (GAME_KEY_CODES.has(e.code) && !hasModifier) {
                 e.preventDefault();
             }
         });
 
         window.addEventListener('keyup', (e) => {
             this.keys[e.code] = false;
+            // macOS では Cmd 保持中の他キーの keyup が抑制される。Cmd 離した瞬間に
+            // 押下中状態のキーを全クリアして "押しっぱなし" を防ぐ。
+            if (e.code === 'MetaLeft' || e.code === 'MetaRight') {
+                for (const k of Object.keys(this.keys)) {
+                    if (k !== 'MetaLeft' && k !== 'MetaRight') this.keys[k] = false;
+                }
+            }
+        });
+
+        // フォーカス喪失時はキーをクリアして "押しっぱなし" バグを防ぐ
+        window.addEventListener('blur', () => {
+            this.keys = {};
+            this.isMouseDown = false;
+            this.isRightMouseDown = false;
         });
 
         window.addEventListener('mousemove', (e) => {
@@ -77,23 +102,25 @@ export class InputManager {
     }
 
     // ============================================
-    // 移動（カーソルキー）
+    // 移動（WASD と 矢印キー）
     // ============================================
-    // 画面の向き（3/4 背後カメラ）に合わせて ← / → を反転
+    // 注: 既存の Player/Marco コードは「moveLeft → world -X / 画面右へ」の意味で
+    // 入力を消費するため、ここで画面方向 ↔ world 軸の反転を吸収している。
+    // 画面右（D / →）を押したら moveLeft=true、画面左（A / ←）を押したら moveRight=true。
     get moveLeft() {
-        return this.isKeyDown('ArrowRight');
+        return this.isKeyDown('ArrowRight') || this.isKeyDown('KeyD');
     }
 
     get moveRight() {
-        return this.isKeyDown('ArrowLeft');
+        return this.isKeyDown('ArrowLeft') || this.isKeyDown('KeyA');
     }
 
     get moveForward() {
-        return this.isKeyDown('ArrowUp');
+        return this.isKeyDown('ArrowUp') || this.isKeyDown('KeyW');
     }
 
     get moveBackward() {
-        return this.isKeyDown('ArrowDown');
+        return this.isKeyDown('ArrowDown') || this.isKeyDown('KeyS');
     }
 
     // ============================================
@@ -115,13 +142,14 @@ export class InputManager {
 
     /**
      * キャノン発射（チャージ射撃）:
-     * 右クリック / F / SHIFT キー
+     * 右クリック / F キー / Command (Meta) キー
+     * （Shift はダッシュに使用）
      */
     get altFireHeld() {
         return this.isRightMouseDown
             || this.isKeyDown('KeyF')
-            || this.isKeyDown('ShiftLeft')
-            || this.isKeyDown('ShiftRight');
+            || this.isKeyDown('MetaLeft')
+            || this.isKeyDown('MetaRight');
     }
 
     /**
@@ -157,10 +185,12 @@ export class InputManager {
     }
 
     /**
-     * ダッシュ: E （SHIFT はキャノンに割り当てたので除外）
+     * ダッシュ（ブースト）: Shift（業界慣習）。E は互換維持。
      */
     get dashPressed() {
-        return this.isKeyPressed('KeyE');
+        return this.isKeyPressed('ShiftLeft')
+            || this.isKeyPressed('ShiftRight')
+            || this.isKeyPressed('KeyE');
     }
 
     /**

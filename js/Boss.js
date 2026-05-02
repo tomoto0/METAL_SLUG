@@ -20,6 +20,9 @@ export class Boss {
         this.type = 'boss';
         this.subType = options.subType || 'di_cokka';
         this.alive = true;
+        // 生成した爆発・マズルフラッシュを登録する外部 effects 配列
+        // (GameManager.effects)。未設定だと update() されず scene に永遠に残る
+        this.effectSink = options.effectSink || null;
 
         // ステータス（タイプ別 — Metal Slug 原作のボス倒しスコア相当）
         //   Di-Cokka 相当: 15000pt / Tani-Oh (ハイレッグ) 相当: 50000pt
@@ -62,6 +65,10 @@ export class Boss {
 
         // フラッシュ
         this.flashTimer = 0;
+
+        // ダメージ煙
+        this.smokeTimer = 0;
+        this.smokePuffs = [];
 
         // ボブ（飛行メカ用）
         this.bobPhase = Math.random() * Math.PI * 2;
@@ -149,13 +156,52 @@ export class Boss {
             this.armorGroup.add(skirt);
         }
 
-        // リベット（サイドスカート上）
-        const rivetMat = new THREE.MeshStandardMaterial({ color: C.metal, roughness: 0.4, metalness: 0.6 });
+        // リベット（サイドスカート上下二段）
+        const rivetMat = new THREE.MeshStandardMaterial({ color: C.metal, roughness: 0.4, metalness: 0.65 });
+        const rivetGeo = new THREE.SphereGeometry(0.07, 5, 4);
         for (let z of [-2.85, 2.85]) {
-            for (let x = -2.5; x <= 2.5; x += 1.0) {
-                const rivet = new THREE.Mesh(new THREE.SphereGeometry(0.06, 4, 4), rivetMat);
-                rivet.position.set(x, 1.9, z);
+            for (let y of [1.9, 0.95]) {
+                for (let x = -3.0; x <= 3.0; x += 0.45) {
+                    const rivet = new THREE.Mesh(rivetGeo, rivetMat);
+                    rivet.position.set(x, y, z);
+                    this.armorGroup.add(rivet);
+                }
+            }
+        }
+        // 前面装甲リベット（垂直バンド）
+        for (let y = 1.0; y <= 3.2; y += 0.35) {
+            for (let z of [-2.0, -0.7, 0.7, 2.0]) {
+                const rivet = new THREE.Mesh(rivetGeo, rivetMat);
+                rivet.position.set(4.55, y, z);
                 this.armorGroup.add(rivet);
+            }
+        }
+        // 汚れ・サビ筋（縦のスミ入れ風 — サイドスカート）
+        const grimeMat = new THREE.MeshBasicMaterial({ color: 0x1A1810, transparent: true, opacity: 0.55 });
+        for (let z of [-2.83, 2.83]) {
+            for (let x = -2.6; x <= 2.6; x += 0.7) {
+                if (Math.random() < 0.55) {
+                    const streak = new THREE.Mesh(
+                        new THREE.PlaneGeometry(0.04 + Math.random() * 0.05, 0.7 + Math.random() * 0.4),
+                        grimeMat
+                    );
+                    streak.position.set(x + (Math.random() - 0.5) * 0.2, 1.5, z + (z > 0 ? 0.001 : -0.001));
+                    streak.rotation.y = z > 0 ? 0 : Math.PI;
+                    this.armorGroup.add(streak);
+                }
+            }
+        }
+        // サビパッチ（オレンジ茶色のシミ）
+        const rustPatchMat = new THREE.MeshBasicMaterial({ color: 0x6E3818, transparent: true, opacity: 0.5 });
+        for (let z of [-2.84, 2.84]) {
+            for (let i = 0; i < 5; i++) {
+                const patch = new THREE.Mesh(
+                    new THREE.CircleGeometry(0.12 + Math.random() * 0.08, 6),
+                    rustPatchMat
+                );
+                patch.position.set(-2.8 + Math.random() * 5.6, 1.0 + Math.random() * 1.3, z);
+                patch.rotation.y = z > 0 ? 0 : Math.PI;
+                this.armorGroup.add(patch);
             }
         }
 
@@ -207,111 +253,338 @@ export class Boss {
         turretBase.position.y = -0.15;
         this.turretGroup.add(turretBase);
 
+        // ベースリングのボルト
+        const tBoltMat = new THREE.MeshStandardMaterial({ color: 0x95956E, roughness: 0.4, metalness: 0.7 });
+        for (let b = 0; b < 16; b++) {
+            const ang = (b / 16) * Math.PI * 2;
+            const bolt = new THREE.Mesh(new THREE.SphereGeometry(0.07, 4, 4), tBoltMat);
+            bolt.position.set(Math.cos(ang) * 2.05, -0.05, Math.sin(ang) * 2.05);
+            this.turretGroup.add(bolt);
+        }
+
+        // 砲塔上面装甲プレート（横帯）
+        const topPlate = new THREE.Mesh(
+            new THREE.BoxGeometry(2.0, 0.12, 2.4),
+            new THREE.MeshStandardMaterial({ color: C.hullDk, roughness: 0.6, metalness: 0.4 })
+        );
+        topPlate.position.set(-0.2, 1.55, 0);
+        this.turretGroup.add(topPlate);
+
         // 二連主砲
         this.barrelGroup = new THREE.Group();
-        for (let z of [-0.5, 0.5]) {
-            // 砲身
-            const barrelGeo = new THREE.CylinderGeometry(0.22, 0.28, 4.5, 8);
-            const barrel = new THREE.Mesh(barrelGeo, new THREE.MeshStandardMaterial({
-                color: C.cannon, roughness: 0.3, metalness: 0.6,
-            }));
+        const barrelMat = new THREE.MeshStandardMaterial({
+            color: C.cannon, roughness: 0.35, metalness: 0.65,
+        });
+        const muzzleMat = new THREE.MeshStandardMaterial({ color: C.metal, roughness: 0.3, metalness: 0.55 });
+        for (let z of [-0.55, 0.55]) {
+            // 砲身根本のスリーブ
+            const sleeve = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.36, 0.36, 0.5, 10),
+                new THREE.MeshStandardMaterial({ color: C.hullDk, roughness: 0.5, metalness: 0.5 })
+            );
+            sleeve.rotation.z = Math.PI / 2;
+            sleeve.position.set(0.5, 0.4, z);
+            this.barrelGroup.add(sleeve);
+
+            // 砲身（前方に向かって細る）
+            const barrel = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.22, 0.30, 4.5, 10),
+                barrelMat
+            );
             barrel.rotation.z = Math.PI / 2;
             barrel.position.set(2.25, 0.4, z);
             this.barrelGroup.add(barrel);
 
-            // マズルブレーキ
-            const muzzle = new THREE.Mesh(
-                new THREE.CylinderGeometry(0.35, 0.28, 0.5, 8),
-                new THREE.MeshStandardMaterial({ color: C.metal, roughness: 0.3, metalness: 0.5 })
+            // マズルブレーキ二段（外筒 + 先端ベル）
+            const muzzleOuter = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.36, 0.32, 0.55, 10),
+                muzzleMat
             );
-            muzzle.rotation.z = Math.PI / 2;
-            muzzle.position.set(4.6, 0.4, z);
-            this.barrelGroup.add(muzzle);
+            muzzleOuter.rotation.z = Math.PI / 2;
+            muzzleOuter.position.set(4.55, 0.4, z);
+            this.barrelGroup.add(muzzleOuter);
 
-            // 砲身リング
-            for (let rx = 1.0; rx <= 3.5; rx += 1.2) {
+            const muzzleTip = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.32, 0.40, 0.35, 10),
+                muzzleMat
+            );
+            muzzleTip.rotation.z = Math.PI / 2;
+            muzzleTip.position.set(5.0, 0.4, z);
+            this.barrelGroup.add(muzzleTip);
+
+            // マズルブレーキのスリット（ベント）
+            for (let s of [-Math.PI / 2, Math.PI / 2]) {
+                const slit = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.4, 0.07, 0.16),
+                    new THREE.MeshBasicMaterial({ color: 0x080808 })
+                );
+                slit.position.set(4.55, 0.4 + Math.sin(s) * 0.3, z + Math.cos(s) * 0.3);
+                slit.rotation.x = s;
+                this.barrelGroup.add(slit);
+            }
+
+            // 砲身リング（補強帯）
+            for (let rx = 1.0; rx <= 3.6; rx += 0.85) {
                 const ring = new THREE.Mesh(
-                    new THREE.TorusGeometry(0.3, 0.03, 4, 8),
-                    new THREE.MeshStandardMaterial({ color: C.metal, metalness: 0.5 })
+                    new THREE.TorusGeometry(0.27, 0.04, 6, 12),
+                    muzzleMat
                 );
                 ring.position.set(rx, 0.4, z);
                 ring.rotation.y = Math.PI / 2;
                 this.barrelGroup.add(ring);
             }
         }
+        // 二連砲の中央ヨーク（連結板）
+        const yoke = new THREE.Mesh(
+            new THREE.BoxGeometry(0.5, 0.7, 1.4),
+            new THREE.MeshStandardMaterial({ color: C.hullDk, roughness: 0.5, metalness: 0.5 })
+        );
+        yoke.position.set(0.55, 0.4, 0);
+        this.barrelGroup.add(yoke);
+
         this.turretGroup.add(this.barrelGroup);
 
-        // 同軸機銃
+        // 同軸機銃（マウント付き）
+        const mgMount = new THREE.Mesh(
+            new THREE.BoxGeometry(0.3, 0.3, 0.3),
+            new THREE.MeshStandardMaterial({ color: C.hullDk, roughness: 0.5, metalness: 0.4 })
+        );
+        mgMount.position.set(1.55, 1.05, 0);
+        this.turretGroup.add(mgMount);
         this.mgBarrel = new THREE.Mesh(
-            new THREE.CylinderGeometry(0.06, 0.08, 1.5, 6),
-            new THREE.MeshStandardMaterial({ color: C.cannon, metalness: 0.5 })
+            new THREE.CylinderGeometry(0.07, 0.09, 1.6, 6),
+            new THREE.MeshStandardMaterial({ color: C.cannon, metalness: 0.6, roughness: 0.4 })
         );
         this.mgBarrel.rotation.z = Math.PI / 2;
-        this.mgBarrel.position.set(1.8, 1.0, 0);
+        this.mgBarrel.position.set(2.4, 1.05, 0);
         this.turretGroup.add(this.mgBarrel);
+        // 機銃の冷却フィン
+        for (let fx = 1.95; fx <= 2.85; fx += 0.12) {
+            const fin = new THREE.Mesh(
+                new THREE.TorusGeometry(0.11, 0.015, 4, 8),
+                muzzleMat
+            );
+            fin.position.set(fx, 1.05, 0);
+            fin.rotation.y = Math.PI / 2;
+            this.turretGroup.add(fin);
+        }
 
-        // ペリスコープ
-        const periscope = new THREE.Mesh(
-            new THREE.BoxGeometry(0.2, 0.4, 0.15),
-            new THREE.MeshStandardMaterial({ color: C.metal, roughness: 0.3, metalness: 0.5 })
+        // 指揮官ハッチ（円筒 + ふた）
+        const hatchBase = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.42, 0.45, 0.25, 12),
+            new THREE.MeshStandardMaterial({ color: C.hullDk, roughness: 0.55, metalness: 0.4 })
         );
-        periscope.position.set(0, 1.8, 0);
+        hatchBase.position.set(-0.6, 1.7, -0.3);
+        this.turretGroup.add(hatchBase);
+        const hatchLid = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.4, 0.4, 0.1, 12),
+            new THREE.MeshStandardMaterial({ color: C.armor, roughness: 0.5, metalness: 0.45 })
+        );
+        hatchLid.position.set(-0.6, 1.86, -0.3);
+        this.turretGroup.add(hatchLid);
+        // ハッチのヒンジ
+        const hinge = new THREE.Mesh(
+            new THREE.BoxGeometry(0.2, 0.06, 0.08),
+            tBoltMat
+        );
+        hinge.position.set(-0.6, 1.92, -0.7);
+        this.turretGroup.add(hinge);
+        // ハッチのボルトリング
+        for (let b = 0; b < 8; b++) {
+            const ang = (b / 8) * Math.PI * 2;
+            const bolt = new THREE.Mesh(new THREE.SphereGeometry(0.04, 4, 4), tBoltMat);
+            bolt.position.set(-0.6 + Math.cos(ang) * 0.36, 1.83, -0.3 + Math.sin(ang) * 0.36);
+            this.turretGroup.add(bolt);
+        }
+
+        // ペリスコープ（ハッチの上）
+        const periscope = new THREE.Mesh(
+            new THREE.BoxGeometry(0.22, 0.45, 0.16),
+            new THREE.MeshStandardMaterial({ color: C.metal, roughness: 0.3, metalness: 0.55 })
+        );
+        periscope.position.set(0.2, 1.85, 0.1);
         this.turretGroup.add(periscope);
+        // ペリスコープのレンズ
+        const periLens = new THREE.Mesh(
+            new THREE.PlaneGeometry(0.16, 0.1),
+            new THREE.MeshBasicMaterial({ color: 0x88EEFF })
+        );
+        periLens.position.set(0.32, 1.92, 0.1);
+        periLens.rotation.y = Math.PI / 2;
+        this.turretGroup.add(periLens);
+
+        // 砲塔側面のグリップハンドレール
+        for (let z of [-1.5, 1.5]) {
+            const rail = new THREE.Mesh(
+                new THREE.TorusGeometry(0.4, 0.025, 4, 10, Math.PI),
+                muzzleMat
+            );
+            rail.position.set(-0.8, 0.6, z);
+            rail.rotation.x = Math.PI / 2;
+            rail.rotation.y = z > 0 ? 0 : Math.PI;
+            this.turretGroup.add(rail);
+        }
+
+        // 砲塔白色番号プレート
+        const turretPlate = new THREE.Mesh(
+            new THREE.PlaneGeometry(0.5, 0.35),
+            new THREE.MeshBasicMaterial({ color: 0xE8DEB4 })
+        );
+        turretPlate.position.set(-1.4, 0.5, 1.55);
+        turretPlate.rotation.y = Math.PI / 2;
+        this.turretGroup.add(turretPlate);
 
         this.group.add(this.turretGroup);
 
         // ============ 大型キャタピラ（左右） ============
+        const trackBeltMat = new THREE.MeshStandardMaterial({
+            color: C.track, roughness: 0.95, metalness: 0.2,
+        });
+        const trackInnerMat = new THREE.MeshStandardMaterial({
+            color: 0x101008, roughness: 0.95, metalness: 0.15,
+        });
+        const clawGeo = new THREE.BoxGeometry(0.32, 0.22, 1.15);
+        const padGeo = new THREE.BoxGeometry(0.42, 0.12, 1.05);
         for (let side of [-1, 1]) {
             const trackGroup = new THREE.Group();
 
-            // キャタピラ本体
-            const trackGeo = new THREE.BoxGeometry(7.5, 1.6, 1.0);
-            const track = new THREE.Mesh(trackGeo, new THREE.MeshStandardMaterial({
-                color: C.track, roughness: 0.9, metalness: 0.2,
-            }));
-            track.position.set(0, 0.8, 0);
+            // キャタピラ本体（外側）
+            const trackGeo = new THREE.BoxGeometry(7.6, 1.8, 1.1);
+            const track = new THREE.Mesh(trackGeo, trackBeltMat);
+            track.position.set(0, 0.85, 0);
             trackGroup.add(track);
 
-            // 転輪（6個）
-            const wheelGeo = new THREE.CylinderGeometry(0.55, 0.55, 0.25, 12);
-            const wheelMat = new THREE.MeshStandardMaterial({
-                color: C.metal, roughness: 0.4, metalness: 0.5,
-            });
+            // 内側ベルト（深さを出す）
+            const inner = new THREE.Mesh(
+                new THREE.BoxGeometry(7.4, 1.4, 0.9),
+                trackInnerMat
+            );
+            inner.position.set(0, 0.85, side * -0.1);
+            trackGroup.add(inner);
+
+            // クローティース（外周一周）
+            const teethSpacing = 0.4;
+            // 上面
+            for (let x = -3.5; x <= 3.5; x += teethSpacing) {
+                const claw = new THREE.Mesh(clawGeo, trackBeltMat);
+                claw.position.set(x, 1.78, 0);
+                trackGroup.add(claw);
+                // パッド（プレート）
+                const pad = new THREE.Mesh(padGeo, trackInnerMat);
+                pad.position.set(x, 1.72, 0);
+                trackGroup.add(pad);
+            }
+            // 下面
+            for (let x = -3.5; x <= 3.5; x += teethSpacing) {
+                const claw = new THREE.Mesh(clawGeo, trackBeltMat);
+                claw.position.set(x, -0.08, 0);
+                trackGroup.add(claw);
+                const pad = new THREE.Mesh(padGeo, trackInnerMat);
+                pad.position.set(x, -0.02, 0);
+                trackGroup.add(pad);
+            }
+            // 前後カーブ部
             for (let i = 0; i < 6; i++) {
+                const a = (i / 6) * Math.PI;
+                // 後端
+                const cBack = new THREE.Mesh(clawGeo, trackBeltMat);
+                cBack.position.set(-3.8 - Math.sin(a) * 0.15, 0.85 - Math.cos(a) * 0.95, 0);
+                cBack.rotation.z = a;
+                trackGroup.add(cBack);
+                // 前端
+                const cFront = new THREE.Mesh(clawGeo, trackBeltMat);
+                cFront.position.set(3.8 + Math.sin(a) * 0.15, 0.85 + Math.cos(a) * 0.95, 0);
+                cFront.rotation.z = -a;
+                trackGroup.add(cFront);
+            }
+
+            // 転輪（6個）— ハブ＋ボルトリング付き
+            const wheelGeo = new THREE.CylinderGeometry(0.62, 0.62, 0.3, 14);
+            const wheelMat = new THREE.MeshStandardMaterial({
+                color: C.metal, roughness: 0.45, metalness: 0.5,
+            });
+            const hubMat = new THREE.MeshStandardMaterial({ color: 0x2A2A22, roughness: 0.5, metalness: 0.5 });
+            const boltMat = new THREE.MeshStandardMaterial({ color: 0x95956E, roughness: 0.4, metalness: 0.7 });
+            for (let i = 0; i < 6; i++) {
+                const wx = -3.0 + i * 1.2;
                 const wheel = new THREE.Mesh(wheelGeo, wheelMat);
-                wheel.position.set(-3.0 + i * 1.2, 0.8, side * 0.2);
+                wheel.position.set(wx, 0.85, side * 0.18);
                 wheel.rotation.x = Math.PI / 2;
                 trackGroup.add(wheel);
 
-                // ホイールハブ
                 const hub = new THREE.Mesh(
-                    new THREE.CylinderGeometry(0.15, 0.15, 0.3, 6),
-                    new THREE.MeshStandardMaterial({ color: C.rust, metalness: 0.4 })
+                    new THREE.CylinderGeometry(0.22, 0.22, 0.34, 8),
+                    hubMat
                 );
-                hub.position.copy(wheel.position);
-                hub.position.z += side * 0.15;
+                hub.position.set(wx, 0.85, side * 0.18);
                 hub.rotation.x = Math.PI / 2;
                 trackGroup.add(hub);
+
+                // ボルトリング（6本）
+                for (let b = 0; b < 6; b++) {
+                    const ang = (b / 6) * Math.PI * 2;
+                    const bolt = new THREE.Mesh(new THREE.SphereGeometry(0.05, 4, 4), boltMat);
+                    bolt.position.set(wx + Math.cos(ang) * 0.4, 0.85 + Math.sin(ang) * 0.4, side * 0.34);
+                    trackGroup.add(bolt);
+                }
             }
 
-            // 誘導輪（前後）
-            for (let x of [-3.5, 3.5]) {
-                const guide = new THREE.Mesh(
-                    new THREE.CylinderGeometry(0.4, 0.4, 0.2, 10),
-                    wheelMat
-                );
-                guide.position.set(x, 1.2, side * 0.15);
-                guide.rotation.x = Math.PI / 2;
-                trackGroup.add(guide);
+            // 駆動輪（前: スプロケット付き、後: テンショナー）
+            const sprocketCore = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.5, 0.5, 0.28, 14),
+                wheelMat
+            );
+            sprocketCore.position.set(3.5, 1.2, side * 0.15);
+            sprocketCore.rotation.x = Math.PI / 2;
+            trackGroup.add(sprocketCore);
+            // スプロケット歯（10本）
+            const sproToothGeo = new THREE.BoxGeometry(0.14, 0.22, 0.34);
+            for (let t = 0; t < 10; t++) {
+                const ang = (t / 10) * Math.PI * 2;
+                const tooth = new THREE.Mesh(sproToothGeo, wheelMat);
+                tooth.position.set(3.5 + Math.cos(ang) * 0.55, 1.2 + Math.sin(ang) * 0.55, side * 0.15);
+                tooth.rotation.z = ang;
+                trackGroup.add(tooth);
             }
+            // 後部テンショナー
+            const tensioner = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.45, 0.45, 0.26, 12),
+                wheelMat
+            );
+            tensioner.position.set(-3.5, 1.2, side * 0.15);
+            tensioner.rotation.x = Math.PI / 2;
+            trackGroup.add(tensioner);
+            const tHub = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.18, 0.18, 0.3, 6),
+                hubMat
+            );
+            tHub.position.copy(tensioner.position);
+            tHub.rotation.x = Math.PI / 2;
+            trackGroup.add(tHub);
 
-            // キャタピラ上面カバー
+            // キャタピラ上面カバー（フェンダー）— 反り上げ
             const cover = new THREE.Mesh(
-                new THREE.BoxGeometry(7.0, 0.15, 1.1),
+                new THREE.BoxGeometry(7.2, 0.18, 1.2),
                 new THREE.MeshStandardMaterial({ color: C.hullDk, roughness: 0.7 })
             );
-            cover.position.set(0, 1.65, 0);
+            cover.position.set(0, 1.85, 0);
             trackGroup.add(cover);
+            // フェンダー前後の傾斜
+            for (let dir of [-1, 1]) {
+                const flap = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.9, 0.15, 1.15),
+                    new THREE.MeshStandardMaterial({ color: C.hullDk, roughness: 0.7 })
+                );
+                flap.position.set(dir * 3.7, 1.7, 0);
+                flap.rotation.z = dir * 0.45;
+                trackGroup.add(flap);
+            }
+            // 泥よけリベット
+            for (let x = -3.0; x <= 3.0; x += 0.6) {
+                const rb = new THREE.Mesh(rivetGeo, rivetMat);
+                rb.position.set(x, 1.94, 0);
+                trackGroup.add(rb);
+            }
 
             trackGroup.position.z = side * 2.8;
             this.group.add(trackGroup);
@@ -338,16 +611,55 @@ export class Boss {
             this.group.add(pipe);
         }
 
-        // 赤い星マーク（車体側面）
-        const starGeo = new THREE.CircleGeometry(0.5, 5);
+        // 反乱軍の星マーク（5点星 + 黒輪郭 + 白サークル）
+        const starShape = new THREE.Shape();
+        const starOuter = 0.65, starInner = 0.27;
+        for (let i = 0; i < 10; i++) {
+            const r = i % 2 === 0 ? starOuter : starInner;
+            const a = (i / 10) * Math.PI * 2 - Math.PI / 2;
+            const px = Math.cos(a) * r;
+            const py = Math.sin(a) * r;
+            if (i === 0) starShape.moveTo(px, py);
+            else starShape.lineTo(px, py);
+        }
+        starShape.closePath();
+        const starGeo = new THREE.ShapeGeometry(starShape);
         const starMat = new THREE.MeshStandardMaterial({
-            color: C.red, side: THREE.DoubleSide,
+            color: C.red, side: THREE.DoubleSide, roughness: 0.6, metalness: 0.1,
+            emissive: 0x441010, emissiveIntensity: 0.25,
         });
-        for (let z of [-2.82, 2.82]) {
+        const ringMat = new THREE.MeshBasicMaterial({ color: 0xF0E8C8, side: THREE.DoubleSide });
+        const blackMat = new THREE.MeshBasicMaterial({ color: 0x10120E, side: THREE.DoubleSide });
+        for (let z of [-3.06, 3.06]) {
+            // 黒い四角の地（旗フレーム）
+            const frame = new THREE.Mesh(new THREE.PlaneGeometry(2.0, 2.0), blackMat);
+            frame.position.set(-0.5, 2.4, z);
+            frame.rotation.y = z > 0 ? 0 : Math.PI;
+            this.group.add(frame);
+            // 白いリング
+            const ring = new THREE.Mesh(new THREE.RingGeometry(0.72, 0.92, 24), ringMat);
+            ring.position.set(-0.5, 2.4, z + (z > 0 ? 0.005 : -0.005));
+            ring.rotation.y = z > 0 ? 0 : Math.PI;
+            this.group.add(ring);
+            // 赤い星
             const star = new THREE.Mesh(starGeo, starMat);
-            star.position.set(0, 2.5, z);
+            star.position.set(-0.5, 2.4, z + (z > 0 ? 0.01 : -0.01));
             star.rotation.y = z > 0 ? 0 : Math.PI;
             this.group.add(star);
+        }
+        // 危険ストライプ（前面装甲）
+        const stripeMat = new THREE.MeshBasicMaterial({ color: 0xE8C040 });
+        const stripeBlack = new THREE.MeshBasicMaterial({ color: 0x18180E });
+        for (let i = 0; i < 6; i++) {
+            const isBlack = i % 2 === 0;
+            const stripe = new THREE.Mesh(
+                new THREE.PlaneGeometry(0.18, 0.5),
+                isBlack ? stripeBlack : stripeMat
+            );
+            stripe.position.set(4.66, 0.85, -2.0 + i * 0.4);
+            stripe.rotation.y = Math.PI / 2;
+            stripe.rotation.x = -0.15;
+            this.group.add(stripe);
         }
 
         // アンテナ
@@ -402,6 +714,58 @@ export class Boss {
         }));
         belly.position.y = -2.0;
         this.group.add(belly);
+
+        // 機体上部の装甲リッジ（スパイン）
+        const spine = new THREE.Mesh(
+            new THREE.BoxGeometry(8, 0.5, 1.0),
+            new THREE.MeshStandardMaterial({ color: C.armor, roughness: 0.45, metalness: 0.55 })
+        );
+        spine.position.set(0, 1.9, 0);
+        this.group.add(spine);
+        // スパインのリベット
+        const tBoltMatT = new THREE.MeshStandardMaterial({ color: 0x9999B0, roughness: 0.4, metalness: 0.7 });
+        for (let x = -3.5; x <= 3.5; x += 0.7) {
+            for (let z of [-0.45, 0.45]) {
+                const bolt = new THREE.Mesh(new THREE.SphereGeometry(0.06, 4, 4), tBoltMatT);
+                bolt.position.set(x, 2.18, z);
+                this.group.add(bolt);
+            }
+        }
+
+        // エネルギーコア（中央下部に光るリング + ガラス球）
+        const coreGlow = new THREE.Mesh(
+            new THREE.SphereGeometry(0.55, 14, 10),
+            new THREE.MeshBasicMaterial({
+                color: C.light, transparent: true, opacity: 0.9,
+            })
+        );
+        coreGlow.position.set(0.5, -1.9, 0);
+        this.group.add(coreGlow);
+        this.energyCore = coreGlow;
+        // コアハロー
+        const coreHalo = new THREE.Mesh(
+            new THREE.SphereGeometry(0.85, 12, 10),
+            new THREE.MeshBasicMaterial({
+                color: C.light, transparent: true, opacity: 0.25,
+                blending: THREE.AdditiveBlending, depthWrite: false,
+            })
+        );
+        coreHalo.position.copy(coreGlow.position);
+        this.group.add(coreHalo);
+        this.energyHalo = coreHalo;
+        // コアリング
+        for (let i = 0; i < 3; i++) {
+            const ring = new THREE.Mesh(
+                new THREE.TorusGeometry(0.7 + i * 0.12, 0.025, 6, 20),
+                new THREE.MeshBasicMaterial({
+                    color: C.light, transparent: true, opacity: 0.6,
+                    blending: THREE.AdditiveBlending, depthWrite: false,
+                })
+            );
+            ring.position.copy(coreGlow.position);
+            ring.rotation.x = Math.PI / 2 + i * 0.4;
+            this.group.add(ring);
+        }
 
         // ============ コックピット（前面ガラス） ============
         const cockpitGeo = new THREE.SphereGeometry(1.2, 10, 8, 0, Math.PI * 2, 0, Math.PI / 2);
@@ -527,38 +891,113 @@ export class Boss {
         this.group.add(this.turretGroup);
 
         // ============ エンジンポッド（後部左右） ============
+        this.thrusterGlows = [];
+        this.thrusterCones = [];
         for (let z of [-3, 3]) {
             const engineGroup = new THREE.Group();
 
             // エンジン本体
             const engineBody = new THREE.Mesh(
                 new THREE.CylinderGeometry(0.8, 1.0, 2.5, 10),
-                new THREE.MeshStandardMaterial({ color: C.engine, roughness: 0.4, metalness: 0.5 })
+                new THREE.MeshStandardMaterial({ color: C.engine, roughness: 0.4, metalness: 0.55 })
             );
             engineBody.rotation.z = Math.PI / 2;
             engineGroup.add(engineBody);
 
-            // 排気口（光る）
-            const exhaust = new THREE.Mesh(
-                new THREE.CylinderGeometry(0.7, 0.6, 0.3, 10),
-                new THREE.MeshBasicMaterial({ color: C.orange, transparent: true, opacity: 0.7 })
-            );
-            exhaust.rotation.z = Math.PI / 2;
-            exhaust.position.x = -1.4;
-            engineGroup.add(exhaust);
+            // 装甲帯
+            for (let bx of [-0.5, 0, 0.5]) {
+                const band = new THREE.Mesh(
+                    new THREE.TorusGeometry(0.92, 0.06, 6, 14),
+                    new THREE.MeshStandardMaterial({ color: C.metal, roughness: 0.35, metalness: 0.6 })
+                );
+                band.rotation.y = Math.PI / 2;
+                band.position.x = bx;
+                engineGroup.add(band);
+            }
 
-            // インテーク
+            // 排気口本体（黒い内側 + オレンジ発光）
+            const exhaustHole = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.65, 0.55, 0.15, 12),
+                new THREE.MeshBasicMaterial({ color: 0x080404 })
+            );
+            exhaustHole.rotation.z = Math.PI / 2;
+            exhaustHole.position.x = -1.32;
+            engineGroup.add(exhaustHole);
+
+            const exhaustGlow = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.55, 0.42, 0.25, 12),
+                new THREE.MeshBasicMaterial({
+                    color: C.orange, transparent: true, opacity: 0.95,
+                    blending: THREE.AdditiveBlending, depthWrite: false,
+                })
+            );
+            exhaustGlow.rotation.z = Math.PI / 2;
+            exhaustGlow.position.x = -1.45;
+            engineGroup.add(exhaustGlow);
+            this.thrusterGlows.push(exhaustGlow);
+
+            // 排気炎コーン（後方に伸びる）
+            const flameCone = new THREE.Mesh(
+                new THREE.ConeGeometry(0.5, 1.8, 10, 1, true),
+                new THREE.MeshBasicMaterial({
+                    color: 0xFFB04A, transparent: true, opacity: 0.7,
+                    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+                })
+            );
+            flameCone.rotation.z = Math.PI / 2;
+            flameCone.position.x = -2.4;
+            engineGroup.add(flameCone);
+            this.thrusterCones.push(flameCone);
+
+            // 内側コア（白熱）
+            const flameCore = new THREE.Mesh(
+                new THREE.ConeGeometry(0.25, 1.0, 8, 1, true),
+                new THREE.MeshBasicMaterial({
+                    color: 0xFFEEB4, transparent: true, opacity: 0.9,
+                    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+                })
+            );
+            flameCore.rotation.z = Math.PI / 2;
+            flameCore.position.x = -2.0;
+            engineGroup.add(flameCore);
+            this.thrusterCones.push(flameCore);
+
+            // インテーク（前方）
             const intake = new THREE.Mesh(
-                new THREE.CylinderGeometry(0.85, 0.9, 0.2, 10),
-                new THREE.MeshStandardMaterial({ color: C.metal, roughness: 0.3, metalness: 0.6 })
+                new THREE.CylinderGeometry(0.85, 0.9, 0.2, 12),
+                new THREE.MeshStandardMaterial({ color: C.metal, roughness: 0.3, metalness: 0.65 })
             );
             intake.rotation.z = Math.PI / 2;
             intake.position.x = 1.3;
             engineGroup.add(intake);
+            // インテークブレード
+            for (let bi = 0; bi < 8; bi++) {
+                const ang = (bi / 8) * Math.PI * 2;
+                const blade = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.06, 0.7, 0.05),
+                    new THREE.MeshStandardMaterial({ color: 0x2A2A38, roughness: 0.5, metalness: 0.5 })
+                );
+                blade.position.set(1.36, Math.sin(ang) * 0.4, Math.cos(ang) * 0.4);
+                blade.rotation.x = ang;
+                engineGroup.add(blade);
+            }
 
             engineGroup.position.set(-4, 0, z);
             this.group.add(engineGroup);
         }
+
+        // 浮遊リングシャドウ（地表に向けた光輪）
+        const hoverRing = new THREE.Mesh(
+            new THREE.RingGeometry(2.5, 4.2, 32),
+            new THREE.MeshBasicMaterial({
+                color: 0x66CCFF, transparent: true, opacity: 0.18,
+                blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+            })
+        );
+        hoverRing.rotation.x = -Math.PI / 2;
+        hoverRing.position.set(0, -7, 0);
+        this.group.add(hoverRing);
+        this.hoverRing = hoverRing;
 
         // ============ ディテール ============
         // 赤いストライプ
@@ -626,6 +1065,81 @@ export class Boss {
         // 弾丸更新
         this.projectiles.forEach(p => p.update(dt));
         this.projectiles = this.projectiles.filter(p => p.alive || p.impactPending);
+
+        // ダメージ煙トレイル
+        this._updateDamageSmoke(dt);
+    }
+
+    _updateDamageSmoke(dt) {
+        const hpRatio = this.hp / this.maxHp;
+        if (hpRatio < 0.5 && this.alive) {
+            // 低HPほど頻繁に
+            const interval = hpRatio < 0.2 ? 0.08 : (hpRatio < 0.35 ? 0.16 : 0.28);
+            this.smokeTimer += dt;
+            if (this.smokeTimer >= interval) {
+                this.smokeTimer = 0;
+                this._spawnSmokePuff(hpRatio);
+            }
+        }
+        // パフ更新
+        for (let i = this.smokePuffs.length - 1; i >= 0; i--) {
+            const p = this.smokePuffs[i];
+            p.age += dt;
+            const t = p.age / p.maxAge;
+            if (t >= 1) {
+                this.scene.remove(p.mesh);
+                p.mesh.geometry.dispose();
+                p.mesh.material.dispose();
+                this.smokePuffs.splice(i, 1);
+                continue;
+            }
+            p.mesh.position.x += p.vx * dt;
+            p.mesh.position.y += p.vy * dt;
+            p.mesh.position.z += p.vz * dt;
+            p.vy += 1.6 * dt; // 上昇加速
+            const s = p.startScale + t * 1.6;
+            p.mesh.scale.setScalar(s);
+            p.mesh.material.opacity = (1 - t) * p.startOpacity;
+        }
+    }
+
+    _spawnSmokePuff(hpRatio) {
+        const isAir = this.subType === 'tani_oh';
+        // ボス上の煙発生点（複数候補からランダム）
+        const localOffsets = isAir
+            ? [[-3, 1.0, -2], [-3, 1.0, 2], [-1, 2.0, 0], [2, 1.5, 1.5]]
+            : [[-3.5, 3.5, 0], [0, 4.6, 0.8], [-1.5, 5.0, -0.3], [-2, 4.0, 1.5]];
+        const off = localOffsets[Math.floor(Math.random() * localOffsets.length)];
+        const localPos = new THREE.Vector3(off[0], off[1], off[2]);
+        const worldPos = this.group.localToWorld(localPos.clone());
+        worldPos.x += (Math.random() - 0.5) * 0.6;
+        worldPos.z += (Math.random() - 0.5) * 0.6;
+
+        // 黒煙〜濃灰、低HPでは火の粉混じり
+        const isFireTinge = hpRatio < 0.25 && Math.random() < 0.35;
+        const color = isFireTinge ? 0xFF7820 : (Math.random() < 0.3 ? 0x222222 : 0x4A4540);
+        const puff = new THREE.Mesh(
+            new THREE.SphereGeometry(0.5, 8, 6),
+            new THREE.MeshBasicMaterial({
+                color, transparent: true,
+                opacity: 0.7, depthWrite: false,
+                blending: isFireTinge ? THREE.AdditiveBlending : THREE.NormalBlending,
+            })
+        );
+        puff.position.copy(worldPos);
+        const startScale = 0.7 + Math.random() * 0.4;
+        puff.scale.setScalar(startScale);
+        this.scene.add(puff);
+        this.smokePuffs.push({
+            mesh: puff,
+            age: 0,
+            maxAge: 1.4 + Math.random() * 0.6,
+            vx: (Math.random() - 0.5) * 1.5,
+            vy: 1.0 + Math.random() * 1.5,
+            vz: (Math.random() - 0.5) * 1.5,
+            startScale,
+            startOpacity: isFireTinge ? 0.85 : 0.7,
+        });
     }
 
     _updateDiCokka(dt, playerPos) {
@@ -706,6 +1220,37 @@ export class Boss {
         // 砲口の光パルス
         if (this.muzzleGlow) {
             this.muzzleGlow.material.opacity = 0.3 + Math.sin(this.bobPhase * 3) * 0.3;
+        }
+
+        // エネルギーコア脈動
+        const corePulse = 0.7 + Math.sin(this.bobPhase * 4) * 0.3;
+        if (this.energyCore) {
+            this.energyCore.material.opacity = corePulse * 0.95;
+            const s = 0.9 + Math.sin(this.bobPhase * 4) * 0.1;
+            this.energyCore.scale.setScalar(s);
+        }
+        if (this.energyHalo) {
+            this.energyHalo.material.opacity = 0.15 + corePulse * 0.18;
+        }
+
+        // スラスター炎の脈動・スケール
+        if (this.thrusterCones) {
+            const flicker = 0.85 + Math.sin(this.bobPhase * 18) * 0.1 + (Math.random() - 0.5) * 0.06;
+            this.thrusterCones.forEach(c => {
+                c.scale.x = flicker;
+                c.material.opacity = 0.55 + Math.sin(this.bobPhase * 12) * 0.2;
+            });
+        }
+        if (this.thrusterGlows) {
+            this.thrusterGlows.forEach(g => {
+                g.material.opacity = 0.8 + Math.sin(this.bobPhase * 14) * 0.15;
+            });
+        }
+
+        // ホバーリング（脈動）
+        if (this.hoverRing) {
+            this.hoverRing.material.opacity = 0.12 + Math.sin(this.bobPhase * 2) * 0.08;
+            this.hoverRing.rotation.z += dt * 0.4;
         }
 
         // 登場移動（前方から -Z 方向に後退して targetZ に近づく）
@@ -828,7 +1373,7 @@ export class Boss {
                 maxDistance: 100,
             });
             this.projectiles.push(shell);
-            new Explosion(this.scene, muzzlePos, { type: 'muzzle', color: 0xFF6600 });
+            this._spawnEffect(new Explosion(this.scene, muzzlePos, { type: 'muzzle', color: 0xFF6600 }));
         }
     }
 
@@ -858,7 +1403,7 @@ export class Boss {
                     gravity: 3,
                 });
                 this.projectiles.push(missile);
-                new Explosion(this.scene, muzzlePos, { type: 'muzzle', color: 0xFF4400 });
+                this._spawnEffect(new Explosion(this.scene, muzzlePos, { type: 'muzzle', color: 0xFF4400 }));
             }, i * 150);
         }
     }
@@ -916,7 +1461,7 @@ export class Boss {
             maxDistance: 120,
         });
         this.projectiles.push(shell);
-        new Explosion(this.scene, muzzlePos, { type: 'muzzle', color: 0x44DDFF });
+        this._spawnEffect(new Explosion(this.scene, muzzlePos, { type: 'muzzle', color: 0x44DDFF }));
 
         // 砲口フラッシュ
         if (this.muzzleGlow) {
@@ -1025,10 +1570,11 @@ export class Boss {
                 this.armorGroup.visible = false;
                 const pos = this.group.position.clone();
                 pos.y += 2;
-                new Explosion(this.scene, pos, { type: 'large' });
+                this._spawnEffect(new Explosion(this.scene, pos, { type: 'large' }));
                 // 追加爆発
                 setTimeout(() => {
-                    new Explosion(this.scene, pos.clone().add(new THREE.Vector3(2, 1, -1)), { type: 'large' });
+                    if (!this.alive) return;
+                    this._spawnEffect(new Explosion(this.scene, pos.clone().add(new THREE.Vector3(2, 1, -1)), { type: 'large' }));
                 }, 200);
             }
         }
@@ -1041,9 +1587,10 @@ export class Boss {
             }
             const pos = this.group.position.clone();
             pos.y += this.subType === 'tani_oh' ? 0 : 4;
-            new Explosion(this.scene, pos, { type: 'large' });
+            this._spawnEffect(new Explosion(this.scene, pos, { type: 'large' }));
             setTimeout(() => {
-                new Explosion(this.scene, pos.clone().add(new THREE.Vector3(-1, 2, 0.5)), { type: 'large' });
+                if (!this.alive) return;
+                this._spawnEffect(new Explosion(this.scene, pos.clone().add(new THREE.Vector3(-1, 2, 0.5)), { type: 'large' }));
             }, 300);
         }
 
@@ -1066,25 +1613,35 @@ export class Boss {
     /* ========================================================
      *  DESTROY
      * ======================================================== */
-    destroy() {
+    destroy(effectsList = null) {
         const pos = this.group.position.clone();
         const explosionCount = this.subType === 'tani_oh' ? 10 : 7;
+        // 引数で渡された effects list を一時的に使い、無ければ this.effectSink にフォールバック
+        const sink = effectsList || this.effectSink || null;
 
+        // 段階的な爆発カスケード — タイマー ID を保持してリセット時にキャンセル可
+        this._destroyTimers = this._destroyTimers || [];
         for (let i = 0; i < explosionCount; i++) {
-            setTimeout(() => {
+            const tid = setTimeout(() => {
                 const offset = new THREE.Vector3(
                     (Math.random() - 0.5) * (this.subType === 'tani_oh' ? 10 : 6),
                     Math.random() * (this.subType === 'tani_oh' ? 5 : 4),
                     (Math.random() - 0.5) * (this.subType === 'tani_oh' ? 8 : 4)
                 );
-                new Explosion(this.scene, pos.clone().add(offset), {
+                const ex = new Explosion(this.scene, pos.clone().add(offset), {
                     type: 'large',
                     color: i % 3 === 0 ? 0xFF4400 : (i % 3 === 1 ? 0xFFAA00 : 0xFFFF44),
                 });
+                if (sink && Array.isArray(sink)) {
+                    sink.push(ex);
+                } else {
+                    this._spawnEffect(ex);
+                }
             }, i * 180);
+            this._destroyTimers.push(tid);
         }
 
-        setTimeout(() => {
+        const finalTid = setTimeout(() => {
             this.scene.remove(this.group);
             this.group.traverse(child => {
                 if (child.isMesh) {
@@ -1092,9 +1649,91 @@ export class Boss {
                     if (child.material.dispose) child.material.dispose();
                 }
             });
+            // 全タイマーが完了したのでクリア（メモリリーク防止）
+            this._destroyTimers = [];
         }, explosionCount * 180 + 500);
+        this._destroyTimers.push(finalTid);
 
         this.projectiles.forEach(p => p.destroy());
         this.projectiles = [];
+
+        // 煙パフを片付け
+        this.smokePuffs.forEach(p => {
+            this.scene.remove(p.mesh);
+            p.mesh.geometry.dispose();
+            p.mesh.material.dispose();
+        });
+        this.smokePuffs = [];
+    }
+
+    /** 進行中の destroy カスケードをキャンセル（リセット時用） */
+    cancelDestroyTimers() {
+        if (this._destroyTimers) {
+            this._destroyTimers.forEach(t => clearTimeout(t));
+            this._destroyTimers = [];
+        }
+    }
+
+    /** リセット用の即時破棄: 段階爆発を作らず、その場で scene/dispose だけ行う。
+     *  R 連打時に古いボスの爆発カスケードが新ゲームに混入するのを防ぐ。 */
+    destroyImmediate() {
+        this.cancelDestroyTimers();
+        this.alive = false;
+        if (this.group && this.group.parent) {
+            this.scene.remove(this.group);
+        }
+        this.group && this.group.traverse(child => {
+            if (child.isMesh) {
+                if (child.geometry) child.geometry.dispose();
+                if (child.material) {
+                    if (Array.isArray(child.material)) child.material.forEach(m => m.dispose());
+                    else if (child.material.dispose) child.material.dispose();
+                }
+            }
+        });
+        this.projectiles.forEach(p => p.destroy && p.destroy());
+        this.projectiles = [];
+        if (this.smokePuffs) {
+            this.smokePuffs.forEach(p => {
+                if (p.mesh) {
+                    this.scene.remove(p.mesh);
+                    if (p.mesh.geometry) p.mesh.geometry.dispose();
+                    if (p.mesh.material) p.mesh.material.dispose();
+                }
+            });
+            this.smokePuffs = [];
+        }
+    }
+
+    /**
+     * 生成した Explosion エフェクトを effectSink に登録する。
+     * 登録しない場合 update() が呼ばれず scene に永遠に残り
+     * メタルスラッグが時間と共に重くなる主因となる。
+     */
+    _spawnEffect(effect) {
+        if (!effect) return effect;
+        if (this.effectSink && Array.isArray(this.effectSink)) {
+            this.effectSink.push(effect);
+        } else {
+            // フォールバック: 最大寿命経過後に強制クリーンアップ
+            setTimeout(() => {
+                if (effect.alive) {
+                    effect.alive = false;
+                    if (effect.scene && effect.group) {
+                        effect.scene.remove(effect.group);
+                        effect.group.traverse(c => {
+                            if (c.isMesh) {
+                                if (c.geometry && c.geometry.dispose && c.geometry !== undefined) {
+                                    // 共有ジオメトリは Explosion 側でキャッシュされているので
+                                    // 個別 dispose は避ける。Material のみ dispose。
+                                }
+                                if (c.material && c.material.dispose) c.material.dispose();
+                            }
+                        });
+                    }
+                }
+            }, ((effect.maxAge || 1.0) * 1000) + 200);
+        }
+        return effect;
     }
 }

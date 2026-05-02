@@ -397,6 +397,37 @@ body {
 
 .charge-fill {
     background: linear-gradient(90deg, #ffd05c, #ff682c);
+    transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* チャージ閾値未満: 暗い赤茶 */
+.charge-fill.charge-low {
+    background: linear-gradient(90deg, #6a3a1a, #8b4a22);
+    box-shadow: none;
+}
+
+/* チャージ発射可能 (50%+): 明るいオレンジの発光 */
+.charge-fill.charge-ready {
+    background: linear-gradient(90deg, #ffaa22, #ff5500);
+    box-shadow: 0 0 12px rgba(255, 140, 30, 0.6), inset 0 0 6px rgba(255, 255, 100, 0.3);
+    animation: chargeReady 0.6s ease-in-out infinite alternate;
+}
+
+/* チャージ高 (75%+): 青白パルス */
+.charge-fill.charge-high {
+    background: linear-gradient(90deg, #66ccff, #ffffff);
+    box-shadow: 0 0 18px rgba(100, 200, 255, 0.7), inset 0 0 8px rgba(255, 255, 255, 0.5);
+    animation: chargeHigh 0.35s ease-in-out infinite alternate;
+}
+
+@keyframes chargeReady {
+    0% { box-shadow: 0 0 8px rgba(255, 140, 30, 0.4), inset 0 0 4px rgba(255, 255, 100, 0.2); }
+    100% { box-shadow: 0 0 16px rgba(255, 140, 30, 0.8), inset 0 0 8px rgba(255, 255, 100, 0.4); }
+}
+
+@keyframes chargeHigh {
+    0% { box-shadow: 0 0 14px rgba(100, 200, 255, 0.5), inset 0 0 6px rgba(255, 255, 255, 0.3); }
+    100% { box-shadow: 0 0 24px rgba(100, 200, 255, 0.9), inset 0 0 12px rgba(255, 255, 255, 0.6); }
 }
 
 #weapon-display {
@@ -1259,4 +1290,48 @@ body {
 @keyframes grenade-pulse {
     0%, 100% { box-shadow: 0 0 4px #FFEE44; }
     50%       { box-shadow: 0 0 12px #FFEE44; }
+}
+
+/* ==========================
+ * Lock-on reticle (auto-aim)
+ * ========================== */
+#lock-on-reticle {
+    position: absolute;
+    width: 64px;
+    height: 64px;
+    left: 0;
+    top: 0;
+    transform: translate(-9999px, -9999px);
+    pointer-events: none;
+    z-index: 5;
+    filter: drop-shadow(0 0 6px rgba(255, 90, 50, 0.6));
+    transition: opacity 0.12s linear;
+    opacity: 0;
+}
+#lock-on-reticle.visible {
+    opacity: 1;
+    animation: lock-pulse 0.7s ease-in-out infinite;
+}
+#lock-on-reticle.charging {
+    filter: drop-shadow(0 0 10px rgba(255, 220, 80, 0.9));
+}
+#lock-on-reticle .lock-corner {
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    border-color: #FF7442;
+    border-style: solid;
+    border-width: 0;
+}
+#lock-on-reticle.charging .lock-corner {
+    border-color: #FFD061;
+}
+#lock-on-reticle .lock-tl { top: 0;    left: 0;    border-top-width: 3px;    border-left-width: 3px; }
+#lock-on-reticle .lock-tr { top: 0;    right: 0;   border-top-width: 3px;    border-right-width: 3px; }
+#lock-on-reticle .lock-bl { bottom: 0; left: 0;    border-bottom-width: 3px; border-left-width: 3px; }
+#lock-on-reticle .lock-br { bottom: 0; right: 0;   border-bottom-width: 3px; border-right-width: 3px; }
+
+@keyframes lock-pulse {
+    0%, 100% { transform: translate(var(--lx, 0), var(--ly, 0)) scale(1.0); }
+    50%      { transform: translate(var(--lx, 0), var(--ly, 0)) scale(1.12); }
 }

@@ -11,6 +11,12 @@
         <canvas id="game-canvas"></canvas>
 
         <div id="ui-overlay">
+            <div id="lock-on-reticle" aria-hidden="true">
+                <div class="lock-corner lock-tl"></div>
+                <div class="lock-corner lock-tr"></div>
+                <div class="lock-corner lock-bl"></div>
+                <div class="lock-corner lock-br"></div>
+            </div>
             <div id="hud-top-shell">
                 <div class="hud-wing-card">
                     <span class="wing-label">MISSION</span>
@@ -148,15 +154,15 @@
                         <span class="hud-chip">REVISED</span>
                     </div>
                     <div class="controls-grid">
-                        <span>←→ STRAFE</span>
-                        <span>↑↓ ADVANCE / RETREAT</span>
+                        <span>WASD / ←→↑↓ MOVE</span>
                         <span>SPACE JUMP</span>
-                        <span>C / CTRL CROUCH</span>
+                        <span>CTRL / C CROUCH</span>
+                        <span>SHIFT BOOST DASH</span>
                         <span>MOUSE AIM</span>
                         <span>LMB VULCAN</span>
-                        <span>RMB / F / SHIFT CANNON</span>
+                        <span>RMB / F CANNON (CHARGE)</span>
                         <span>G GRENADE  (HOLD: ARC)</span>
-                        <span>E BOOST DASH</span>
+                        <span>V AUTO-FIRE TOGGLE</span>
                         <span>Q DISMOUNT / BOARD</span>
                         <span>R RESTART   M MUTE</span>
                     </div>
@@ -212,15 +218,15 @@
                 <div id="title-subtitle">FRONTIER</div>
                 <div id="title-divider"></div>
                 <div id="title-controls-brief">
-                    <div class="title-control-row"><span class="tc-key">← →</span><span class="tc-desc">STRAFE LEFT / RIGHT</span></div>
-                    <div class="title-control-row"><span class="tc-key">↑ ↓</span><span class="tc-desc">ADVANCE / RETREAT</span></div>
+                    <div class="title-control-row"><span class="tc-key">W A S D</span><span class="tc-desc">MOVE  (ALT: ARROW KEYS)</span></div>
                     <div class="title-control-row"><span class="tc-key">SPACE</span><span class="tc-desc">JUMP</span></div>
-                    <div class="title-control-row"><span class="tc-key">C</span><span class="tc-desc">CROUCH</span></div>
+                    <div class="title-control-row"><span class="tc-key">CTRL / C</span><span class="tc-desc">CROUCH</span></div>
+                    <div class="title-control-row"><span class="tc-key">SHIFT</span><span class="tc-desc">BOOST DASH</span></div>
                     <div class="title-control-row"><span class="tc-key">MOUSE</span><span class="tc-desc">AIM</span></div>
                     <div class="title-control-row"><span class="tc-key">LMB</span><span class="tc-desc">VULCAN (AUTO-FIRE)</span></div>
-                    <div class="title-control-row"><span class="tc-key">RMB / F / SHIFT</span><span class="tc-desc">CANNON (CHARGE)</span></div>
+                    <div class="title-control-row"><span class="tc-key">RMB / F</span><span class="tc-desc">CANNON (CHARGE)</span></div>
                     <div class="title-control-row"><span class="tc-key">G</span><span class="tc-desc">GRENADE  (HOLD: AIM)</span></div>
-                    <div class="title-control-row"><span class="tc-key">E</span><span class="tc-desc">BOOST DASH</span></div>
+                    <div class="title-control-row"><span class="tc-key">V</span><span class="tc-desc">AUTO-FIRE TOGGLE</span></div>
                     <div class="title-control-row"><span class="tc-key">Q</span><span class="tc-desc">DISMOUNT / RE-BOARD</span></div>
                     <div class="title-control-row"><span class="tc-key">R / M</span><span class="tc-desc">RESTART / MUTE</span></div>
                 </div>

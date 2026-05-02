@@ -127,8 +127,10 @@ export class Enemy {
         this.scene.remove(this.group);
         this.group.traverse(child => {
             if (child.isMesh) {
-                child.geometry.dispose();
-                child.material.dispose();
+                const g = child.geometry;
+                if (g && !(g.userData && g.userData.shared)) g.dispose();
+                const m = child.material;
+                if (m && !(m.userData && m.userData.shared)) m.dispose();
             }
         });
         // 残弾も消す

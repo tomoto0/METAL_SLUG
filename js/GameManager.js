@@ -7,6 +7,12 @@ import { Explosion } from './Explosion.js';
 import { ItemDrop } from './ItemDrop.js';
 import { POW } from './POW.js';
 
+// 衝突判定の per-frame アロケーションを抑えるための共有テンポラリ。
+// 1 関数の中で完結する一時ベクトルにのみ使う（呼び出し境界を超えて保持しない）。
+const _hitTmpV = new THREE.Vector3();
+const _hitTmpSeg = new THREE.Vector3();
+const _hitTmpDelta = new THREE.Vector3();
+
 /**
  * ゲーム全体の管理（サイドスクロール版）
  * - 敵は主に画面右側からスポーン
@@ -56,79 +62,311 @@ export class GameManager {
         this.getScrollZ = () => 0;
         this.getScrollSpeed = () => 5;
 
-        // ウェーブ定義（難易度バランス調整済み）
+        // ウェーブ定義（23ステージ）
+        // 構成: 1〜3 序盤 / 4 中ボス / 5〜7 中盤 / 8 中盤ボス / 9〜12 後半 /
+        // 13〜17 終盤拡張 / 18〜22 深部要塞 / 23 無限
         this.waves = [
+            // --- Wave 1: 序章（ライフル兵の襲来）---
             {
-                duration: 25, spawnInterval: 2.5, maxSimultaneous: 6,
+                duration: 22, spawnInterval: 1.5, maxSimultaneous: 9,
                 pool: [{ type: 'infantry', subType: 'rifle', weight: 1 }],
             },
+            // --- Wave 2: 突撃部隊（ナイフ・ハンター追加）---
             {
-                duration: 28, spawnInterval: 2.2, maxSimultaneous: 7,
+                duration: 25, spawnInterval: 1.35, maxSimultaneous: 11,
                 pool: [
-                    { type: 'infantry', subType: 'rifle', weight: 4 },
-                    { type: 'infantry', subType: 'knife', weight: 2 },
+                    { type: 'infantry', subType: 'rifle',  weight: 3 },
+                    { type: 'infantry', subType: 'knife',  weight: 2 },
+                    { type: 'infantry', subType: 'hunter', weight: 1 },
                 ],
             },
+            // --- Wave 3: 多彩な歩兵（手榴弾・スナイパー）---
             {
-                duration: 30, spawnInterval: 2.2, maxSimultaneous: 8,
+                duration: 28, spawnInterval: 1.25, maxSimultaneous: 12,
                 pool: [
-                    { type: 'infantry', subType: 'rifle', weight: 3 },
+                    { type: 'infantry', subType: 'rifle',   weight: 3 },
                     { type: 'infantry', subType: 'grenade', weight: 2 },
+                    { type: 'infantry', subType: 'knife',   weight: 1 },
+                    { type: 'infantry', subType: 'hunter',  weight: 1 },
+                    { type: 'infantry', subType: 'sniper',  weight: 1 },
+                ],
+            },
+            // --- Wave 4: ボス戦の前哨戦 + Di-Cokka 中ボス ---
+            {
+                duration: 35, spawnInterval: 1.2, maxSimultaneous: 12,
+                pool: [
+                    { type: 'infantry', subType: 'rifle',   weight: 3 },
+                    { type: 'infantry', subType: 'grenade', weight: 2 },
+                    { type: 'infantry', subType: 'rocket',  weight: 1 },
+                    { type: 'tank',     subType: 'light',   weight: 1 },
+                ],
+            },
+            // --- Wave 5: 古代の脅威（ミイラ・忍者初登場の混成）---
+            {
+                duration: 28, spawnInterval: 1.15, maxSimultaneous: 13,
+                pool: [
+                    { type: 'infantry', subType: 'rifle', weight: 1 },
+                    { type: 'infantry', subType: 'mummy', weight: 3 },
+                    { type: 'infantry', subType: 'ninja', weight: 2 },
                     { type: 'infantry', subType: 'knife', weight: 1 },
                 ],
             },
+            // --- Wave 6: 重装部隊（火炎・盾・士官）---
             {
-                duration: 30, spawnInterval: 2.0, maxSimultaneous: 8,
+                duration: 30, spawnInterval: 1.2, maxSimultaneous: 14,
                 pool: [
-                    { type: 'infantry', subType: 'rifle', weight: 3 },
-                    { type: 'infantry', subType: 'grenade', weight: 2 },
-                    { type: 'infantry', subType: 'knife', weight: 1 },
-                    { type: 'tank',     subType: 'light', weight: 1 },
+                    { type: 'infantry', subType: 'rocket',       weight: 2 },
+                    { type: 'infantry', subType: 'shield',       weight: 2 },
+                    { type: 'infantry', subType: 'officer',      weight: 1 },
+                    { type: 'infantry', subType: 'flamethrower', weight: 2 },
+                    { type: 'tank',     subType: 'light',        weight: 1 },
                 ],
             },
+            // --- Wave 7: 制空権争い（航空戦力多投 + 屋上狙撃）---
             {
-                duration: 30, spawnInterval: 2.2, maxSimultaneous: 10,
+                duration: 32, spawnInterval: 1.2, maxSimultaneous: 15,
                 pool: [
-                    { type: 'infantry', subType: 'rocket', weight: 2 },
-                    { type: 'infantry', subType: 'shield', weight: 1 },
-                    { type: 'infantry', subType: 'officer', weight: 1 },
-                    { type: 'tank',     subType: 'light',  weight: 2 },
+                    { type: 'infantry',  subType: 'rifle',          weight: 2 },
+                    { type: 'infantry',  subType: 'machinegun',     weight: 1 },
+                    { type: 'infantry',  subType: 'rocket',         weight: 1 },
+                    { type: 'infantry',  subType: 'sniper',         weight: 1 },
+                    { type: 'infantry',  subType: 'perched_sniper', weight: 1 },
+                    { type: 'aircraft',  subType: 'scout_heli',     weight: 2 },
+                    { type: 'aircraft',  subType: 'attack_heli',    weight: 1 },
                 ],
             },
+            // --- Wave 8: 中盤ボス Tani Oh（強敵歩兵を伴う）---
             {
-                duration: 30, spawnInterval: 2.5, maxSimultaneous: 10,
+                duration: 40, spawnInterval: 1.15, maxSimultaneous: 13,
                 pool: [
-                    { type: 'infantry',  subType: 'rifle',      weight: 2 },
-                    { type: 'infantry',  subType: 'machinegun', weight: 1 },
-                    { type: 'infantry',  subType: 'rocket',     weight: 1 },
-                    { type: 'aircraft',  subType: 'scout_heli', weight: 2 },
+                    { type: 'infantry', subType: 'machinegun',   weight: 2 },
+                    { type: 'infantry', subType: 'flamethrower', weight: 1 },
+                    { type: 'infantry', subType: 'shield',       weight: 1 },
+                    { type: 'infantry', subType: 'rocket',       weight: 1 },
                 ],
             },
+            // --- Wave 9: ミイラの大群 + 火炎兵連携 ---
             {
-                duration: 35, spawnInterval: 1.5, maxSimultaneous: 10,
+                duration: 30, spawnInterval: 1.05, maxSimultaneous: 16,
                 pool: [
-                    { type: 'infantry', subType: 'rifle',  weight: 2 },
-                    { type: 'infantry', subType: 'grenade', weight: 1 },
-                    { type: 'infantry', subType: 'shield', weight: 1 },
-                    { type: 'infantry', subType: 'officer', weight: 1 },
-                    { type: 'tank',     subType: 'heavy',  weight: 1 },
+                    { type: 'infantry', subType: 'mummy',        weight: 4 },
+                    { type: 'infantry', subType: 'flamethrower', weight: 2 },
+                    { type: 'infantry', subType: 'sniper',       weight: 1 },
+                    { type: 'infantry', subType: 'ninja',        weight: 2 },
+                    { type: 'tank',     subType: 'light',        weight: 1 },
                 ],
             },
+            // --- Wave 10: 全方位空襲（爆撃機・戦闘機 + 屋上スナイパー）---
             {
-                duration: 999, spawnInterval: 1.2, maxSimultaneous: 15,
+                duration: 32, spawnInterval: 1.1, maxSimultaneous: 17,
                 pool: [
-                    { type: 'infantry', subType: 'rifle',       weight: 2 },
-                    { type: 'infantry', subType: 'knife',       weight: 1 },
-                    { type: 'infantry', subType: 'rocket',      weight: 1 },
-                    { type: 'infantry', subType: 'grenade',     weight: 1 },
-                    { type: 'infantry', subType: 'machinegun',  weight: 1 },
-                    { type: 'infantry', subType: 'officer',     weight: 1 },
-                    { type: 'infantry', subType: 'shield',      weight: 1 },
-                    { type: 'tank',     subType: 'light',       weight: 1 },
-                    { type: 'tank',     subType: 'heavy',       weight: 1 },
-                    { type: 'aircraft', subType: 'scout_heli',  weight: 1 },
-                    { type: 'aircraft', subType: 'attack_heli', weight: 1 },
-                    { type: 'aircraft', subType: 'bomber',      weight: 1 },
+                    { type: 'infantry', subType: 'machinegun',     weight: 1 },
+                    { type: 'infantry', subType: 'officer',        weight: 1 },
+                    { type: 'infantry', subType: 'rocket',         weight: 1 },
+                    { type: 'infantry', subType: 'juggernaut',     weight: 1 },
+                    { type: 'infantry', subType: 'perched_sniper', weight: 1 },
+                    { type: 'aircraft', subType: 'attack_heli',    weight: 2 },
+                    { type: 'aircraft', subType: 'bomber',         weight: 2 },
+                    { type: 'aircraft', subType: 'fighter',        weight: 1 },
+                ],
+            },
+            // --- Wave 11: 機甲師団（双戦車 + 重装歩兵）---
+            {
+                duration: 35, spawnInterval: 1.0, maxSimultaneous: 17,
+                pool: [
+                    { type: 'infantry', subType: 'rifle',        weight: 1 },
+                    { type: 'infantry', subType: 'grenade',      weight: 1 },
+                    { type: 'infantry', subType: 'shield',       weight: 1 },
+                    { type: 'infantry', subType: 'flamethrower', weight: 1 },
+                    { type: 'infantry', subType: 'officer',      weight: 1 },
+                    { type: 'infantry', subType: 'juggernaut',   weight: 1 },
+                    { type: 'tank',     subType: 'light',        weight: 2 },
+                    { type: 'tank',     subType: 'heavy',        weight: 2 },
+                    { type: 'aircraft', subType: 'scout_heli',   weight: 1 },
+                ],
+            },
+            // --- Wave 12: 精鋭乱戦 + 最終ボス Tani Oh 強化版 ---
+            {
+                duration: 50, spawnInterval: 0.95, maxSimultaneous: 16,
+                pool: [
+                    { type: 'infantry', subType: 'machinegun',   weight: 1 },
+                    { type: 'infantry', subType: 'rocket',       weight: 1 },
+                    { type: 'infantry', subType: 'sniper',       weight: 1 },
+                    { type: 'infantry', subType: 'ninja',        weight: 1 },
+                    { type: 'infantry', subType: 'mummy',        weight: 1 },
+                    { type: 'infantry', subType: 'flamethrower', weight: 1 },
+                    { type: 'infantry', subType: 'officer',      weight: 1 },
+                    { type: 'infantry', subType: 'juggernaut',   weight: 1 },
+                    { type: 'tank',     subType: 'heavy',        weight: 1 },
+                ],
+            },
+            // --- Wave 13: 焦土進軍（重装歩兵の先鋒 + 屋上スナイパー）---
+            {
+                duration: 36, spawnInterval: 0.95, maxSimultaneous: 18,
+                pool: [
+                    { type: 'infantry', subType: 'juggernaut',     weight: 2 },
+                    { type: 'infantry', subType: 'shield',         weight: 2 },
+                    { type: 'infantry', subType: 'machinegun',     weight: 2 },
+                    { type: 'infantry', subType: 'rocket',         weight: 2 },
+                    { type: 'infantry', subType: 'perched_sniper', weight: 2 },
+                    { type: 'tank',     subType: 'heavy',          weight: 2 },
+                    { type: 'aircraft', subType: 'attack_heli',    weight: 1 },
+                ],
+            },
+            // --- Wave 14: 砂嵐制圧線（空地同時圧力）---
+            {
+                duration: 38, spawnInterval: 0.92, maxSimultaneous: 19,
+                pool: [
+                    { type: 'infantry', subType: 'juggernaut',   weight: 2 },
+                    { type: 'infantry', subType: 'ninja',        weight: 2 },
+                    { type: 'infantry', subType: 'sniper',       weight: 2 },
+                    { type: 'tank',     subType: 'light',        weight: 2 },
+                    { type: 'tank',     subType: 'heavy',        weight: 2 },
+                    { type: 'aircraft', subType: 'bomber',       weight: 2 },
+                    { type: 'aircraft', subType: 'fighter',      weight: 1 },
+                ],
+            },
+            // --- Wave 15: 鉄血混成旅団（精鋭歩兵ラッシュ）---
+            {
+                duration: 40, spawnInterval: 0.88, maxSimultaneous: 20,
+                pool: [
+                    { type: 'infantry', subType: 'juggernaut',   weight: 3 },
+                    { type: 'infantry', subType: 'officer',      weight: 2 },
+                    { type: 'infantry', subType: 'flamethrower', weight: 2 },
+                    { type: 'infantry', subType: 'machinegun',   weight: 2 },
+                    { type: 'infantry', subType: 'hunter',       weight: 2 },
+                    { type: 'tank',     subType: 'heavy',        weight: 2 },
+                ],
+            },
+            // --- Wave 16: 要塞突破戦（超強化ボス戦前哨）---
+            {
+                duration: 45, spawnInterval: 0.85, maxSimultaneous: 19,
+                pool: [
+                    { type: 'infantry', subType: 'juggernaut',     weight: 3 },
+                    { type: 'infantry', subType: 'shield',         weight: 2 },
+                    { type: 'infantry', subType: 'rocket',         weight: 2 },
+                    { type: 'infantry', subType: 'sniper',         weight: 1 },
+                    { type: 'infantry', subType: 'perched_sniper', weight: 2 },
+                    { type: 'tank',     subType: 'heavy',          weight: 2 },
+                    { type: 'aircraft', subType: 'attack_heli',    weight: 2 },
+                ],
+            },
+            // --- Wave 17: 終末連隊（ボス後の殲滅フェーズ）---
+            {
+                duration: 42, spawnInterval: 0.8, maxSimultaneous: 21,
+                pool: [
+                    { type: 'infantry', subType: 'juggernaut',   weight: 3 },
+                    { type: 'infantry', subType: 'ninja',        weight: 2 },
+                    { type: 'infantry', subType: 'mummy',        weight: 2 },
+                    { type: 'infantry', subType: 'officer',      weight: 2 },
+                    { type: 'tank',     subType: 'heavy',        weight: 2 },
+                    { type: 'aircraft', subType: 'bomber',       weight: 2 },
+                    { type: 'aircraft', subType: 'fighter',      weight: 2 },
+                ],
+            },
+            // --- Wave 18: 装甲遊撃隊（新精鋭兵の投入）---
+            {
+                duration: 44, spawnInterval: 0.78, maxSimultaneous: 22,
+                pool: [
+                    { type: 'infantry', subType: 'commando',     weight: 3 },
+                    { type: 'infantry', subType: 'juggernaut',   weight: 2 },
+                    { type: 'infantry', subType: 'ninja',        weight: 2 },
+                    { type: 'infantry', subType: 'sniper',       weight: 1 },
+                    { type: 'tank',     subType: 'heavy',        weight: 2 },
+                    { type: 'tank',     subType: 'flak',         weight: 1 },
+                    { type: 'aircraft', subType: 'interceptor',  weight: 1 },
+                ],
+            },
+            // --- Wave 19: 工兵火線（爆破兵とドローンの面制圧）---
+            {
+                duration: 46, spawnInterval: 0.74, maxSimultaneous: 23,
+                pool: [
+                    { type: 'infantry', subType: 'demolition',   weight: 3 },
+                    { type: 'infantry', subType: 'commando',     weight: 2 },
+                    { type: 'infantry', subType: 'rocket',       weight: 2 },
+                    { type: 'infantry', subType: 'flamethrower', weight: 2 },
+                    { type: 'tank',     subType: 'flak',         weight: 2 },
+                    { type: 'aircraft', subType: 'drone',        weight: 3 },
+                    { type: 'aircraft', subType: 'fighter',      weight: 1 },
+                ],
+            },
+            // --- Wave 20: 空中機動要塞（ガンシップ初登場）---
+            {
+                duration: 48, spawnInterval: 0.72, maxSimultaneous: 22,
+                pool: [
+                    { type: 'infantry', subType: 'commando',     weight: 2 },
+                    { type: 'infantry', subType: 'demolition',   weight: 2 },
+                    { type: 'infantry', subType: 'juggernaut',   weight: 2 },
+                    { type: 'tank',     subType: 'siege',        weight: 1 },
+                    { type: 'aircraft', subType: 'gunship',      weight: 3 },
+                    { type: 'aircraft', subType: 'interceptor',  weight: 2 },
+                    { type: 'aircraft', subType: 'drone',        weight: 2 },
+                ],
+            },
+            // --- Wave 21: 超重包囲網（地上重機と空襲の同時圧力）---
+            {
+                duration: 50, spawnInterval: 0.68, maxSimultaneous: 24,
+                pool: [
+                    { type: 'infantry', subType: 'commando',     weight: 3 },
+                    { type: 'infantry', subType: 'demolition',   weight: 3 },
+                    { type: 'infantry', subType: 'officer',      weight: 2 },
+                    { type: 'infantry', subType: 'juggernaut',   weight: 3 },
+                    { type: 'tank',     subType: 'flak',         weight: 2 },
+                    { type: 'tank',     subType: 'siege',        weight: 2 },
+                    { type: 'aircraft', subType: 'gunship',      weight: 2 },
+                    { type: 'aircraft', subType: 'interceptor',  weight: 2 },
+                ],
+            },
+            // --- Wave 22: 最終防衛線（新敵種ほぼ全投入 + 屋上狙撃手強化）---
+            {
+                duration: 55, spawnInterval: 0.64, maxSimultaneous: 26,
+                pool: [
+                    { type: 'infantry', subType: 'commando',       weight: 3 },
+                    { type: 'infantry', subType: 'demolition',     weight: 3 },
+                    { type: 'infantry', subType: 'juggernaut',     weight: 3 },
+                    { type: 'infantry', subType: 'ninja',          weight: 2 },
+                    { type: 'infantry', subType: 'sniper',         weight: 2 },
+                    { type: 'infantry', subType: 'perched_sniper', weight: 3 },
+                    { type: 'tank',     subType: 'heavy',          weight: 2 },
+                    { type: 'tank',     subType: 'flak',           weight: 2 },
+                    { type: 'tank',     subType: 'siege',          weight: 2 },
+                    { type: 'aircraft', subType: 'gunship',        weight: 2 },
+                    { type: 'aircraft', subType: 'interceptor',    weight: 2 },
+                    { type: 'aircraft', subType: 'drone',          weight: 2 },
+                    { type: 'aircraft', subType: 'bomber',         weight: 1 },
+                ],
+            },
+            // --- Wave 23: 無限地獄（全敵種ランダム）---
+            {
+                duration: 999, spawnInterval: 0.6, maxSimultaneous: 26,
+                pool: [
+                    { type: 'infantry', subType: 'rifle',        weight: 1 },
+                    { type: 'infantry', subType: 'knife',        weight: 1 },
+                    { type: 'infantry', subType: 'rocket',       weight: 1 },
+                    { type: 'infantry', subType: 'grenade',      weight: 1 },
+                    { type: 'infantry', subType: 'machinegun',   weight: 1 },
+                    { type: 'infantry', subType: 'officer',      weight: 1 },
+                    { type: 'infantry', subType: 'shield',       weight: 1 },
+                    { type: 'infantry', subType: 'flamethrower', weight: 1 },
+                    { type: 'infantry', subType: 'mummy',        weight: 1 },
+                    { type: 'infantry', subType: 'sniper',       weight: 1 },
+                    { type: 'infantry', subType: 'hunter',       weight: 1 },
+                    { type: 'infantry', subType: 'ninja',        weight: 1 },
+                    { type: 'infantry', subType: 'juggernaut',   weight: 1 },
+                    { type: 'infantry', subType: 'commando',     weight: 2 },
+                    { type: 'infantry', subType: 'demolition',   weight: 2 },
+                    { type: 'infantry', subType: 'perched_sniper', weight: 2 },
+                    { type: 'tank',     subType: 'light',        weight: 1 },
+                    { type: 'tank',     subType: 'heavy',        weight: 1 },
+                    { type: 'tank',     subType: 'flak',         weight: 1 },
+                    { type: 'tank',     subType: 'siege',        weight: 1 },
+                    { type: 'aircraft', subType: 'scout_heli',   weight: 1 },
+                    { type: 'aircraft', subType: 'attack_heli',  weight: 1 },
+                    { type: 'aircraft', subType: 'bomber',       weight: 1 },
+                    { type: 'aircraft', subType: 'fighter',      weight: 1 },
+                    { type: 'aircraft', subType: 'drone',        weight: 2 },
+                    { type: 'aircraft', subType: 'interceptor',  weight: 2 },
+                    { type: 'aircraft', subType: 'gunship',      weight: 1 },
                 ],
             },
         ];
@@ -174,9 +412,9 @@ export class GameManager {
             this.boss.update(dt, playerPos);
         }
 
-        // ボススポーン（Wave 4: 中ボスDi-Cokka, Wave 7: 大ボスTani Oh）
+        // ボススポーン（Wave 4/8/12/16/20）
         const waveNum = this.waveIndex + 1;
-        if ((waveNum === 4 || waveNum === 7) && !this.bossSpawnedWaves.has(waveNum)) {
+        if ((waveNum === 4 || waveNum === 8 || waveNum === 12 || waveNum === 16 || waveNum === 20) && !this.bossSpawnedWaves.has(waveNum)) {
             if (this.waveElapsed > 5 && !this.boss) {
                 this._spawnBoss(waveNum, scrollZ);
                 this.bossSpawnedWaves.add(waveNum);
@@ -262,6 +500,7 @@ export class GameManager {
         });
 
         this._handlePlayerProjectiles(player);
+        this._handlePlayerProjectilesVsWorld(player);
         this._handleEnemyProjectiles(player);
 
         if (player.isInvincible()) return;
@@ -315,6 +554,113 @@ export class GameManager {
                 playerPos
             );
         }
+    }
+
+    _handlePlayerProjectilesVsWorld(player) {
+        if (!this.world || typeof this.world.getObstacles !== 'function') return;
+        const obstacles = this.world.getObstacles();
+        if (!obstacles.length) return;
+
+        for (const projectile of player.projectiles) {
+            if (!projectile.alive || projectile.impactPending) continue;
+
+            const { start, end } = this._getProjectileSegment(projectile);
+            const projRadius = projectile.hitRadius || 0.2;
+
+            // 最近接で当たった障害物を選ぶ
+            let bestHit = null;
+            for (const o of obstacles) {
+                if (o.info.destroyed) continue;
+                const center = new THREE.Vector3(o.obj.position.x, 0.9, o.obj.position.z);
+                const hit = this._segmentSphereHit(start, end, center, o.info.radius + projRadius);
+                if (hit && (!bestHit || hit.t < bestHit.t)) {
+                    bestHit = { ...hit, target: o };
+                }
+            }
+            if (!bestHit) continue;
+
+            const o = bestHit.target;
+            const isBlock = o.info.type === 'block';
+
+            if (isBlock) {
+                // 大型建造物は弾を止めるだけ（破壊不可）
+                if ((projectile.blastRadius || 0) > 0) {
+                    this._explodePlayerProjectile(projectile, bestHit.point, player.getPosition(), null);
+                } else {
+                    this._spawnHitSpark(bestHit.point.clone());
+                    if (this.soundManager && this.soundManager.playEnemyHit) this.soundManager.playEnemyHit();
+                    projectile.destroy();
+                }
+                continue;
+            }
+
+            // destructible: HP を減らす
+            o.info.hp -= projectile.damage;
+            if (o.info.hp <= 0) {
+                this._destroyWorldObstacle(o, bestHit.point, projectile, player);
+            } else {
+                this._spawnHitSpark(bestHit.point.clone());
+                if (this.soundManager && this.soundManager.playEnemyHit) this.soundManager.playEnemyHit();
+            }
+
+            // 砲弾の処理（爆風弾は爆発、通常弾は消える）
+            if ((projectile.blastRadius || 0) > 0) {
+                this._explodePlayerProjectile(projectile, bestHit.point, player.getPosition(), null);
+            } else {
+                projectile.destroy();
+            }
+        }
+    }
+
+    _destroyWorldObstacle(o, hitPoint, projectile, player) {
+        const info = o.info;
+        const obj = o.obj;
+        const pos = new THREE.Vector3(obj.position.x, 0.5, obj.position.z);
+
+        // 爆発演出
+        const visual = info.explosionVisual || (info.explosive ? 'large' : 'small');
+        this._spawnExplosion(pos, visual);
+        if (this.onScreenShake) this.onScreenShake(info.explosive ? 0.45 : 0.18);
+
+        if (this.soundManager) {
+            if (info.explosive && this.soundManager.playExplosionLarge) this.soundManager.playExplosionLarge();
+            else if (this.soundManager.playExplosionSmall) this.soundManager.playExplosionSmall();
+        }
+
+        // 連鎖爆発（オイルドラム等）: 敵にスプラッシュダメージ
+        if (info.explosive && info.blastRadius > 0) {
+            const playerPos = player ? player.getPosition() : pos;
+            for (const enemy of this.enemies) {
+                if (!enemy.alive) continue;
+                const d = enemy.getPosition().distanceTo(pos);
+                if (d < info.blastRadius) {
+                    const dmg = Math.max(20, Math.floor(110 * (1 - d / info.blastRadius)));
+                    this._damageEnemyFromPlayer(enemy, dmg, projectile, playerPos);
+                }
+            }
+            if (this.boss && this.boss.alive) {
+                const d = this.boss.getPosition().distanceTo(pos);
+                if (d < info.blastRadius * 1.5) {
+                    this._damageBoss(Math.floor(60 * (1 - d / (info.blastRadius * 1.5))));
+                }
+            }
+        }
+
+        // スコア
+        if (info.score && this.onScoreChange) {
+            this.score += info.score;
+            this.onScoreChange(this.score);
+        }
+
+        // アイテムドロップ
+        if (info.dropChance > 0 && info.dropTable && Math.random() < info.dropChance) {
+            const choice = info.dropTable[Math.floor(Math.random() * info.dropTable.length)];
+            const dropPos = new THREE.Vector3(obj.position.x, 0, obj.position.z);
+            this.items.push(new ItemDrop(this.scene, dropPos, choice));
+        }
+
+        // ワールドから除去
+        this.world.destroyObstacle(obj);
     }
 
     _handleEnemyProjectiles(player) {
@@ -409,7 +755,9 @@ export class GameManager {
     }
 
     _segmentSphereHit(start, end, center, radius) {
-        const segment = new THREE.Vector3().subVectors(end, start);
+        // 共有テンポラリ: この関数の内部でしか使わない。戻り値の point だけ新規確保する
+        // （上位で bestHit として保持されるので使い回せない）。
+        const segment = _hitTmpSeg.subVectors(end, start);
         const segLenSq = segment.lengthSq();
         if (segLenSq < 0.0001) {
             const distSq = start.distanceToSquared(center);
@@ -417,7 +765,7 @@ export class GameManager {
         }
 
         const t = THREE.MathUtils.clamp(
-            new THREE.Vector3().subVectors(center, start).dot(segment) / segLenSq,
+            _hitTmpDelta.subVectors(center, start).dot(segment) / segLenSq,
             0,
             1
         );
@@ -425,74 +773,90 @@ export class GameManager {
         return point.distanceToSquared(center) <= radius * radius ? { t, point } : null;
     }
 
+    /**
+     * entity._hitSphereCache を `count` 個に揃え、center は再利用する。
+     * 戻り値は同じ配列を返すので呼び出し側で center.set / radius を上書きする。
+     */
+    _ensureSphereCache(entity, count) {
+        let arr = entity._hitSphereCache;
+        if (!arr) {
+            arr = entity._hitSphereCache = [];
+        }
+        while (arr.length < count) {
+            arr.push({ center: new THREE.Vector3(), radius: 0 });
+        }
+        if (arr.length > count) arr.length = count;
+        return arr;
+    }
+
+    /** center.set(x,y,z) → quaternion 適用 → ワールド座標 pos を加算（in-place） */
+    _setSphereCenter(sphere, x, y, z, q, pos) {
+        sphere.center.set(x, y, z);
+        if (q) sphere.center.applyQuaternion(q);
+        sphere.center.add(pos);
+    }
+
     _getHitSpheresForEnemy(enemy) {
         const pos = enemy.getPosition();
         const q = enemy.group ? enemy.group.quaternion : null;
-        const rotated = (x, y, z) => {
-            const v = new THREE.Vector3(x, y, z);
-            if (q) v.applyQuaternion(q);
-            return pos.clone().add(v);
-        };
 
         switch (enemy.type) {
             case 'tank': {
-                const scale = enemy.subType === 'heavy' ? 1.35 : 1.0;
-                const spheres = [
-                    { center: rotated(0, 1.05 * scale, 0), radius: 1.55 * scale },
-                    { center: rotated(-1.15 * scale, 0.75 * scale, 0), radius: 0.95 * scale },
-                    { center: rotated(1.15 * scale, 0.85 * scale, 0), radius: 0.95 * scale },
-                ];
-                if (enemy.turretGroup) {
-                    const turretPos = new THREE.Vector3();
-                    enemy.turretGroup.getWorldPosition(turretPos);
-                    spheres.push({ center: turretPos, radius: 1.0 * scale });
+                const scale = enemy.subType === 'siege' ? 1.62 : (enemy.subType === 'heavy' ? 1.35 : (enemy.subType === 'flak' ? 1.18 : 1.0));
+                const hasTurret = !!enemy.turretGroup;
+                const arr = this._ensureSphereCache(enemy, hasTurret ? 4 : 3);
+                this._setSphereCenter(arr[0], 0, 1.05 * scale, 0, q, pos); arr[0].radius = 1.55 * scale;
+                this._setSphereCenter(arr[1], -1.15 * scale, 0.75 * scale, 0, q, pos); arr[1].radius = 0.95 * scale;
+                this._setSphereCenter(arr[2], 1.15 * scale, 0.85 * scale, 0, q, pos); arr[2].radius = 0.95 * scale;
+                if (hasTurret) {
+                    enemy.turretGroup.getWorldPosition(arr[3].center);
+                    arr[3].radius = 1.0 * scale;
                 }
-                return spheres;
+                return arr;
             }
             case 'aircraft': {
-                const baseRadius = enemy.subType === 'bomber' ? 1.7 : (enemy.subType === 'attack_heli' ? 1.45 : 1.2);
-                return [
-                    { center: pos.clone(), radius: baseRadius },
-                    { center: rotated(-1.5, 0, 0), radius: baseRadius * 0.55 },
-                ];
+                const baseRadius = enemy.subType === 'gunship' ? 2.1
+                    : (enemy.subType === 'bomber' ? 1.7
+                    : (enemy.subType === 'attack_heli' ? 1.45
+                    : (enemy.subType === 'interceptor' ? 1.35
+                    : (enemy.subType === 'drone' ? 0.85 : 1.2))));
+                const arr = this._ensureSphereCache(enemy, 2);
+                arr[0].center.copy(pos); arr[0].radius = baseRadius;
+                this._setSphereCenter(arr[1], -1.5, 0, 0, q, pos); arr[1].radius = baseRadius * 0.55;
+                return arr;
             }
             case 'infantry':
-            default:
-                return [
-                    { center: pos.clone().add(new THREE.Vector3(0, 1.25, 0)), radius: 0.48 },
-                    { center: pos.clone().add(new THREE.Vector3(0, 0.7, 0)), radius: 0.42 },
-                ];
+            default: {
+                const arr = this._ensureSphereCache(enemy, 2);
+                arr[0].center.copy(pos); arr[0].center.y += 1.25; arr[0].radius = 0.48;
+                arr[1].center.copy(pos); arr[1].center.y += 0.7;  arr[1].radius = 0.42;
+                return arr;
+            }
         }
     }
 
     _getHitSpheresForBoss(boss) {
         const pos = boss.getPosition();
         const q = boss.group ? boss.group.quaternion : null;
-        const rotated = (x, y, z) => {
-            const v = new THREE.Vector3(x, y, z);
-            if (q) v.applyQuaternion(q);
-            return pos.clone().add(v);
-        };
 
         if (boss.subType === 'tani_oh') {
-            return [
-                { center: rotated(0, 0.2, 0), radius: 4.8 },
-                { center: rotated(2.2, 1.2, 0), radius: 2.2 },
-                { center: rotated(-2.6, -0.4, 0), radius: 2.4 },
-            ];
+            const arr = this._ensureSphereCache(boss, 3);
+            this._setSphereCenter(arr[0], 0, 0.2, 0, q, pos);    arr[0].radius = 4.8;
+            this._setSphereCenter(arr[1], 2.2, 1.2, 0, q, pos);  arr[1].radius = 2.2;
+            this._setSphereCenter(arr[2], -2.6, -0.4, 0, q, pos);arr[2].radius = 2.4;
+            return arr;
         }
 
-        const spheres = [
-            { center: rotated(0, 2.1, 0), radius: 3.2 },
-            { center: rotated(2.8, 2.0, 0), radius: 1.8 },
-            { center: rotated(-2.4, 1.6, 0), radius: 1.7 },
-        ];
-        if (boss.turretGroup) {
-            const turretPos = new THREE.Vector3();
-            boss.turretGroup.getWorldPosition(turretPos);
-            spheres.push({ center: turretPos, radius: 1.9 });
+        const hasTurret = !!boss.turretGroup;
+        const arr = this._ensureSphereCache(boss, hasTurret ? 4 : 3);
+        this._setSphereCenter(arr[0], 0, 2.1, 0, q, pos);   arr[0].radius = 3.2;
+        this._setSphereCenter(arr[1], 2.8, 2.0, 0, q, pos); arr[1].radius = 1.8;
+        this._setSphereCenter(arr[2], -2.4, 1.6, 0, q, pos);arr[2].radius = 1.7;
+        if (hasTurret) {
+            boss.turretGroup.getWorldPosition(arr[3].center);
+            arr[3].radius = 1.9;
         }
-        return spheres;
+        return arr;
     }
 
     _getHitSpheresForPlayer(player) {
@@ -500,25 +864,16 @@ export class GameManager {
         // visualGroup はモデルローカル +X → ワールド +Z（前方）になるよう回転されている。
         // ローカル前後オフセットをワールドへ変換する。
         const q = player.visualGroup ? player.visualGroup.quaternion : null;
-        const rotated = (x, y, z) => {
-            const v = new THREE.Vector3(x, y, z);
-            if (q) v.applyQuaternion(q);
-            return pos.clone().add(v);
-        };
-
-        const spheres = [
-            { center: rotated(0, 1.0, 0), radius: 1.25 },
-            { center: rotated(-0.95, 0.8, 0), radius: 0.72 },
-            { center: rotated(1.1, 0.85, 0), radius: 0.8 },
-        ];
-
-        if (player.turretGroup) {
-            const turretPos = new THREE.Vector3();
-            player.turretGroup.getWorldPosition(turretPos);
-            spheres.push({ center: turretPos, radius: 0.95 });
+        const hasTurret = !!player.turretGroup;
+        const arr = this._ensureSphereCache(player, hasTurret ? 4 : 3);
+        this._setSphereCenter(arr[0], 0, 1.0, 0, q, pos);     arr[0].radius = 1.25;
+        this._setSphereCenter(arr[1], -0.95, 0.8, 0, q, pos); arr[1].radius = 0.72;
+        this._setSphereCenter(arr[2], 1.1, 0.85, 0, q, pos);  arr[2].radius = 0.8;
+        if (hasTurret) {
+            player.turretGroup.getWorldPosition(arr[3].center);
+            arr[3].radius = 0.95;
         }
-
-        return spheres;
+        return arr;
     }
 
     _getExplosionExposure(spheres, position, blastRadius) {
@@ -569,7 +924,8 @@ export class GameManager {
             this.kills++;
             if (this.onScreenShake) this.onScreenShake(1.5);
             if (this.soundManager) this.soundManager.playExplosionLarge();
-            this.boss.destroy();
+            // effects に登録して update/cleanup の対象にする
+            this.boss.destroy(this.effects);
             this.boss = null;
             if (this.onBossDefeated) this.onBossDefeated();
         }
@@ -716,7 +1072,11 @@ export class GameManager {
 
         // アイテムドロップ（30%の確率）
         if (Math.random() < 0.3) {
-            const dropTypes = ['health', 'grenade', 'score', 'score'];
+            // 戦車・航空機など強敵はパワーアップ含む豪華テーブル
+            const isHeavy = enemy.constructor && /Tank|Aircraft|Boss/.test(enemy.constructor.name || '');
+            const dropTypes = isHeavy
+                ? ['health', 'grenade', 'score', 'score_big', 'power_BIG', 'power_SPREAD', 'power_FLAME']
+                : ['health', 'grenade', 'score', 'score', 'power_SPREAD'];
             const dropType = dropTypes[Math.floor(Math.random() * dropTypes.length)];
             const dropPos = enemy.getPosition().clone();
             const item = new ItemDrop(this.scene, dropPos, dropType);
@@ -784,18 +1144,27 @@ export class GameManager {
         };
 
         const scene = this.scene;
+        let disposed = false;
+        const cleanup = () => {
+            if (disposed) return;
+            disposed = true;
+            scene.remove(ragdollGroup);
+            ragdollGroup.traverse(child => {
+                if (child.isMesh) {
+                    if (child.geometry) child.geometry.dispose();
+                    if (child.material) child.material.dispose();
+                }
+            });
+        };
         const origUpdate = ragdollEffect.update.bind(ragdollEffect);
         ragdollEffect.update = (dt) => {
             origUpdate(dt);
-            if (!ragdollEffect.alive) {
-                scene.remove(ragdollGroup);
-                ragdollGroup.traverse(child => {
-                    if (child.isMesh) {
-                        child.geometry.dispose();
-                        child.material.dispose();
-                    }
-                });
-            }
+            if (!ragdollEffect.alive) cleanup();
+        };
+        // MAX_EFFECTS 溢れで shift された場合でも確実に解放できる destroy を提供
+        ragdollEffect.destroy = () => {
+            ragdollEffect.alive = false;
+            cleanup();
         };
 
         this.effects.push(ragdollEffect);
@@ -867,13 +1236,16 @@ export class GameManager {
         };
 
         const scene = this.scene;
+        let debrisDisposed = false;
         debrisEffect.destroy = () => {
             debrisEffect.alive = false;
+            if (debrisDisposed) return;
+            debrisDisposed = true;
             scene.remove(debrisGroup);
             debrisGroup.traverse(child => {
                 if (child.isMesh) {
-                    child.geometry.dispose();
-                    child.material.dispose();
+                    if (child.geometry) child.geometry.dispose();
+                    if (child.material) child.material.dispose();
                 }
             });
         };
@@ -891,14 +1263,16 @@ export class GameManager {
         const smokeTrail = [];
         const scene = this.scene;
 
+        const MAX_TRAIL = 32; // 一機あたりの煙トレイル上限
+        let crashDisposed = false;
         const crashEffect = {
             alive: true, age: 0, maxAge,
             update(dt) {
                 this.age += dt;
                 if (this.age >= this.maxAge) { this.alive = false; return; }
 
-                // 煙のトレイルを追加（フレームごと）
-                if (this.age < 1.5 && Math.random() < 0.7) {
+                // 煙のトレイルを追加（フレームごと、ただし上限あり）
+                if (this.age < 1.5 && Math.random() < 0.7 && smokeTrail.length < MAX_TRAIL) {
                     const t = this.age;
                     const smokeGeo = new THREE.SphereGeometry(0.3 + Math.random() * 0.4, 5, 4);
                     const smokeMat = new THREE.MeshBasicMaterial({
@@ -916,20 +1290,31 @@ export class GameManager {
                     smokeTrail.push({ mesh: smoke, age: 0 });
                 }
 
-                // 煙のフェードアウト
-                smokeTrail.forEach(s => {
+                // 煙のフェード & 完全に消えたパフは即解放
+                for (let i = smokeTrail.length - 1; i >= 0; i--) {
+                    const s = smokeTrail[i];
                     s.age += dt;
-                    s.mesh.material.opacity = Math.max(0, 0.7 - s.age * 0.7);
+                    const op = Math.max(0, 0.7 - s.age * 0.7);
+                    s.mesh.material.opacity = op;
                     s.mesh.scale.addScalar(dt * 1.5);
-                });
+                    if (op <= 0.001) {
+                        scene.remove(s.mesh);
+                        if (s.mesh.geometry) s.mesh.geometry.dispose();
+                        if (s.mesh.material) s.mesh.material.dispose();
+                        smokeTrail.splice(i, 1);
+                    }
+                }
             },
             destroy() {
                 this.alive = false;
+                if (crashDisposed) return;
+                crashDisposed = true;
                 smokeTrail.forEach(s => {
                     scene.remove(s.mesh);
-                    s.mesh.geometry.dispose();
-                    s.mesh.material.dispose();
+                    if (s.mesh.geometry) s.mesh.geometry.dispose();
+                    if (s.mesh.material) s.mesh.material.dispose();
                 });
+                smokeTrail.length = 0;
             },
         };
 
@@ -988,14 +1373,17 @@ export class GameManager {
         };
 
         const scene = this.scene;
+        let sparkDisposed = false;
         const origDestroy = sparkEffect.destroy.bind(sparkEffect);
         sparkEffect.destroy = () => {
             origDestroy();
+            if (sparkDisposed) return;
+            sparkDisposed = true;
             scene.remove(sparkGroup);
             sparkGroup.traverse(child => {
                 if (child.isMesh) {
-                    child.geometry.dispose();
-                    child.material.dispose();
+                    if (child.geometry) child.geometry.dispose();
+                    if (child.material) child.material.dispose();
                 }
             });
         };
@@ -1011,16 +1399,24 @@ export class GameManager {
         const pos = player.getPosition().clone();
         pos.y += 1.5;
         this._spawnExplosion(pos, 'large');
-        setTimeout(() => {
-            this._spawnExplosion(pos.clone().add(new THREE.Vector3(1, 0.5, -0.5)), 'large');
-        }, 200);
-        setTimeout(() => {
-            this._spawnExplosion(pos.clone().add(new THREE.Vector3(-0.8, 1, 0.3)), 'large');
-        }, 400);
+        // setTimeout を追跡し、restart で取り消せるようにする。
+        // 取り消さないと R 連打時に新ゲーム開始後に古い座標で爆発が湧き出す。
+        this._gameOverTimers = this._gameOverTimers || [];
+        this._gameOverTimers.push(setTimeout(() => {
+            if (this.gameOver) this._spawnExplosion(pos.clone().add(new THREE.Vector3(1, 0.5, -0.5)), 'large');
+        }, 200));
+        this._gameOverTimers.push(setTimeout(() => {
+            if (this.gameOver) this._spawnExplosion(pos.clone().add(new THREE.Vector3(-0.8, 1, 0.3)), 'large');
+        }, 400));
         if (this.onGameOver) this.onGameOver(this.score, this.kills, this.getCurrentWave());
     }
 
     restart() {
+        // ゲームオーバー演出の遅延爆発（200ms / 400ms 後）が新ゲームに混入しないよう取消
+        if (this._gameOverTimers) {
+            this._gameOverTimers.forEach(t => clearTimeout(t));
+            this._gameOverTimers = [];
+        }
         this.enemies.forEach(e => e.destroy());
         this.enemies = [];
         this.effects.forEach(e => { if (e.destroy) e.destroy(); });
@@ -1038,10 +1434,21 @@ export class GameManager {
         this.spawnTimer = 0;
         this.gameOver = false;
         if (this.boss) {
-            this.boss.destroy();
+            // リセット時は段階爆発カスケードを作らずに即時破棄。
+            // 通常の destroy() は爆発を 7〜10 個 setTimeout で撒くため、R 連打すると
+            // 新ゲームに古いボスの爆発が突然出現し、点滅・重さの原因になる。
+            if (this.boss.destroyImmediate) {
+                this.boss.destroyImmediate();
+            } else {
+                if (this.boss.cancelDestroyTimers) this.boss.cancelDestroyTimers();
+                this.boss.destroy(this.effects);
+            }
             this.boss = null;
         }
         this.bossSpawnedWaves.clear();
+        // クリーンアップタイマーも 0 に戻す。残ったまま新ゲームに入ると、
+        // 開始直後に大規模 cleanup が走って表示中エフェクトが shift される。
+        this.cleanupTimer = 0;
     }
 
     // ============================================
@@ -1063,12 +1470,22 @@ export class GameManager {
             if (roll <= 0) { selected = entry; break; }
         }
 
-        const spawnPos = this._getSpawnPosition(playerPos, selected.type, scrollZ);
+        // 屋上スナイパーは建物が見つからなければ通常スナイパーへフォールバック
+        let perchedPos = null;
+        if (selected.type === 'infantry' && selected.subType === 'perched_sniper') {
+            perchedPos = this._findRooftopSpawn(playerPos, scrollZ);
+            if (!perchedPos) {
+                selected = { type: 'infantry', subType: 'sniper' };
+            }
+        }
+
+        const spawnPos = perchedPos || this._getSpawnPosition(playerPos, selected.type, scrollZ);
 
         let enemy;
         switch (selected.type) {
             case 'infantry':
                 enemy = new Infantry(this.scene, { position: spawnPos, subType: selected.subType });
+                if (enemy.perched) enemy.perchY = spawnPos.y;
                 break;
             case 'tank':
                 enemy = new EnemyTank(this.scene, { position: spawnPos, subType: selected.subType });
@@ -1085,6 +1502,44 @@ export class GameManager {
     }
 
     /**
+     * 屋上スナイパー用の配置点を World の障害物から探す。
+     * - プレイヤー前方〜やや前進した範囲の高い "block" 障害物 (radius>=3) を候補に
+     * - 障害物の bounding box 上端を Y にして、上面の中央付近に少しランダムを加える
+     * 候補がなければ null を返す。
+     */
+    _findRooftopSpawn(playerPos, scrollZ) {
+        if (!this.world || typeof this.world.getObstacles !== 'function') return null;
+        const obstacles = this.world.getObstacles();
+        if (!obstacles || !obstacles.length) return null;
+
+        const candidates = [];
+        for (const { obj, info } of obstacles) {
+            if (!info || info.destroyed) continue;
+            if (info.type !== 'block') continue;          // 大型建物のみ
+            if ((info.radius || 0) < 3.0) continue;       // 小物件は除外
+            const z = obj.position.z;
+            // プレイヤー前方寄りで画面内の建物を狙う
+            if (z < playerPos.z + 6 || z > playerPos.z + 55) continue;
+            candidates.push(obj);
+        }
+        if (!candidates.length) return null;
+
+        const target = candidates[Math.floor(Math.random() * candidates.length)];
+        const box = new THREE.Box3().setFromObject(target);
+        if (!isFinite(box.max.y)) return null;
+        // 上面中央付近に若干のランダム
+        const cx = (box.min.x + box.max.x) * 0.5;
+        const cz = (box.min.z + box.max.z) * 0.5;
+        const halfX = Math.max(0.4, (box.max.x - box.min.x) * 0.25);
+        const halfZ = Math.max(0.4, (box.max.z - box.min.z) * 0.25);
+        return new THREE.Vector3(
+            cx + (Math.random() - 0.5) * halfX,
+            box.max.y + 0.02,
+            cz + (Math.random() - 0.5) * halfZ,
+        );
+    }
+
+    /**
      * 縦スクロール 3D 用スポーン位置
      * - 地上敵: 画面前方（+Z 方向）からスポーン、たまに後方からも
      * - 航空機: 画面上空の前方からスポーン
@@ -1095,9 +1550,9 @@ export class GameManager {
         let x, y, z;
 
         if (type === 'aircraft') {
-            // 航空機は画面外の上空から
+            // 航空機は画面外の低空から（砲身仰角で届く高度）
             z = fromFront ? scrollZ + 40 + Math.random() * 10 : scrollZ - 20 - Math.random() * 10;
-            y = 10 + Math.random() * 8;
+            y = 5 + Math.random() * 2.5; // 5〜7.5m
             x = (Math.random() - 0.5) * 14;
         } else {
             // 地上敵は画面前端/後端から
@@ -1176,12 +1631,14 @@ export class GameManager {
         deadEffects.forEach(e => { if (e.destroy) e.destroy(); });
         this.effects = this.effects.filter(e => e.alive);
 
-        // エフェクト数の上限（50 を超えた場合、古いものを強制削除）
-        const MAX_EFFECTS = 50;
+        // エフェクト数の上限（後半シーンでの累積を抑制）
+        // shift で配列から外しただけでは scene 上の Mesh は残るので、必ず destroy
+        // （それが無ければ group を traverse して dispose）して確実に解放する。
+        // 28→48 に緩和: 表示中の煙トレイル・炎・爆発が強制破壊で消える症状を抑制
+        const MAX_EFFECTS = 48;
         while (this.effects.length > MAX_EFFECTS) {
             const oldest = this.effects.shift();
-            if (oldest.destroy) oldest.destroy();
-            else oldest.alive = false;
+            this._forceDestroyEffect(oldest);
         }
 
         // アイテムの上限（20を超えた場合、古いものを削除）
@@ -1199,6 +1656,34 @@ export class GameManager {
                 if (pow.destroy) pow.destroy();
                 this.pows.splice(i, 1);
             }
+        }
+    }
+
+    /**
+     * エフェクトを安全に解放する。
+     * - destroy() があればそれを優先（多重呼出しは各 destroy 側でガード済み）
+     * - 無ければ group を traverse して geometry/material を dispose
+     * - Explosion など共有ジオメトリを使う系も destroy 内で安全に扱われる
+     */
+    _forceDestroyEffect(effect) {
+        if (!effect) return;
+        if (typeof effect.destroy === 'function') {
+            try {
+                effect.destroy();
+                return;
+            } catch (_) { /* 多重呼出しの保険 */ }
+        }
+        effect.alive = false;
+        if (effect.group && effect.group.parent) {
+            effect.group.parent.remove(effect.group);
+        }
+        if (effect.group) {
+            effect.group.traverse(child => {
+                if (child.isMesh) {
+                    if (child.geometry && child.geometry.dispose) child.geometry.dispose();
+                    if (child.material && child.material.dispose) child.material.dispose();
+                }
+            });
         }
     }
 
@@ -1222,18 +1707,30 @@ export class GameManager {
     // ============================================
     _spawnBoss(waveNum, scrollZ) {
         let hp, subType;
-        if (waveNum === 7) {
+        if (waveNum === 20) {
+            hp = 1800;
+            subType = 'tani_oh';  // 深部要塞ボス: 超強化飛行メカ
+        } else if (waveNum === 16) {
+            hp = 1500;
+            subType = 'tani_oh';  // 終盤ボス: 超強化飛行メカ
+        } else if (waveNum === 12) {
+            hp = 1200;
+            subType = 'tani_oh';  // 最終ボス: 大型飛行メカ（強化版）
+        } else if (waveNum === 8) {
             hp = 800;
-            subType = 'tani_oh';  // 大ボス: 巨大飛行メカ
+            subType = 'tani_oh';  // 中盤ボス: 飛行メカ
         } else {
             hp = 500;
-            subType = 'di_cokka'; // 中ボス: 巨大装甲戦車
+            subType = 'di_cokka'; // 序盤ボス: 巨大装甲戦車
         }
         this.boss = new Boss(this.scene, {
             hp: hp,
             x: 0,
             z: scrollZ + 45,
             subType: subType,
+            // 重要: 生成する Explosion を effects に登録させる。
+            // これがないとマズルフラッシュ等が永遠に scene に残り重くなる
+            effectSink: this.effects,
         });
         if (this.onBossHpChange) {
             this.onBossHpChange(this.boss.hp, this.boss.maxHp);
