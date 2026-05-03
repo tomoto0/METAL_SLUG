@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { Projectile } from './Projectile.js';
 import { Explosion } from './Explosion.js';
 
+const _aimLiftTmp = new THREE.Vector3();
+
 /**
  * SV-001 "Metal Slug" 風プレイヤー戦車
  * 縦スクロール 3D 版: +Z 方向に自動スクロール、プレイヤーは +X 左右・+Z 前後に移動
@@ -1353,13 +1355,26 @@ export class Player {
         // 障害物 entry は { obj, info } 形式
         if (target.obj && target.info) {
             if (target.info.destroyed) return null;
-            return target.obj.position;
+            // 障害物の hit sphere は中心 y=0.9 にあるが obj.position.y は 0（足元）。
+            // そのまま狙うと弾道が sphere の下を通過して当たらないため、sphere 中心へ
+            // 持ち上げる（小物～ポール状の縦長プロップまで一律にカバー）。
+            const lifted = _aimLiftTmp.copy(target.obj.position);
+            lifted.y += 0.9;
+            return lifted;
         }
         // 敵 / ボス
         if (target.alive === false) return null;
-        if (target.getPosition) return target.getPosition();
-        if (target.group && target.group.position) return target.group.position;
-        return null;
+        const basePos = (target.getPosition && target.getPosition())
+            || (target.group && target.group.position)
+            || null;
+        if (!basePos) return null;
+        // 地上ユニットは group.position が足元 (y≈0) のため、
+        // そのまま狙うと弾が地面に着弾してしまう。胴体高さへ少し持ち上げる。
+        // 空中ユニット (aircraft) は既に y が高度を表すので加算しない。
+        if (target.type === 'aircraft') return basePos;
+        const lifted = _aimLiftTmp.copy(basePos);
+        lifted.y += 0.6;
+        return lifted;
     }
 
     _fireVulcan(elapsedTime) {
