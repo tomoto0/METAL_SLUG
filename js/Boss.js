@@ -94,17 +94,19 @@ export class Boss {
      * ======================================================== */
     _buildDiCokka() {
         const C = {
-            hull:     0x607850,  // 鮮やかなオリーブドラブ
-            hullDk:   0x3E5028,
-            armor:    0x506840,
-            metal:    0x707060,
-            track:    0x282818,
-            turret:   0x506840,
-            cannon:   0x404048,
+            hull:     0x6F8E88,  // 青緑の丸い要塞装甲
+            hullDk:   0x314D4B,
+            armor:    0xB3A77D,
+            metal:    0x858B82,
+            track:    0x1B1C18,
+            turret:   0x4F7778,
+            cannon:   0x2B363A,
             red:      0xBB2020,
-            light:    0xFFDD33,
-            rust:     0x905A28,
-            pipe:     0x606060,
+            light:    0xDFFF72,
+            rust:     0x8B552C,
+            pipe:     0x6B3A28,
+            claw:     0xD8C9A6,
+            mark:     0xF4C542,
         };
 
         // ============ 巨大車体 ============
@@ -135,6 +137,24 @@ export class Boss {
         frontArmor.rotation.z = -0.15;
         this.group.add(frontArmor);
 
+        // コンセプト画像風の丸い上部装甲殻。箱形ハルにかぶせてシルエットを一新。
+        const shellDome = new THREE.Mesh(
+            new THREE.SphereGeometry(3.25, 22, 14, 0, Math.PI * 2, 0, Math.PI * 0.48),
+            new THREE.MeshStandardMaterial({ color: C.hull, roughness: 0.42, metalness: 0.32 })
+        );
+        shellDome.scale.set(1.12, 0.55, 0.78);
+        shellDome.position.set(-0.4, 3.0, 0);
+        shellDome.castShadow = true;
+        this.group.add(shellDome);
+
+        const shellHighlight = new THREE.Mesh(
+            new THREE.SphereGeometry(3.28, 18, 12, Math.PI * 0.12, Math.PI * 0.35, Math.PI * 0.06, Math.PI * 0.22),
+            new THREE.MeshStandardMaterial({ color: 0xA8C2BC, roughness: 0.25, metalness: 0.25 })
+        );
+        shellHighlight.scale.copy(shellDome.scale);
+        shellHighlight.position.copy(shellDome.position);
+        this.group.add(shellHighlight);
+
         // ============ 装甲板グループ（破壊可能） ============
         this.armorGroup = new THREE.Group();
 
@@ -145,6 +165,16 @@ export class Boss {
         );
         extraArmor.position.set(4.3, 2.2, 0);
         this.armorGroup.add(extraArmor);
+
+        // 前面の牙状装甲板。破壊可能外装に含める。
+        const fangMat = new THREE.MeshStandardMaterial({ color: C.claw, roughness: 0.74, metalness: 0.08 });
+        for (let z = -2.15; z <= 2.15; z += 0.72) {
+            const fang = new THREE.Mesh(new THREE.ConeGeometry(0.18, 0.72, 5), fangMat);
+            fang.position.set(4.72, 0.62, z);
+            fang.rotation.z = -Math.PI / 2;
+            fang.rotation.y = z * 0.08;
+            this.armorGroup.add(fang);
+        }
 
         // サイドスカート（左右）
         for (let z of [-2.8, 2.8]) {
@@ -269,6 +299,23 @@ export class Boss {
         );
         topPlate.position.set(-0.2, 1.55, 0);
         this.turretGroup.add(topPlate);
+
+        // 黄色三角警告マーク
+        const triShape = new THREE.Shape();
+        triShape.moveTo(0, 0.42);
+        triShape.lineTo(0.38, -0.24);
+        triShape.lineTo(-0.38, -0.24);
+        triShape.closePath();
+        const tri = new THREE.Mesh(
+            new THREE.ShapeGeometry(triShape),
+            new THREE.MeshStandardMaterial({
+                color: C.mark, emissive: C.mark, emissiveIntensity: 0.2,
+                roughness: 0.55, side: THREE.DoubleSide,
+            })
+        );
+        tri.position.set(1.55, 0.42, 0);
+        tri.rotation.y = Math.PI / 2;
+        this.turretGroup.add(tri);
 
         // 二連主砲
         this.barrelGroup = new THREE.Group();
@@ -443,6 +490,9 @@ export class Boss {
         const trackInnerMat = new THREE.MeshStandardMaterial({
             color: 0x101008, roughness: 0.95, metalness: 0.15,
         });
+        const toothPlateMat = new THREE.MeshStandardMaterial({
+            color: C.claw, roughness: 0.78, metalness: 0.08,
+        });
         const clawGeo = new THREE.BoxGeometry(0.32, 0.22, 1.15);
         const padGeo = new THREE.BoxGeometry(0.42, 0.12, 1.05);
         for (let side of [-1, 1]) {
@@ -466,7 +516,7 @@ export class Boss {
             const teethSpacing = 0.4;
             // 上面
             for (let x = -3.5; x <= 3.5; x += teethSpacing) {
-                const claw = new THREE.Mesh(clawGeo, trackBeltMat);
+                const claw = new THREE.Mesh(clawGeo, toothPlateMat);
                 claw.position.set(x, 1.78, 0);
                 trackGroup.add(claw);
                 // パッド（プレート）
@@ -476,7 +526,7 @@ export class Boss {
             }
             // 下面
             for (let x = -3.5; x <= 3.5; x += teethSpacing) {
-                const claw = new THREE.Mesh(clawGeo, trackBeltMat);
+                const claw = new THREE.Mesh(clawGeo, toothPlateMat);
                 claw.position.set(x, -0.08, 0);
                 trackGroup.add(claw);
                 const pad = new THREE.Mesh(padGeo, trackInnerMat);
@@ -487,12 +537,12 @@ export class Boss {
             for (let i = 0; i < 6; i++) {
                 const a = (i / 6) * Math.PI;
                 // 後端
-                const cBack = new THREE.Mesh(clawGeo, trackBeltMat);
+                const cBack = new THREE.Mesh(clawGeo, toothPlateMat);
                 cBack.position.set(-3.8 - Math.sin(a) * 0.15, 0.85 - Math.cos(a) * 0.95, 0);
                 cBack.rotation.z = a;
                 trackGroup.add(cBack);
                 // 前端
-                const cFront = new THREE.Mesh(clawGeo, trackBeltMat);
+                const cFront = new THREE.Mesh(clawGeo, toothPlateMat);
                 cFront.position.set(3.8 + Math.sin(a) * 0.15, 0.85 + Math.cos(a) * 0.95, 0);
                 cFront.rotation.z = -a;
                 trackGroup.add(cFront);
@@ -686,15 +736,15 @@ export class Boss {
      * ======================================================== */
     _buildTaniOh() {
         const C = {
-            body:     0x5A6080,  // 鮮やかなダークスチール
-            bodyDk:   0x3A4058,
-            armor:    0x4A5068,
-            metal:    0x8088A0,
-            engine:   0x383840,
+            body:     0x47777C,  // 青緑の低空ホバーガンシップ
+            bodyDk:   0x253F46,
+            armor:    0xA59669,
+            metal:    0x8EA0A0,
+            engine:   0x202A2E,
             red:      0xCC2020,
             orange:   0xFF7700,
-            light:    0x44EEFF,
-            glass:    0x225588,
+            light:    0xA6F7FF,
+            glass:    0x2B8990,
         };
 
         // ============ メイン機体（巨大な楕円形） ============
@@ -833,6 +883,29 @@ export class Boss {
         }
 
         this.group.add(this.armorGroup);
+
+        // サイドダクトファン。ホバー機らしいシルエットを追加する。
+        this.ductFans = [];
+        const ductMat = new THREE.MeshStandardMaterial({ color: C.engine, roughness: 0.32, metalness: 0.62 });
+        const bladeMat = new THREE.MeshStandardMaterial({ color: C.metal, roughness: 0.26, metalness: 0.7 });
+        for (const z of [-4.6, 4.6]) {
+            for (const x of [-2.4, 2.0]) {
+                const fanGroup = new THREE.Group();
+                const duct = new THREE.Mesh(new THREE.TorusGeometry(0.78, 0.09, 8, 22), ductMat);
+                fanGroup.add(duct);
+                const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.08, 12), bladeMat);
+                hub.rotation.x = Math.PI / 2;
+                fanGroup.add(hub);
+                for (let i = 0; i < 4; i++) {
+                    const blade = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.07, 0.035), bladeMat);
+                    blade.rotation.z = i * Math.PI / 2;
+                    fanGroup.add(blade);
+                }
+                fanGroup.position.set(x, -0.85, z);
+                this.group.add(fanGroup);
+                this.ductFans.push(fanGroup);
+            }
+        }
 
         // ============ 砲塔（下部の大型レーザー砲） ============
         this.turretGroup = new THREE.Group();
@@ -1057,7 +1130,7 @@ export class Boss {
         if (this.flashTimer > 0) {
             this.flashTimer -= dt;
             if (this.flashTimer <= 0) {
-                const baseColor = this.subType === 'tani_oh' ? 0x5A5A6A : 0x5A6A4A;
+                const baseColor = this.subType === 'tani_oh' ? 0x47777C : 0x6F8E88;
                 this._setColor(this.hullMesh, baseColor);
             }
         }
@@ -1246,6 +1319,11 @@ export class Boss {
                 g.material.opacity = 0.8 + Math.sin(this.bobPhase * 14) * 0.15;
             });
         }
+        if (this.ductFans) {
+            this.ductFans.forEach((fan, idx) => {
+                fan.rotation.z += dt * (idx % 2 === 0 ? 5.5 : -5.5);
+            });
+        }
 
         // ホバーリング（脈動）
         if (this.hoverRing) {
@@ -1379,8 +1457,10 @@ export class Boss {
 
     _fireMissileBarrage(playerPos) {
         // サイドミサイルポッドから4発（車体ローカル座標をワールドへ変換）
+        this._attackTimers = this._attackTimers || [];
         for (let i = 0; i < 4; i++) {
-            setTimeout(() => {
+            const tid = setTimeout(() => {
+                this._attackTimers && this._attackTimers.splice(this._attackTimers.indexOf(tid), 1);
                 if (!this.alive) return;
                 const localOffset = new THREE.Vector3(
                     1.0 + (i % 2) * 0.5,
@@ -1405,6 +1485,7 @@ export class Boss {
                 this.projectiles.push(missile);
                 this._spawnEffect(new Explosion(this.scene, muzzlePos, { type: 'muzzle', color: 0xFF4400 }));
             }, i * 150);
+            this._attackTimers.push(tid);
         }
     }
 
@@ -1470,8 +1551,10 @@ export class Boss {
     }
 
     _fireTaniOhMissiles(playerPos) {
+        this._attackTimers = this._attackTimers || [];
         for (let i = 0; i < 6; i++) {
-            setTimeout(() => {
+            const tid = setTimeout(() => {
+                this._attackTimers && this._attackTimers.splice(this._attackTimers.indexOf(tid), 1);
                 if (!this.alive) return;
                 const side = i < 3 ? -1 : 1;
                 const localOffset = new THREE.Vector3(
@@ -1496,6 +1579,7 @@ export class Boss {
                 });
                 this.projectiles.push(missile);
             }, i * 120);
+            this._attackTimers.push(tid);
         }
     }
 
@@ -1571,11 +1655,14 @@ export class Boss {
                 const pos = this.group.position.clone();
                 pos.y += 2;
                 this._spawnEffect(new Explosion(this.scene, pos, { type: 'large' }));
-                // 追加爆発
-                setTimeout(() => {
+                // 追加爆発（リセット時にキャンセルできるよう _attackTimers に追跡）
+                this._attackTimers = this._attackTimers || [];
+                const tid = setTimeout(() => {
+                    this._attackTimers && this._attackTimers.splice(this._attackTimers.indexOf(tid), 1);
                     if (!this.alive) return;
                     this._spawnEffect(new Explosion(this.scene, pos.clone().add(new THREE.Vector3(2, 1, -1)), { type: 'large' }));
                 }, 200);
+                this._attackTimers.push(tid);
             }
         }
 
@@ -1588,10 +1675,13 @@ export class Boss {
             const pos = this.group.position.clone();
             pos.y += this.subType === 'tani_oh' ? 0 : 4;
             this._spawnEffect(new Explosion(this.scene, pos, { type: 'large' }));
-            setTimeout(() => {
+            this._attackTimers = this._attackTimers || [];
+            const tid2 = setTimeout(() => {
+                this._attackTimers && this._attackTimers.splice(this._attackTimers.indexOf(tid2), 1);
                 if (!this.alive) return;
                 this._spawnEffect(new Explosion(this.scene, pos.clone().add(new THREE.Vector3(-1, 2, 0.5)), { type: 'large' }));
             }, 300);
+            this._attackTimers.push(tid2);
         }
 
         if (this.hp <= 0) {
@@ -1631,6 +1721,7 @@ export class Boss {
                 const ex = new Explosion(this.scene, pos.clone().add(offset), {
                     type: 'large',
                     color: i % 3 === 0 ? 0xFF4400 : (i % 3 === 1 ? 0xFFAA00 : 0xFFFF44),
+                    residueLife: 2.4,
                 });
                 if (sink && Array.isArray(sink)) {
                     sink.push(ex);
@@ -1666,11 +1757,18 @@ export class Boss {
         this.smokePuffs = [];
     }
 
-    /** 進行中の destroy カスケードをキャンセル（リセット時用） */
+    /** 進行中の destroy カスケード + 攻撃ディレイをキャンセル（リセット時用）。
+     *  攻撃 setTimeout は projectile / Explosion を生成するクロージャを保持する。
+     *  リセット直後にこれが発火すると新ゲームに古いボスの弾やエフェクトが
+     *  突然出現する原因になるため、まとめてキャンセルする。 */
     cancelDestroyTimers() {
         if (this._destroyTimers) {
             this._destroyTimers.forEach(t => clearTimeout(t));
             this._destroyTimers = [];
+        }
+        if (this._attackTimers) {
+            this._attackTimers.forEach(t => clearTimeout(t));
+            this._attackTimers = [];
         }
     }
 
@@ -1717,20 +1815,8 @@ export class Boss {
         } else {
             // フォールバック: 最大寿命経過後に強制クリーンアップ
             setTimeout(() => {
-                if (effect.alive) {
-                    effect.alive = false;
-                    if (effect.scene && effect.group) {
-                        effect.scene.remove(effect.group);
-                        effect.group.traverse(c => {
-                            if (c.isMesh) {
-                                if (c.geometry && c.geometry.dispose && c.geometry !== undefined) {
-                                    // 共有ジオメトリは Explosion 側でキャッシュされているので
-                                    // 個別 dispose は避ける。Material のみ dispose。
-                                }
-                                if (c.material && c.material.dispose) c.material.dispose();
-                            }
-                        });
-                    }
+                if (effect.alive && typeof effect.destroy === 'function') {
+                    effect.destroy();
                 }
             }, ((effect.maxAge || 1.0) * 1000) + 200);
         }

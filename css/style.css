@@ -1271,6 +1271,74 @@ body {
     white-space: nowrap;
 }
 
+/* Arcade-style item pickup callouts */
+.item-pickup-banner {
+    position: fixed;
+    left: 50%;
+    top: calc(48% + var(--pickup-offset, 0px));
+    z-index: 205;
+    display: grid;
+    grid-template-columns: auto minmax(150px, auto) auto;
+    align-items: center;
+    gap: 10px;
+    max-width: min(680px, calc(100vw - 36px));
+    min-height: 42px;
+    padding: 8px 14px;
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 42%),
+        linear-gradient(180deg, rgba(15, 12, 9, 0.92), rgba(58, 36, 16, 0.90));
+    border: 2px solid var(--pickup-color, #ffdd44);
+    box-shadow: 0 14px 32px rgba(0, 0, 0, 0.42);
+    filter: drop-shadow(0 0 8px var(--pickup-color, #ffdd44));
+    color: #fff7da;
+    font-family: "Press Start 2P", monospace;
+    pointer-events: none;
+    transform: translateX(-50%);
+    animation: itemPickupPop 1.35s ease-out forwards;
+}
+
+.item-pickup-code {
+    color: var(--pickup-color, #ffdd44);
+    font-size: 12px;
+    text-shadow: 2px 2px 0 #000;
+    white-space: nowrap;
+}
+
+.item-pickup-title {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    color: #fff6d6;
+    font-size: 12px;
+    text-shadow: 2px 2px 0 #000;
+}
+
+.item-pickup-detail {
+    color: var(--pickup-color, #ffdd44);
+    font-size: 10px;
+    text-shadow: 2px 2px 0 #000;
+    white-space: nowrap;
+}
+
+@keyframes itemPickupPop {
+    0%   { opacity: 0; transform: translateX(-50%) translateY(18px) scale(0.86); }
+    12%  { opacity: 1; transform: translateX(-50%) translateY(0) scale(1.04); }
+    24%  { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+    78%  { opacity: 1; transform: translateX(-50%) translateY(-10px) scale(1); }
+    100% { opacity: 0; transform: translateX(-50%) translateY(-34px) scale(0.92); }
+}
+
+@media (max-width: 760px) {
+    .item-pickup-banner {
+        grid-template-columns: auto 1fr;
+        gap: 6px 10px;
+        top: calc(54% + var(--pickup-mobile-offset, 0px));
+    }
+
+    .item-pickup-detail {
+        grid-column: 2;
+    }
+}
+
 @keyframes bonus-pop {
     0%   { transform: translate(-50%, -50%) scale(0) rotate(-8deg); opacity: 1; }
     25%  { transform: translate(-50%, -50%) scale(1.25) rotate(3deg); opacity: 1; }

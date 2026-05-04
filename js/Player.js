@@ -4,6 +4,21 @@ import { Explosion } from './Explosion.js';
 
 const _aimLiftTmp = new THREE.Vector3();
 
+// ============================================
+// 共有ジオメトリ: 走行粉塵・排気煙・薬莢・ダッシュ残像
+// 走行中は ~16Hz（dustTimer 0.06s）でパーティクル生成 → 60s で約 1900 個の Geometry が
+// 作成・dispose されることになり GC stall の主因になる。
+// 単位サイズで作って mesh.scale で見た目を変える方式に変更。
+// ============================================
+const _dustGeoShared = new THREE.SphereGeometry(0.15, 4, 3);
+_dustGeoShared.userData.shared = true;
+const _exhaustGeoShared = new THREE.SphereGeometry(0.08, 4, 3);
+_exhaustGeoShared.userData.shared = true;
+const _shellGeoShared = new THREE.CylinderGeometry(0.02, 0.02, 0.08, 4);
+_shellGeoShared.userData.shared = true;
+const _dashGhostGeoShared = new THREE.BoxGeometry(2.4, 1.2, 1.8);
+_dashGhostGeoShared.userData.shared = true;
+
 /**
  * SV-001 "Metal Slug" 風プレイヤー戦車
  * 縦スクロール 3D 版: +Z 方向に自動スクロール、プレイヤーは +X 左右・+Z 前後に移動
@@ -93,9 +108,9 @@ export class Player {
         this.headlight.position.set(1.3, 1.15, 0);
         this.visualGroup.add(this.headlight);
 
-        // 手榴弾（原作: 10発スタート、ARMS BOMB 表示）
+        // ボム（最大10発ストック）
         this.grenadeCount = 10;
-        this.maxGrenades = 99;
+        this.maxGrenades = 10;
         this.grenadeCooldown = 0;
         this.grenadeRate = 0.5;
 
@@ -238,27 +253,25 @@ export class Player {
         this.effects.forEach(e => e.destroy());
         this.effects = [];
 
+        // 走行・排気・薬莢・ダッシュ残像は共有ジオメトリを使用するため、
+        // 復帰時は material のみ dispose（geometry は維持）。
         this.dustParticles.forEach(p => {
             this.scene.remove(p.mesh);
-            p.mesh.geometry.dispose();
             p.mesh.material.dispose();
         });
         this.dustParticles = [];
         this.exhaustParticles.forEach(p => {
             this.scene.remove(p.mesh);
-            p.mesh.geometry.dispose();
             p.mesh.material.dispose();
         });
         this.exhaustParticles = [];
         this.shellCasings.forEach(p => {
             this.scene.remove(p.mesh);
-            p.mesh.geometry.dispose();
             p.mesh.material.dispose();
         });
         this.shellCasings = [];
         this.dashAfterImages.forEach(img => {
             this.scene.remove(img.mesh);
-            img.mesh.geometry.dispose();
             img.mesh.material.dispose();
         });
         this.dashAfterImages = [];
@@ -269,30 +282,31 @@ export class Player {
      */
     buildSV001() {
         // ============================================
-        // SV-001 Metal Slug - 09_sv001_pixel_sprite.jpg 忠実再現
-        // 特徴: 巨大球体砲塔、ずんぐりボディ、二連砲身、
-        //       大型キャタピラ、ペリスコープ球、アンテナ
+        // SV-001 "Aqua Slug" refresh - concept_images/08_sv001_tank_render.jpg 参照
+        // 特徴: 青緑の丸い装甲殻、巨大砲塔、牙状履帯パッド、黄三角マーク、
+        //       過剰な配管・アンテナ・補助ポッド
         // ============================================
-        // Concept 10 (sv001 concept art) 準拠: ほぼ黒のダークメタリック + 強い艶
         const C = {
-            body:     0x2E3236,  // チャコール（メイン装甲）
-            bodyHi:   0x6A7078,  // ハイライト（艶）
-            bodyDk:   0x14171A,  // 深いシャドウ
-            bodyMid:  0x42474D,  // 中間トーン
-            track:    0x16181A,  // キャタピラ（ほぼ黒）
-            trackIn:  0x232528,  // キャタピラ内側
-            wheel:    0x2A2C30,  // ホイール
-            wheelHub: 0x55585E,  // ハブ
-            metal:    0x4A4D52,  // 砲身メタル（やや明るめ）
-            metalDk:  0x1E2024,  // ダークメタル
+            body:     0x4E8A8F,  // 青緑メイン装甲
+            bodyHi:   0x9BC8C8,  // 水色ハイライト
+            bodyDk:   0x1E3E44,  // 深い青緑シャドウ
+            bodyMid:  0x6D9EA2,  // 中間トーン
+            track:    0x20242A,  // 黒鉄キャタピラ
+            trackIn:  0x303840,  // キャタピラ内側
+            wheel:    0x3F5558,  // ホイール
+            wheelHub: 0x92A9A8,  // ハブ
+            metal:    0x6F878C,  // 砲身メタル
+            metalDk:  0x223137,  // ダークメタル
             outline:  0x000000,  // 縁
-            light:    0xFFD050,  // ヘッドライト（明るい黄）
-            exhaust:  0x303236,  // 排気管
-            hatch:    0x3A3E44,  // ハッチ
-            flag:     0xDD2222,  // 旗
+            light:    0xCFFF66,  // 黄緑ヘッドライト
+            exhaust:  0x6B3A24,  // 焼けた排気管
+            hatch:    0x2A545A,  // ハッチ
+            flag:     0xE83A2D,  // 旗
             mark:     0xFFCC22,  // 識別マーク用イエロー
-            scope:    0xFFE060,  // ペリスコープのレンズ発光色
+            scope:    0xDFFF8A,  // ペリスコープのレンズ発光色
             rust:     0x7A4322,  // 錆/泥
+            claw:     0xD3C8AA,  // コンセプト画像の牙状履帯カバー
+            clawDk:   0x8F846E,
         };
 
         this.hullGroup = new THREE.Group();
@@ -307,6 +321,17 @@ export class Player {
         const trackW = 3.2;  // キャタピラ幅
         const trackD = 0.55; // キャタピラ厚み
 
+        // 共有マテリアル（左右トラックで再利用）
+        const wheelMatOuter = new THREE.MeshStandardMaterial({ color: C.track, roughness: 0.85, metalness: 0.18 });
+        const wheelMatInner = new THREE.MeshStandardMaterial({ color: C.wheel, roughness: 0.5, metalness: 0.5 });
+        const hubMat = new THREE.MeshStandardMaterial({ color: C.wheelHub, metalness: 0.72, roughness: 0.28 });
+        const boltMat = new THREE.MeshStandardMaterial({ color: C.metalDk, metalness: 0.6, roughness: 0.45 });
+        const clawMat = new THREE.MeshStandardMaterial({ color: C.claw, roughness: 0.78, metalness: 0.08 });
+        const clawDkMat = new THREE.MeshStandardMaterial({ color: C.clawDk, roughness: 0.82, metalness: 0.08 });
+        const padMat = new THREE.MeshStandardMaterial({ color: C.metalDk, roughness: 0.85, metalness: 0.25 });
+        const trackPlateMat = new THREE.MeshStandardMaterial({ color: C.trackIn, roughness: 0.78, metalness: 0.32 });
+        const fenderMat = new THREE.MeshStandardMaterial({ color: C.bodyDk, roughness: 0.7, metalness: 0.15 });
+
         for (let side = -1; side <= 1; side += 2) {
             const tg = new THREE.Group();
 
@@ -320,101 +345,206 @@ export class Player {
             innerGeo.position.set(0, trackH / 2, 0);
             tg.add(innerGeo);
 
-            // 前方起動輪（さらに大きく、コンセプト 10 の存在感）
-            const bigWheelMat = new THREE.MeshStandardMaterial({ color: C.wheel, roughness: 0.45, metalness: 0.55 });
-            const frontWheelGeo = new THREE.CylinderGeometry(0.56, 0.56, 0.22, 18);
-            const frontWheel = new THREE.Mesh(frontWheelGeo, bigWheelMat);
-            frontWheel.rotation.x = Math.PI / 2;
-            frontWheel.position.set(1.25, trackH * 0.5, side * 0.08);
-            tg.add(frontWheel);
-            this.wheels.push(frontWheel);
-            // フロントハブ（多角形リブ）
-            const fhub = new THREE.Mesh(
-                new THREE.CylinderGeometry(0.22, 0.22, 0.26, 8),
-                new THREE.MeshStandardMaterial({ color: C.wheelHub, metalness: 0.7, roughness: 0.3 })
-            );
-            fhub.rotation.x = Math.PI / 2;
-            fhub.position.copy(frontWheel.position);
-            fhub.position.z += side * 0.06;
-            tg.add(fhub);
-            // ハブの中心ボルト
-            const fhubBolt = new THREE.Mesh(
-                new THREE.CylinderGeometry(0.08, 0.08, 0.07, 6),
-                new THREE.MeshStandardMaterial({ color: C.metalDk, metalness: 0.6 })
-            );
-            fhubBolt.rotation.x = Math.PI / 2;
-            fhubBolt.position.copy(fhub.position);
-            fhubBolt.position.z += side * 0.07;
-            tg.add(fhubBolt);
-
-            // 起動輪のスプロケット歯（外側の鋭い歯）
-            const sprocketTeethMat = new THREE.MeshStandardMaterial({ color: C.metalDk, roughness: 0.6, metalness: 0.6 });
-            for (let t = 0; t < 12; t++) {
-                const ang = (t / 12) * Math.PI * 2;
-                const tooth = new THREE.Mesh(
-                    new THREE.BoxGeometry(0.12, 0.10, 0.08),
-                    sprocketTeethMat
-                );
-                tooth.position.set(
-                    frontWheel.position.x + Math.cos(ang) * 0.58,
-                    frontWheel.position.y + Math.sin(ang) * 0.58,
-                    side * 0.08
-                );
-                tooth.rotation.z = ang;
-                tg.add(tooth);
+            // 履帯セグメント（シェブロン状トレッドパッド）— 上下の走行面に並ぶ
+            for (let px = -1.30; px <= 1.30; px += 0.20) {
+                for (const py of [trackH - 0.05, 0.05]) {
+                    // メインパッド（横長プレート）
+                    const pad = new THREE.Mesh(
+                        new THREE.BoxGeometry(0.16, 0.09, trackD * 0.95),
+                        padMat
+                    );
+                    pad.position.set(px, py, 0);
+                    tg.add(pad);
+                    // V字のリブ（左右に少し傾けた小ブロック）
+                    for (const dz of [-trackD * 0.30, trackD * 0.30]) {
+                        const v = new THREE.Mesh(
+                            new THREE.BoxGeometry(0.10, 0.05, trackD * 0.32),
+                            trackPlateMat
+                        );
+                        const yOffset = (py < trackH / 2 ? -0.03 : 0.03);
+                        v.position.set(px, py + yOffset, dz);
+                        v.rotation.y = (dz > 0 ? 1 : -1) * 0.4;
+                        tg.add(v);
+                    }
+                }
             }
 
-            // 後方誘導輪（大きい）
-            const rearWheel = new THREE.Mesh(frontWheelGeo, bigWheelMat);
-            rearWheel.rotation.x = Math.PI / 2;
-            rearWheel.position.set(-1.25, trackH * 0.5, side * 0.08);
-            tg.add(rearWheel);
-            this.wheels.push(rearWheel);
-            const rhub = fhub.clone();
-            rhub.position.copy(rearWheel.position);
-            rhub.position.z += side * 0.06;
-            tg.add(rhub);
-            const rhubBolt = fhubBolt.clone();
-            rhubBolt.position.copy(rhub.position);
-            rhubBolt.position.z += side * 0.07;
-            tg.add(rhubBolt);
+            // ============================================
+            // 前後の大型ホイール（起動輪/誘導輪）— 多層構造
+            //  - 外側タイヤリング（黒鉄）
+            //  - 内側ディスク（明るめのプレート）
+            //  - リムの溝（シャドウ）
+            //  - ハブキャップ + 6本のボルトサークル + 中央六角ボルト
+            //  - 外周の湾曲クロウ（コンセプト画像の白い牙）
+            // ============================================
+            const buildBigWheel = (xPos) => {
+                // 外側タイヤリング — これが回転対象
+                const tire = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.62, 0.62, 0.26, 24),
+                    wheelMatOuter
+                );
+                tire.rotation.x = Math.PI / 2;
+                tire.position.set(xPos, trackH * 0.5, side * 0.04);
+                tg.add(tire);
+                this.wheels.push(tire);
 
-            // 中間転輪（3つ、コンセプトより大型）
-            const midWheelGeo = new THREE.CylinderGeometry(0.38, 0.38, 0.18, 14);
-            for (const mx of [-0.5, 0.15, 0.8]) {
-                const mw = new THREE.Mesh(midWheelGeo, bigWheelMat);
+                // 内側ディスク（明るめのサイドプレート）
+                const disc = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.50, 0.50, 0.18, 20),
+                    wheelMatInner
+                );
+                disc.rotation.x = Math.PI / 2;
+                disc.position.set(xPos, trackH * 0.5, side * 0.16);
+                tg.add(disc);
+
+                // リム凹み（暗いリングで彫り込み感）
+                const rimRing = new THREE.Mesh(
+                    new THREE.RingGeometry(0.40, 0.49, 24),
+                    new THREE.MeshStandardMaterial({
+                        color: C.bodyDk, roughness: 0.7, metalness: 0.3,
+                        side: THREE.DoubleSide,
+                    })
+                );
+                rimRing.position.set(xPos, trackH * 0.5, side * 0.26);
+                rimRing.rotation.y = side > 0 ? 0 : Math.PI;
+                tg.add(rimRing);
+
+                // ハブキャップ
+                const hubCap = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.22, 0.24, 0.12, 12),
+                    hubMat
+                );
+                hubCap.rotation.x = Math.PI / 2;
+                hubCap.position.set(xPos, trackH * 0.5, side * 0.30);
+                tg.add(hubCap);
+
+                // ボルトサークル（6個）
+                for (let b = 0; b < 6; b++) {
+                    const ang = (b / 6) * Math.PI * 2;
+                    const bolt = new THREE.Mesh(
+                        new THREE.CylinderGeometry(0.055, 0.055, 0.08, 6),
+                        boltMat
+                    );
+                    bolt.rotation.x = Math.PI / 2;
+                    bolt.position.set(
+                        xPos + Math.cos(ang) * 0.34,
+                        trackH * 0.5 + Math.sin(ang) * 0.34,
+                        side * 0.30
+                    );
+                    tg.add(bolt);
+                }
+
+                // 中央六角ナット
+                const centerBolt = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.10, 0.10, 0.10, 6),
+                    boltMat
+                );
+                centerBolt.rotation.x = Math.PI / 2;
+                centerBolt.position.set(xPos, trackH * 0.5, side * 0.36);
+                tg.add(centerBolt);
+
+                // 外周の湾曲クロウ（10本、コンセプト画像の牙）
+                for (let t = 0; t < 10; t++) {
+                    const ang = (t / 10) * Math.PI * 2;
+                    const claw = new THREE.Mesh(
+                        new THREE.ConeGeometry(0.13, 0.36, 4),
+                        clawMat
+                    );
+                    claw.position.set(
+                        xPos + Math.cos(ang) * 0.78,
+                        trackH * 0.5 + Math.sin(ang) * 0.78,
+                        side * 0.04
+                    );
+                    claw.rotation.z = ang - Math.PI / 2;
+                    claw.scale.set(1, 1, 0.85);
+                    tg.add(claw);
+                    // クロウの根元（暗い縁取り、影）
+                    const clawShade = new THREE.Mesh(
+                        new THREE.BoxGeometry(0.14, 0.10, 0.08),
+                        clawDkMat
+                    );
+                    clawShade.position.set(
+                        xPos + Math.cos(ang) * 0.62,
+                        trackH * 0.5 + Math.sin(ang) * 0.62,
+                        side * 0.04
+                    );
+                    clawShade.rotation.z = ang;
+                    tg.add(clawShade);
+                }
+            };
+
+            buildBigWheel(1.25);   // 前方起動輪
+            buildBigWheel(-1.25);  // 後方誘導輪
+
+            // 中間転輪（3つ）— 小ぶりでハブ + 4ボルト
+            const midWheelGeo = new THREE.CylinderGeometry(0.40, 0.40, 0.20, 16);
+            const midRimGeo = new THREE.CylinderGeometry(0.32, 0.32, 0.18, 14);
+            for (const mx of [-0.55, 0.10, 0.75]) {
+                const mw = new THREE.Mesh(midWheelGeo, wheelMatOuter);
                 mw.rotation.x = Math.PI / 2;
-                mw.position.set(mx, trackH * 0.4, side * 0.06);
+                mw.position.set(mx, trackH * 0.4, side * 0.04);
                 tg.add(mw);
                 this.wheels.push(mw);
+
+                const mwInner = new THREE.Mesh(midRimGeo, wheelMatInner);
+                mwInner.rotation.x = Math.PI / 2;
+                mwInner.position.set(mx, trackH * 0.4, side * 0.14);
+                tg.add(mwInner);
+
                 const mhub = new THREE.Mesh(
-                    new THREE.CylinderGeometry(0.13, 0.13, 0.22, 6),
-                    new THREE.MeshStandardMaterial({ color: C.wheelHub, metalness: 0.65, roughness: 0.3 })
+                    new THREE.CylinderGeometry(0.13, 0.14, 0.12, 8),
+                    hubMat
                 );
                 mhub.rotation.x = Math.PI / 2;
-                mhub.position.copy(mw.position);
-                mhub.position.z += side * 0.05;
+                mhub.position.set(mx, trackH * 0.4, side * 0.22);
                 tg.add(mhub);
+
+                // 4ボルト
+                for (let b = 0; b < 4; b++) {
+                    const ang = (b / 4) * Math.PI * 2 + Math.PI / 4;
+                    const bolt = new THREE.Mesh(
+                        new THREE.CylinderGeometry(0.038, 0.038, 0.06, 5),
+                        boltMat
+                    );
+                    bolt.rotation.x = Math.PI / 2;
+                    bolt.position.set(
+                        mx + Math.cos(ang) * 0.20,
+                        trackH * 0.4 + Math.sin(ang) * 0.20,
+                        side * 0.20
+                    );
+                    tg.add(bolt);
+                }
             }
 
-            // 履帯クロウ歯（外周に並ぶグリッパー、コンセプト 10 の特徴）
-            const clawMat = new THREE.MeshStandardMaterial({ color: 0x222428, roughness: 0.85, metalness: 0.2 });
-            for (let cx = -1.45; cx <= 1.45; cx += 0.18) {
-                const claw = new THREE.Mesh(
-                    new THREE.BoxGeometry(0.13, 0.18, 0.10),
+            // 前端の牙状トレッドカバー（爪先が地面に刺さるイメージ）
+            for (let i = 0; i < 4; i++) {
+                const fang = new THREE.Mesh(
+                    new THREE.ConeGeometry(0.12, 0.42, 5),
                     clawMat
                 );
-                claw.position.set(cx, 0.05, side * 0.06);
-                tg.add(claw);
+                fang.position.set(1.58 + i * 0.03, 0.23 + i * 0.18, side * (0.22 - i * 0.015));
+                fang.rotation.z = -Math.PI / 2 + i * 0.1;
+                fang.rotation.y = side * 0.18;
+                tg.add(fang);
             }
 
             // 上部フェンダー（泥除け）
             const fender = new THREE.Mesh(
                 new THREE.BoxGeometry(trackW - 0.2, 0.07, trackD + 0.05),
-                new THREE.MeshStandardMaterial({ color: C.bodyDk, roughness: 0.7, metalness: 0.15 })
+                fenderMat
             );
             fender.position.set(0, trackH + 0.03, 0);
             tg.add(fender);
+
+            // フェンダー上のリベット列（金属感のディテール）
+            for (let rx = -trackW / 2 + 0.25; rx <= trackW / 2 - 0.25; rx += 0.42) {
+                const rivet = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.04, 6, 4),
+                    boltMat
+                );
+                rivet.position.set(rx, trackH + 0.09, side * (trackD * 0.4));
+                tg.add(rivet);
+            }
 
             tg.position.set(0, 0, side * 0.85);
             this.visualGroup.add(tg);
@@ -481,6 +611,31 @@ export class Player {
             );
             skirt.position.set(0, 1.2, s * 0.72);
             this.hullGroup.add(skirt);
+        }
+
+        // 側面球形ポッド + 補助チューブ。コンセプト画像の丸い外付け装備を追加。
+        const sidePodMat = new THREE.MeshStandardMaterial({ color: C.bodyMid, roughness: 0.38, metalness: 0.35 });
+        const sideLensMat = new THREE.MeshStandardMaterial({
+            color: 0xD7C08A, emissive: 0x6A5522, emissiveIntensity: 0.25, roughness: 0.28, metalness: 0.25,
+        });
+        for (const s of [-1, 1]) {
+            const pod = new THREE.Mesh(new THREE.SphereGeometry(0.28, 14, 10), sidePodMat);
+            pod.scale.set(1.1, 0.9, 1.0);
+            pod.position.set(0.58, 1.48, s * 0.88);
+            this.hullGroup.add(pod);
+            const lens = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.04, 12), sideLensMat);
+            lens.rotation.x = Math.PI / 2;
+            lens.position.set(0.62, 1.48, s * 1.12);
+            this.hullGroup.add(lens);
+
+            const pipe = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.035, 0.04, 0.9, 8),
+                new THREE.MeshStandardMaterial({ color: C.exhaust, roughness: 0.55, metalness: 0.35 })
+            );
+            pipe.position.set(-0.78, 1.72, s * 0.77);
+            pipe.rotation.z = Math.PI / 2 + 0.32;
+            pipe.rotation.y = s * 0.22;
+            this.hullGroup.add(pipe);
         }
 
         // リベット（車体側面に2列）
@@ -852,11 +1007,12 @@ export class Player {
         // 10. 追加ディテール（コンセプト画像寄せ）
         // ============================================
         // 履帯の駆動歯（シルエット強化）
-        const toothMat = new THREE.MeshStandardMaterial({ color: 0x2A2A20, roughness: 0.85, metalness: 0.15 });
+        const toothMat = new THREE.MeshStandardMaterial({ color: C.clawDk, roughness: 0.82, metalness: 0.1 });
         for (const side of [-1, 1]) {
             for (let tx = -1.35; tx <= 1.35; tx += 0.24) {
-                const tooth = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.1, 0.07), toothMat);
+                const tooth = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.13, 0.08), toothMat);
                 tooth.position.set(tx, 0.12, side * 0.94);
+                tooth.rotation.z = Math.sin(tx * 4) * 0.08;
                 this.visualGroup.add(tooth);
             }
         }
@@ -873,10 +1029,10 @@ export class Player {
         }
 
         // 砲塔ボルトリング
-        const boltMat = new THREE.MeshStandardMaterial({ color: C.metalDk, roughness: 0.35, metalness: 0.65 });
+        const turretBoltMat = new THREE.MeshStandardMaterial({ color: C.metalDk, roughness: 0.35, metalness: 0.65 });
         for (let i = 0; i < 14; i++) {
             const a = (i / 14) * Math.PI * 2;
-            const bolt = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.04, 6), boltMat);
+            const bolt = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.04, 6), turretBoltMat);
             bolt.position.set(Math.cos(a) * 0.9, 0.04, Math.sin(a) * 0.9);
             bolt.rotation.x = Math.PI / 2;
             this.turretGroup.add(bolt);
@@ -1201,9 +1357,6 @@ export class Player {
     }
 
     _updateTurretAim(input, dt) {
-        // InputManagerのモード更新
-        if (input.updateAimMode) input.updateAimMode(dt);
-
         this.aimMode = 'lock';
 
         const minElev = -40 * Math.PI / 180;  // 下向き
@@ -1692,11 +1845,10 @@ export class Player {
     }
 
     _spawnDashAfterImage() {
-        const ghostGeo = new THREE.BoxGeometry(2.4, 1.2, 1.8);
         const ghostMat = new THREE.MeshBasicMaterial({
             color: 0x88BBFF, transparent: true, opacity: 0.4,
         });
-        const ghost = new THREE.Mesh(ghostGeo, ghostMat);
+        const ghost = new THREE.Mesh(_dashGhostGeoShared, ghostMat);
         ghost.position.copy(this.group.position);
         ghost.position.y += 0.8;
         ghost.rotation.copy(this.group.rotation);
@@ -1712,7 +1864,7 @@ export class Player {
             img.mesh.scale.setScalar(1 + (img.age / img.maxAge) * 0.5);
             if (img.age >= img.maxAge) {
                 this.scene.remove(img.mesh);
-                img.mesh.geometry.dispose();
+                // geometry は共有なので dispose しない
                 img.mesh.material.dispose();
                 this.dashAfterImages.splice(i, 1);
             }
@@ -1725,12 +1877,14 @@ export class Player {
 
         const pos = this.group.position;
         // キャタピラは ±X 両側（幅 ≈ 0.85）にある。粉塵は各トラック後方（-Z 側）から舞う。
+        // 共有ジオメトリ + mesh.scale でサイズ感のばらつきを表現する（GC pressure 削減）。
         for (let sx of [-0.85, 0.85]) {
-            const dustGeo = new THREE.SphereGeometry(0.15 + Math.random() * 0.15, 4, 3);
             const dustMat = new THREE.MeshBasicMaterial({
                 color: 0xC8B088, transparent: true, opacity: 0.4,
             });
-            const dust = new THREE.Mesh(dustGeo, dustMat);
+            const dust = new THREE.Mesh(_dustGeoShared, dustMat);
+            const sizeJitter = 1.0 + Math.random() * 1.0; // 0.15 → 0.15..0.30 相当
+            dust.scale.setScalar(sizeJitter);
             dust.position.set(
                 pos.x + sx + (Math.random() - 0.5) * 0.3,
                 0.15 + Math.random() * 0.3,
@@ -1739,6 +1893,7 @@ export class Player {
             this.scene.add(dust);
             this.dustParticles.push({
                 mesh: dust, age: 0, maxAge: 0.4 + Math.random() * 0.3,
+                baseScale: sizeJitter,
                 vy: 0.5 + Math.random() * 1.0,
                 vx: (Math.random() - 0.5) * 1.5,
                 vz: -2.0 - moveZ * 1.5 + (Math.random() - 0.5) * 1.0,
@@ -1754,12 +1909,13 @@ export class Player {
         const pos = this.group.position;
         // 排気管は車体後部（-Z 側）の ±X オフセット位置
         for (let sx of [-0.35, 0.35]) {
-            const puffGeo = new THREE.SphereGeometry(0.08 + Math.random() * 0.06, 4, 3);
             const puffMat = new THREE.MeshBasicMaterial({
                 color: Math.random() > 0.5 ? 0x555555 : 0x666666,
                 transparent: true, opacity: 0.35,
             });
-            const puff = new THREE.Mesh(puffGeo, puffMat);
+            const puff = new THREE.Mesh(_exhaustGeoShared, puffMat);
+            const sizeJitter = 1.0 + Math.random() * 0.75; // 0.08 → 0.08..0.14 相当
+            puff.scale.setScalar(sizeJitter);
             puff.position.set(
                 pos.x + sx + (Math.random() - 0.5) * 0.2,
                 1.5 + Math.random() * 0.2,
@@ -1768,6 +1924,7 @@ export class Player {
             this.scene.add(puff);
             this.exhaustParticles.push({
                 mesh: puff, age: 0, maxAge: 0.6 + Math.random() * 0.4,
+                baseScale: sizeJitter,
                 vy: 0.8 + Math.random() * 0.5,
                 vx: (Math.random() - 0.5) * 0.3,
                 vz: -0.5 + (Math.random() - 0.5) * 0.3,
@@ -1779,19 +1936,17 @@ export class Player {
     _spawnShellCasing() {
         // メモリ上限チェック（薬莢パーティクル上限 15）
         if (this.shellCasings.length >= 15) {
-            // 古いものを強制削除
+            // 古いものを強制削除（共有ジオメトリは dispose しない）
             const old = this.shellCasings.shift();
             this.scene.remove(old.mesh);
-            old.mesh.geometry.dispose();
             old.mesh.material.dispose();
         }
 
         const pos = this.group.position;
-        const casingGeo = new THREE.CylinderGeometry(0.02, 0.02, 0.08, 4);
         const casingMat = new THREE.MeshStandardMaterial({
             color: 0xDDBB44, metalness: 0.8, roughness: 0.2,
         });
-        const casing = new THREE.Mesh(casingGeo, casingMat);
+        const casing = new THREE.Mesh(_shellGeoShared, casingMat);
         // 砲塔の側面からイジェクト。砲塔ワールド位置 + ランダム横オフセット
         const turretWorldPos = new THREE.Vector3();
         this.turretGroup.getWorldPosition(turretWorldPos);
@@ -1812,11 +1967,12 @@ export class Player {
     }
 
     _updateParticleEffects(dt) {
+        // 共有ジオメトリ運用のため寿命到達時は material のみ dispose（geometry は維持）。
+        // baseScale を保持して、寿命中の scale 演出は baseScale * (1 + progress*rate) で行う。
         this.dustParticles = this.dustParticles.filter(p => {
             p.age += dt;
             if (p.age >= p.maxAge) {
                 this.scene.remove(p.mesh);
-                p.mesh.geometry.dispose();
                 p.mesh.material.dispose();
                 return false;
             }
@@ -1824,7 +1980,8 @@ export class Player {
             p.mesh.position.x += p.vx * dt;
             p.mesh.position.y += p.vy * dt;
             p.mesh.position.z += p.vz * dt;
-            p.mesh.scale.setScalar(1 + progress * p.scaleRate);
+            const base = p.baseScale || 1;
+            p.mesh.scale.setScalar(base * (1 + progress * p.scaleRate));
             p.mesh.material.opacity = 0.4 * (1 - progress);
             return true;
         });
@@ -1833,7 +1990,6 @@ export class Player {
             p.age += dt;
             if (p.age >= p.maxAge) {
                 this.scene.remove(p.mesh);
-                p.mesh.geometry.dispose();
                 p.mesh.material.dispose();
                 return false;
             }
@@ -1841,7 +1997,8 @@ export class Player {
             p.mesh.position.x += p.vx * dt;
             p.mesh.position.y += p.vy * dt;
             p.mesh.position.z += p.vz * dt;
-            p.mesh.scale.setScalar(1 + progress * p.scaleRate);
+            const base = p.baseScale || 1;
+            p.mesh.scale.setScalar(base * (1 + progress * p.scaleRate));
             p.mesh.material.opacity = 0.35 * (1 - progress);
             return true;
         });
@@ -1850,7 +2007,6 @@ export class Player {
             p.age += dt;
             if (p.age >= p.maxAge) {
                 this.scene.remove(p.mesh);
-                p.mesh.geometry.dispose();
                 p.mesh.material.dispose();
                 return false;
             }

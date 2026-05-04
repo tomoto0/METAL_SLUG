@@ -4,7 +4,7 @@ import { Projectile } from './Projectile.js';
 
 /**
  * 航空系の敵
- * subType: 'scout_heli' | 'attack_heli' | 'bomber' | 'fighter' | 'drone' | 'interceptor' | 'gunship'
+ * subType: 'scout_heli' | 'attack_heli' | 'bomber' | 'fighter' | 'drone' | 'interceptor' | 'gunship' | 'tomahawk'
  */
 export class Aircraft extends Enemy {
     constructor(scene, {
@@ -21,6 +21,7 @@ export class Aircraft extends Enemy {
             drone:       { hp: 18,  speed: 9,  scoreValue: 900,  fireRate: 1.05, damage: 6  },
             interceptor: { hp: 50,  speed: 14, scoreValue: 2400, fireRate: 0.38, damage: 7  },
             gunship:     { hp: 150, speed: 3.2, scoreValue: 3800, fireRate: 1.8,  damage: 18 },
+            tomahawk:    { hp: 22,  speed: 17, scoreValue: 1800, fireRate: 99,   damage: 28 },
         };
         const spec = SPECS[subType] || SPECS.scout_heli;
 
@@ -37,6 +38,7 @@ export class Aircraft extends Enemy {
             drone:       { base: 4.8,  jitter: 0.8 },
             interceptor: { base: 6.2,  jitter: 0.9 },
             gunship:     { base: 6.0,  jitter: 0.6 },
+            tomahawk:    { base: 3.8,  jitter: 0.7 },
         };
         const h = HEIGHTS[subType] || HEIGHTS.scout_heli;
         this.flightHeight = h.base + (Math.random() - 0.5) * 2 * h.jitter;
@@ -50,6 +52,7 @@ export class Aircraft extends Enemy {
         this.diveProgress = 0;
         this.burstCount = 0;
         this.entryDir = Math.random() > 0.5 ? 1 : -1; // 進入方向
+        this.homingDir = null;
 
         // ローター回転用
         this.rotorAngle = 0;
@@ -83,7 +86,68 @@ export class Aircraft extends Enemy {
             case 'gunship':
                 this._buildGunship();
                 break;
+            case 'tomahawk':
+                this._buildTomahawk();
+                break;
         }
+    }
+
+    _buildTomahawk() {
+        const bodyMat = new THREE.MeshStandardMaterial({
+            color: 0xE8ECEE, roughness: 0.45, metalness: 0.25,
+        });
+        const noseMat = new THREE.MeshStandardMaterial({
+            color: 0xF5F7F8, roughness: 0.35, metalness: 0.2,
+        });
+        const finMat = new THREE.MeshStandardMaterial({
+            color: 0xC7CCD1, roughness: 0.55, metalness: 0.15,
+        });
+        const stripeMat = new THREE.MeshStandardMaterial({
+            color: 0xB0B7BD, roughness: 0.5, metalness: 0.2,
+        });
+        const flameMat = new THREE.MeshBasicMaterial({
+            color: 0xFFD28A, transparent: true, opacity: 0.8,
+            blending: THREE.AdditiveBlending, depthWrite: false,
+        });
+
+        const body = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.15, 2.6, 10), bodyMat);
+        body.rotation.z = Math.PI / 2;
+        this.group.add(body);
+
+        const nose = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.52, 10), noseMat);
+        nose.rotation.z = -Math.PI / 2;
+        nose.position.x = 1.55;
+        this.group.add(nose);
+
+        const intake = new THREE.Mesh(new THREE.CylinderGeometry(0.095, 0.095, 0.12, 10), stripeMat);
+        intake.rotation.z = Math.PI / 2;
+        intake.position.x = 0.72;
+        this.group.add(intake);
+
+        const rear = new THREE.Mesh(new THREE.CylinderGeometry(0.135, 0.135, 0.18, 10), stripeMat);
+        rear.rotation.z = Math.PI / 2;
+        rear.position.x = -1.36;
+        this.group.add(rear);
+
+        for (const z of [-0.16, 0.16]) {
+            const fin = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.03, 0.2), finMat);
+            fin.position.set(-0.88, 0, z);
+            this.group.add(fin);
+        }
+        for (const y of [-0.12, 0.12]) {
+            const fin = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.2, 0.03), finMat);
+            fin.position.set(-0.88, y, 0);
+            this.group.add(fin);
+        }
+
+        const stripe = new THREE.Mesh(new THREE.BoxGeometry(1.35, 0.02, 0.34), stripeMat);
+        stripe.position.set(0.3, 0.13, 0);
+        this.group.add(stripe);
+
+        this.jetCore = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.42, 8), flameMat);
+        this.jetCore.rotation.z = Math.PI / 2;
+        this.jetCore.position.x = -1.58;
+        this.group.add(this.jetCore);
     }
 
     // ============================================
@@ -1096,6 +1160,9 @@ export class Aircraft extends Enemy {
             case 'gunship':
                 this._aiGunship(dt, playerPos, elapsedTime);
                 break;
+            case 'tomahawk':
+                this._aiTomahawk(dt, playerPos, elapsedTime);
+                break;
         }
     }
 
@@ -1430,6 +1497,35 @@ export class Aircraft extends Enemy {
         }
 
         this.group.rotation.z = Math.sin(elapsed * 2.4) * 0.08;
+    }
+
+    _aiTomahawk(dt, playerPos, elapsed) {
+        const target = playerPos.clone();
+        target.y += 1.0;
+        const toTarget = target.sub(this.group.position);
+        const distance = toTarget.length();
+        if (distance < 0.001) return;
+
+        const desiredDir = toTarget.normalize();
+        desiredDir.y = THREE.MathUtils.clamp(desiredDir.y, -0.2, 0.28);
+        desiredDir.normalize();
+
+        if (!this.homingDir) {
+            this.homingDir = desiredDir.clone();
+        } else {
+            const turnRate = THREE.MathUtils.clamp(2.2 + dt * 2, 0, 1);
+            this.homingDir.lerp(desiredDir, turnRate * dt * 3.6).normalize();
+        }
+
+        // 蛇行しすぎない程度に横揺れして、巡航ミサイルらしい軌道にする
+        const sideWave = Math.sin(elapsed * 8 + this.orbitAngle) * 0.02;
+        this.group.position.addScaledVector(this.homingDir, this.speed * dt);
+        this.group.position.x += sideWave * (this.entryDir > 0 ? 1 : -1);
+        this.group.position.y = Math.max(0.9, this.group.position.y);
+
+        const lookAt = this.group.position.clone().add(this.homingDir);
+        this.group.lookAt(lookAt);
+        this.group.rotation.z += sideWave * 2.5;
     }
 
     _fireRocket(playerPos, elapsed) {

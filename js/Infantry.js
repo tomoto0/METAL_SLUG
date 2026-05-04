@@ -24,7 +24,7 @@ function _geo(key, factory) {
  * 歩兵系の敵
  * subType: 'rifle' | 'knife' | 'rocket' | 'shield' | 'grenade' | 'machinegun'
  *        | 'officer' | 'flamethrower' | 'mummy' | 'sniper' | 'hunter' | 'ninja' | 'juggernaut'
- *        | 'commando' | 'demolition'
+ *        | 'commando' | 'demolition' | 'jetpack_raider'
  *
  * Metal Slug風: 巨大ヘルメット(頭=体の1/3)、ずんぐり体型
  */
@@ -55,6 +55,7 @@ export class Infantry extends Enemy {
             juggernaut:  { hp: 90, speed: 2.6, scoreValue: 1000, fireRate: 1.6, damage: 24 }, // 後半重装エリート
             commando:    { hp: 34, speed: 5.4, scoreValue: 800, fireRate: 0.9,  damage: 9  }, // 終盤精鋭: 蛇行バースト
             demolition:  { hp: 46, speed: 3.1, scoreValue: 900, fireRate: 2.6,  damage: 22 }, // 終盤工兵: 面制圧
+            jetpack_raider:{ hp: 18, speed: 6.2, scoreValue: 650, fireRate: 1.15, damage: 12 }, // 低空強襲兵
             perched_sniper: { hp: 22, speed: 0, scoreValue: 700, fireRate: 2.4, damage: 30 }, // 屋上スナイパー
         };
         const spec = SPECS[subType] || SPECS.rifle;
@@ -69,6 +70,7 @@ export class Infantry extends Enemy {
             rocket: 25, knife: 2, mummy: 1.6,
             sniper: 38, hunter: 22, ninja: 14, flamethrower: 8, juggernaut: 11,
             commando: 18, demolition: 24,
+            jetpack_raider: 22,
             perched_sniper: 65,
         };
         this.attackRange = RANGES[subType] !== undefined ? RANGES[subType] : 15;
@@ -84,13 +86,29 @@ export class Infantry extends Enemy {
         this.crossTargetX = null;
         this.crossTargetZ = null;
         this.weavePhase = Math.random() * Math.PI * 2;
+        this.dynamicBits = [];
+        this.leftLowerLeg = null;
+        this.rightLowerLeg = null;
+        this.leftBoot = null;
+        this.rightBoot = null;
+        this.leftArmMesh = null;
+        this.rightArmMesh = null;
+        this.leftHandMesh = null;
+        this.rightHandMesh = null;
 
         // 屋上配置スナイパーは静止 / 高所固定
         this.perched = (subType === 'perched_sniper');
+        this.airborne = (subType === 'jetpack_raider');
         this.perchY = 0;
+        this.jetpackBaseHeight = 1.55 + Math.random() * 0.45;
+        this.jetpackBoostTimer = 0;
+        this.jetpackBombTimer = 0.4 + Math.random() * 1.2;
+        this.jetpackBurstShots = 0;
+        this.jetpackBurstTimer = 0;
 
         this._buildModel();
         if (this.perched) this._buildLaserSight();
+        if (this.airborne) this.group.position.y = this.jetpackBaseHeight;
         this._recordMaterials();
         this.scene.add(this.group);
     }
@@ -232,50 +250,80 @@ export class Infantry extends Enemy {
             COLORS.helmet = 0x4C4636;
             COLORS.helmetBand = 0xD2A53A;
             COLORS.boots = 0x2A2118;
+        } else if (this.subType === 'jetpack_raider') {
+            // ジェットパック強襲兵: 青緑装甲 + 橙の推進炎
+            COLORS.uniform = 0x2F666A;
+            COLORS.uniformDark = 0x1E3D42;
+            COLORS.vest = 0x596B62;
+            COLORS.helmet = 0x163034;
+            COLORS.helmetBand = 0xD2A53A;
+            COLORS.boots = 0x182024;
+            COLORS.backpack = 0x394A48;
         }
 
         // ============================================
-        // 脚（2本、歩行アニメ用に分離）
+        // 脚（2本、太腿/脛/ブーツを階層化）
         // ============================================
         this.leftLeg = new THREE.Group();
         this.rightLeg = new THREE.Group();
 
-        // ブーツ（大きめ、ゴツい）— ジオメトリは共有、マテリアルは subType 色なので個別
-        const bootGeo = _geo('inf_boot', () => new THREE.BoxGeometry(0.28, 0.32, 0.28));
+        const thighGeo = _geo('inf_thigh_refined', () => new THREE.BoxGeometry(0.20, 0.32, 0.22));
+        const shinGeo = _geo('inf_shin_refined', () => new THREE.BoxGeometry(0.17, 0.28, 0.20));
+        const bootGeo = _geo('inf_boot_refined', () => new THREE.BoxGeometry(0.38, 0.22, 0.30));
+        const gaitersGeo = _geo('inf_gaiters_refined', () => new THREE.BoxGeometry(0.20, 0.11, 0.23));
+        const kneeGeo = _geo('inf_knee_pad', () => new THREE.BoxGeometry(0.20, 0.08, 0.22));
+
         const bootMat = new THREE.MeshStandardMaterial({ color: COLORS.boots, roughness: 0.9 });
-
-        // レッグガード（ゲートル）
-        const gaitersGeo = _geo('inf_gaiters', () => new THREE.BoxGeometry(0.22, 0.15, 0.24));
         const gaitersMat = new THREE.MeshStandardMaterial({ color: 0x8B7B5B, roughness: 0.8 });
-
-        const legGeo = _geo('inf_leg', () => new THREE.BoxGeometry(0.2, 0.35, 0.22));
         const legMat = new THREE.MeshStandardMaterial({ color: COLORS.uniformDark, roughness: 0.8 });
+        const kneeMat = new THREE.MeshStandardMaterial({ color: COLORS.vest, roughness: 0.82 });
+        const soleMat = new THREE.MeshStandardMaterial({ color: 0x1f1712, roughness: 0.95 });
 
-        // 左脚（左右で同じ material を共有しても見た目変わらないので clone() を廃止）
-        const lBoot = new THREE.Mesh(bootGeo, bootMat);
-        lBoot.position.y = 0.16;
-        this.leftLeg.add(lBoot);
-        const lGaiters = new THREE.Mesh(gaitersGeo, gaitersMat);
-        lGaiters.position.y = 0.35;
-        this.leftLeg.add(lGaiters);
-        const lLeg = new THREE.Mesh(legGeo, legMat);
-        lLeg.position.y = 0.52;
-        this.leftLeg.add(lLeg);
-        this.leftLeg.position.set(0, 0, -0.16);
-        this.group.add(this.leftLeg);
+        const buildLeg = (side) => {
+            const hip = new THREE.Group();
+            hip.position.set(0, 0.78, side * 0.17);
 
-        // 右脚
-        const rBoot = new THREE.Mesh(bootGeo, bootMat);
-        rBoot.position.y = 0.16;
-        this.rightLeg.add(rBoot);
-        const rGaiters = new THREE.Mesh(gaitersGeo, gaitersMat);
-        rGaiters.position.y = 0.35;
-        this.rightLeg.add(rGaiters);
-        const rLeg = new THREE.Mesh(legGeo, legMat);
-        rLeg.position.y = 0.52;
-        this.rightLeg.add(rLeg);
-        this.rightLeg.position.set(0, 0, 0.16);
-        this.group.add(this.rightLeg);
+            const thigh = new THREE.Mesh(thighGeo, legMat);
+            thigh.position.y = -0.14;
+            hip.add(thigh);
+
+            const knee = new THREE.Mesh(kneeGeo, kneeMat);
+            knee.position.set(0.02, -0.31, 0);
+            hip.add(knee);
+
+            const lower = new THREE.Group();
+            lower.position.y = -0.28;
+
+            const shin = new THREE.Mesh(shinGeo, legMat);
+            shin.position.y = -0.10;
+            lower.add(shin);
+
+            const gaiter = new THREE.Mesh(gaitersGeo, gaitersMat);
+            gaiter.position.y = -0.21;
+            lower.add(gaiter);
+
+            const boot = new THREE.Mesh(bootGeo, bootMat);
+            boot.position.set(0.07, -0.31, 0);
+            boot.castShadow = true;
+            lower.add(boot);
+
+            const sole = new THREE.Mesh(_geo('inf_boot_sole', () => new THREE.BoxGeometry(0.42, 0.045, 0.32)), soleMat);
+            sole.position.set(0.08, -0.43, 0);
+            lower.add(sole);
+
+            hip.add(lower);
+            this.group.add(hip);
+            return { hip, lower, boot };
+        };
+
+        const leftBuilt = buildLeg(-1);
+        const rightBuilt = buildLeg(1);
+        this.leftLeg = leftBuilt.hip;
+        this.rightLeg = rightBuilt.hip;
+        this.leftLowerLeg = leftBuilt.lower;
+        this.rightLowerLeg = rightBuilt.lower;
+        this.leftBoot = leftBuilt.boot;
+        this.rightBoot = rightBuilt.boot;
 
         // ============================================
         // 胴体（ずんぐり、厚みのある）— ジオメトリは共有、material は per-instance
@@ -316,10 +364,12 @@ export class Infantry extends Enemy {
         const leftArm = new THREE.Mesh(armGeo, armMat);
         leftArm.position.set(0, 0.9, -0.38);
         this.group.add(leftArm);
+        this.leftArmMesh = leftArm;
 
         const rightArm = new THREE.Mesh(armGeo, armMat);
         rightArm.position.set(0, 0.9, 0.38);
         this.group.add(rightArm);
+        this.rightArmMesh = rightArm;
 
         // 手（肌色）
         const handGeo = _geo('inf_hand', () => new THREE.SphereGeometry(0.06, 6, 4));
@@ -327,9 +377,11 @@ export class Infantry extends Enemy {
         const leftHand = new THREE.Mesh(handGeo, handMat);
         leftHand.position.set(0, 0.72, -0.38);
         this.group.add(leftHand);
+        this.leftHandMesh = leftHand;
         const rightHand = new THREE.Mesh(handGeo, handMat);
         rightHand.position.set(0, 0.72, 0.38);
         this.group.add(rightHand);
+        this.rightHandMesh = rightHand;
 
         // ============================================
         // 頭（巨大 = 体の約 40%、Metal Slug チビ体型）
@@ -714,8 +766,73 @@ export class Infantry extends Enemy {
         // ============================================
         this._buildWeapon(COLORS);
 
+        // 小物と可動アクセント。兵種の読み分けと動きの密度を上げる。
+        this._buildDynamicAccents(COLORS);
+
         // 全体スケール調整（少し大きめにして当たり判定を改善）
         this.group.scale.setScalar(1.15);
+    }
+
+    _buildDynamicAccents(COLORS) {
+        const strapMat = new THREE.MeshStandardMaterial({ color: 0x2a1b12, roughness: 0.92 });
+        const metalMat = new THREE.MeshStandardMaterial({ color: COLORS.metalLight, roughness: 0.36, metalness: 0.62 });
+        const stitchMat = new THREE.MeshBasicMaterial({ color: 0xf0d88a });
+
+        // 肩ベルトと前面の留め具。小さな面の差で、遠目でも装備の密度が増える。
+        for (const side of [-1, 1]) {
+            const strap = new THREE.Mesh(_geo('inf_dynamic_chest_strap', () => new THREE.BoxGeometry(0.045, 0.46, 0.04)), strapMat);
+            strap.position.set(0.285, 0.96, side * 0.22);
+            strap.rotation.x = side * 0.34;
+            this.group.add(strap);
+
+            const buckle = new THREE.Mesh(_geo('inf_dynamic_buckle', () => new THREE.BoxGeometry(0.03, 0.055, 0.075)), metalMat);
+            buckle.position.set(0.314, 0.84, side * 0.20);
+            this.group.add(buckle);
+        }
+
+        // 腰ポーチ。シルエットを崩さずに兵士らしさを足す。
+        for (const side of [-1, 1]) {
+            const pouch = new THREE.Mesh(_geo('inf_dynamic_hip_pouch', () => new THREE.BoxGeometry(0.14, 0.16, 0.12)), new THREE.MeshStandardMaterial({
+                color: COLORS.vest, roughness: 0.88,
+            }));
+            pouch.position.set(-0.04, 0.60, side * 0.35);
+            pouch.rotation.x = side * 0.08;
+            this.group.add(pouch);
+        }
+
+        // ブーツの明るいエッジ。接地位置が読み取りやすくなる。
+        for (const boot of [this.leftBoot, this.rightBoot]) {
+            if (!boot) continue;
+            const stripe = new THREE.Mesh(_geo('inf_boot_edge_mark', () => new THREE.BoxGeometry(0.30, 0.018, 0.025)), stitchMat);
+            stripe.position.set(0.06, 0.055, 0.14);
+            boot.add(stripe);
+        }
+
+        // 風で揺れる短いストラップ。サブタイプの既存装備に干渉しない後方配置。
+        const clothColor = this.subType === 'knife' || this.subType === 'ninja' ? COLORS.redBandana : COLORS.helmetBand;
+        const clothMat = new THREE.MeshStandardMaterial({ color: clothColor, roughness: 0.86 });
+        for (let i = 0; i < 2; i++) {
+            const tail = new THREE.Mesh(_geo('inf_dynamic_cloth_tail', () => new THREE.BoxGeometry(0.035, 0.26, 0.05)), clothMat);
+            tail.position.set(-0.36, 1.12 - i * 0.08, -0.11 + i * 0.22);
+            tail.rotation.z = -0.18;
+            this.group.add(tail);
+            this.dynamicBits.push({
+                mesh: tail,
+                baseRotZ: tail.rotation.z,
+                baseRotX: tail.rotation.x,
+                phase: Math.random() * Math.PI * 2,
+                amp: 0.08 + Math.random() * 0.06,
+            });
+        }
+
+        if (this.subType === 'rocket' || this.subType === 'demolition' || this.subType === 'juggernaut') {
+            const warningMat = new THREE.MeshBasicMaterial({ color: 0xffdd44 });
+            for (const z of [-0.19, 0.19]) {
+                const plate = new THREE.Mesh(_geo('inf_warning_tick', () => new THREE.BoxGeometry(0.018, 0.08, 0.08)), warningMat);
+                plate.position.set(0.315, 1.08, z);
+                this.group.add(plate);
+            }
+        }
     }
 
     _buildSubtypeGear(COLORS) {
@@ -1057,6 +1174,75 @@ export class Infantry extends Enemy {
             for (const z of [-0.36, 0.36]) {
                 const pad = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.12, 0.24), warnMat);
                 pad.position.set(0, 1.18, z);
+                this.group.add(pad);
+            }
+        }
+
+        // ============================================
+        // ジェットパック強襲兵: 双発パック + ゴーグル + 橙色排気炎
+        // ============================================
+        if (this.subType === 'jetpack_raider') {
+            const packMat = new THREE.MeshStandardMaterial({ color: 0x2F4748, roughness: 0.45, metalness: 0.45 });
+            const tankMat = new THREE.MeshStandardMaterial({ color: 0x5D6A62, roughness: 0.42, metalness: 0.55 });
+            const nozzleMat = new THREE.MeshStandardMaterial({ color: 0x1A1C1E, roughness: 0.35, metalness: 0.75 });
+            const flameMat = new THREE.MeshBasicMaterial({
+                color: 0xFF8A22, transparent: true, opacity: 0.82,
+                blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+            });
+
+            const pack = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.62, 0.48), packMat);
+            pack.position.set(-0.38, 1.02, 0);
+            this.group.add(pack);
+
+            for (const z of [-0.17, 0.17]) {
+                const tank = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.58, 10), tankMat);
+                tank.position.set(-0.48, 1.04, z);
+                this.group.add(tank);
+
+                const capTop = new THREE.Mesh(new THREE.CylinderGeometry(0.095, 0.095, 0.035, 10), nozzleMat);
+                capTop.position.set(-0.48, 1.36, z);
+                this.group.add(capTop);
+
+                const nozzle = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.10, 0.16, 10), nozzleMat);
+                nozzle.position.set(-0.48, 0.62, z);
+                this.group.add(nozzle);
+
+                const flame = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.42, 10, 1, true), flameMat.clone());
+                flame.position.set(-0.48, 0.36, z);
+                flame.rotation.z = Math.PI;
+                this.group.add(flame);
+                this.jetFlames = this.jetFlames || [];
+                this.jetFlames.push(flame);
+            }
+
+            // ゴーグルと額バンド
+            const visorMat = new THREE.MeshStandardMaterial({
+                color: 0xA9F0FF, emissive: 0x144050, emissiveIntensity: 0.55,
+                roughness: 0.18, metalness: 0.45,
+            });
+            const rimMat = new THREE.MeshStandardMaterial({ color: 0x111416, roughness: 0.42, metalness: 0.55 });
+            for (const z of [-0.13, 0.13]) {
+                const lens = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.035, 12), visorMat);
+                lens.position.set(0.38, 1.42, z);
+                lens.rotation.z = Math.PI / 2;
+                this.group.add(lens);
+                const rim = new THREE.Mesh(new THREE.TorusGeometry(0.08, 0.012, 6, 14), rimMat);
+                rim.position.set(0.40, 1.42, z);
+                rim.rotation.y = Math.PI / 2;
+                this.group.add(rim);
+            }
+            const strap = new THREE.Mesh(new THREE.TorusGeometry(0.40, 0.018, 6, 16), rimMat);
+            strap.position.y = 1.43;
+            strap.rotation.x = Math.PI / 2;
+            strap.scale.set(1, 0.85, 1);
+            this.group.add(strap);
+
+            // 軽量ショルダーアーマー
+            const padMat = new THREE.MeshStandardMaterial({ color: 0xD2A53A, roughness: 0.62, metalness: 0.25 });
+            for (const z of [-0.36, 0.36]) {
+                const pad = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.10, 0.22), padMat);
+                pad.position.set(0.03, 1.18, z);
+                pad.rotation.x = z > 0 ? 0.12 : -0.12;
                 this.group.add(pad);
             }
         }
@@ -1617,6 +1803,26 @@ export class Infantry extends Enemy {
             const grip = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.13, 0.06), gripMat);
             grip.position.set(0.3, 0.85, -0.18);
             this.group.add(grip);
+        } else if (this.subType === 'jetpack_raider') {
+            // 片手サブマシンガン。短い3連射の視覚的な発射元。
+            const smgMat = new THREE.MeshStandardMaterial({ color: 0x24282A, metalness: 0.55, roughness: 0.42 });
+            const body = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.10, 0.36), smgMat);
+            body.position.set(0.30, 0.88, 0.22);
+            this.group.add(body);
+            const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.032, 0.44, 7), smgMat);
+            barrel.rotation.x = Math.PI / 2;
+            barrel.position.set(0.30, 0.88, 0.60);
+            this.group.add(barrel);
+            const mag = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.22, 0.08), smgMat);
+            mag.position.set(0.30, 0.73, 0.18);
+            mag.rotation.x = -0.18;
+            this.group.add(mag);
+            const muzzle = new THREE.Mesh(
+                new THREE.RingGeometry(0.026, 0.045, 10),
+                new THREE.MeshBasicMaterial({ color: 0x080808, side: THREE.DoubleSide })
+            );
+            muzzle.position.set(0.30, 0.88, 0.83);
+            this.group.add(muzzle);
         } else if (this.subType === 'mummy') {
             // 武器なし。腕を前に突き出す姿勢のみ（腕の位置調整は AI で）。
             // 替わりに包帯の手 = 鉤爪のような表情を出すため、両手の前にひっかき指を追加
@@ -1861,6 +2067,9 @@ export class Infantry extends Enemy {
             case 'demolition':
                 this._aiDemolition(dt, dist, dirToPlayer, playerPos, elapsedTime);
                 break;
+            case 'jetpack_raider':
+                this._aiJetpackRaider(dt, dist, dirToPlayer, playerPos, elapsedTime);
+                break;
             case 'perched_sniper':
                 this._aiPerchedSniper(dt, dist, dirToPlayer, playerPos, elapsedTime);
                 break;
@@ -1883,29 +2092,70 @@ export class Infantry extends Enemy {
             this.crossTargetZ = playerPos.z + (Math.random() < 0.5 ? -6 : 8) + (Math.random() - 0.5) * 3;
         }
 
+        // ジェットパック兵は低空ホバー。地上歩行バウンスを掛けず、脚と炎だけを揺らす。
+        if (this.airborne) {
+            const hover = Math.sin(elapsedTime * 6 + this.weavePhase) * 0.12;
+            this.group.position.y += ((this.jetpackBaseHeight + hover) - this.group.position.y) * Math.min(1, dt * 7);
+            this.leftLeg.rotation.x = 0;
+            this.rightLeg.rotation.x = 0;
+            this.leftLeg.rotation.z = -0.18 + Math.sin(elapsedTime * 8) * 0.08;
+            this.rightLeg.rotation.z = 0.18 + Math.cos(elapsedTime * 8) * 0.08;
+            if (this.leftLowerLeg) this.leftLowerLeg.rotation.z = -0.16 + Math.sin(elapsedTime * 7) * 0.06;
+            if (this.rightLowerLeg) this.rightLowerLeg.rotation.z = 0.16 + Math.cos(elapsedTime * 7) * 0.06;
+            if (this.jetFlames) {
+                const boost = this.jetpackBoostTimer > 0 ? 1.75 : 1.0;
+                this.jetFlames.forEach((flame, idx) => {
+                    const s = boost * (0.75 + Math.sin(elapsedTime * 18 + idx) * 0.18 + Math.random() * 0.18);
+                    flame.scale.set(0.85 * s, 1.15 * s, 0.85 * s);
+                    flame.material.opacity = THREE.MathUtils.clamp(0.55 + s * 0.18, 0.45, 0.95);
+                });
+            }
+            this._animateUpperBody(elapsedTime, Math.sin(elapsedTime * 8), true);
+            return;
+        }
+
         // 屋上配置スナイパーは静止 — 歩行アニメ・バウンス・ロールを行わず Y を固定
         if (this.perched) {
-            this.leftLeg.rotation.x = 0.05;
-            this.rightLeg.rotation.x = -0.05;
+            this.leftLeg.rotation.x = 0;
+            this.rightLeg.rotation.x = 0;
+            this.leftLeg.rotation.z = -0.08;
+            this.rightLeg.rotation.z = 0.08;
+            if (this.leftLowerLeg) this.leftLowerLeg.rotation.z = 0.05;
+            if (this.rightLowerLeg) this.rightLowerLeg.rotation.z = -0.05;
             this.group.position.y = this.perchY;
             this.group.rotation.z = 0;
             if (this.helmetMesh) this.helmetMesh.rotation.z = 0;
             if (this.headMesh) this.headMesh.rotation.z = 0;
+            this._animateUpperBody(elapsedTime, 0, true);
             return;
         }
 
         // 歩行アニメーション（Metal Slug 風の大袈裟な揺れ）
+        // モデルの前方はローカル +X なので、脚は Z 軸回転で前後に振る。
         const cycleSpeed = this.subType === 'knife' ? 22 : (this.subType === 'officer' ? 12 : (this.subType === 'juggernaut' ? 9 : 13));
         this.walkCycle += dt * cycleSpeed;
         const swing = Math.sin(this.walkCycle);
-        const bigSwing = swing * 0.65;        // 脚の振り幅をさらに誇張
-        this.leftLeg.rotation.x = bigSwing;
-        this.rightLeg.rotation.x = -bigSwing;
-        // 上下バウンス（脚が交互に着地するピッチ）
-        const bounce = Math.abs(Math.cos(this.walkCycle)) * 0.06;
+        const heavyScale = this.subType === 'juggernaut' ? 0.72 : 1.0;
+        const stride = (this.subType === 'knife' || this.subType === 'ninja') ? 0.46 : 0.34;
+        const legSwing = swing * stride * heavyScale;
+        this.leftLeg.rotation.x = 0;
+        this.rightLeg.rotation.x = 0;
+        this.leftLeg.rotation.z = -legSwing;
+        this.rightLeg.rotation.z = legSwing;
+
+        const leftPlant = Math.max(0, swing);
+        const rightPlant = Math.max(0, -swing);
+        if (this.leftLowerLeg) this.leftLowerLeg.rotation.z = leftPlant * 0.28 - rightPlant * 0.10;
+        if (this.rightLowerLeg) this.rightLowerLeg.rotation.z = rightPlant * -0.28 + leftPlant * 0.10;
+        if (this.leftBoot) this.leftBoot.rotation.z = leftPlant * 0.16 - rightPlant * 0.08;
+        if (this.rightBoot) this.rightBoot.rotation.z = rightPlant * -0.16 + leftPlant * 0.08;
+
+        // 上下バウンス（接地時は低く、足を振り抜く時だけ少し浮く）
+        const bounce = (1 - Math.abs(swing)) * 0.035 + Math.abs(Math.cos(this.walkCycle)) * 0.018;
         this.group.position.y = bounce;
         // 軽い左右ロール
-        this.group.rotation.z = Math.cos(this.walkCycle) * 0.04;
+        this.group.rotation.z = Math.cos(this.walkCycle) * 0.035 * heavyScale;
+        this._animateUpperBody(elapsedTime, swing);
         // ヘルメットの微小な揺れ
         if (this.helmetMesh) {
             this.helmetMesh.rotation.z = Math.sin(this.walkCycle * 0.5) * 0.025;
@@ -1913,6 +2163,34 @@ export class Infantry extends Enemy {
         if (this.headMesh) {
             this.headMesh.rotation.z = Math.sin(this.walkCycle * 0.5) * 0.02;
         }
+    }
+
+    _animateUpperBody(elapsedTime, swing = 0, steadyAim = false) {
+        const firingPulse = Math.max(0, 1 - (elapsedTime - this.lastFireTime) * 10);
+        const attackPose = this.aiState === 'attack' || this.aiState === 'charge' || steadyAim;
+        const armSwing = attackPose ? 0.08 : 0.20;
+        const recoil = attackPose ? firingPulse * 0.08 : 0;
+
+        if (this.leftArmMesh) {
+            this.leftArmMesh.rotation.z = -swing * armSwing - recoil;
+            this.leftArmMesh.rotation.x = attackPose ? -0.18 : Math.cos(this.walkCycle + Math.PI) * 0.08;
+        }
+        if (this.rightArmMesh) {
+            this.rightArmMesh.rotation.z = swing * armSwing + recoil;
+            this.rightArmMesh.rotation.x = attackPose ? 0.18 : Math.cos(this.walkCycle) * 0.08;
+        }
+        if (this.leftHandMesh) {
+            this.leftHandMesh.position.y = 0.72 + Math.cos(this.walkCycle + Math.PI) * (attackPose ? 0.015 : 0.045);
+        }
+        if (this.rightHandMesh) {
+            this.rightHandMesh.position.y = 0.72 + Math.cos(this.walkCycle) * (attackPose ? 0.015 : 0.045);
+        }
+
+        this.dynamicBits.forEach((bit, idx) => {
+            const wave = Math.sin(elapsedTime * 7.0 + bit.phase + idx * 0.7);
+            bit.mesh.rotation.z = bit.baseRotZ + wave * bit.amp;
+            bit.mesh.rotation.x = bit.baseRotX + Math.cos(elapsedTime * 5.5 + bit.phase) * bit.amp * 0.45;
+        });
     }
 
     // 射程を通る導線上を進みながら振る舞う共通ヘルパー。
@@ -2177,6 +2455,100 @@ export class Infantry extends Enemy {
             this.lastFireTime = elapsed;
             this._fireGrenadeCluster(playerPos);
         }
+    }
+
+    _aiJetpackRaider(dt, dist, dir, playerPos, elapsed) {
+        // 低空を横切り、短いブーストで射線を外しながら3連射と爆弾投下を行う。
+        this.aiState = dist > this.attackRange ? 'advance' : 'attack';
+        this.specialTimer += dt;
+        this.jetpackBombTimer += dt;
+        this.weavePhase += dt * 3.3;
+        this.jetpackBoostTimer = Math.max(0, this.jetpackBoostTimer - dt);
+
+        const d = (this._dirToCross || dir).clone();
+        const perp = new THREE.Vector3(-d.z, 0, d.x);
+        const orbit = Math.sin(this.weavePhase) * 0.9;
+        const rangeControl = dist > this.attackRange ? 1.05 : (dist < 7 ? -0.35 : 0.34);
+        let move = d.multiplyScalar(rangeControl).add(perp.clone().multiplyScalar(orbit));
+
+        if (this.specialTimer > 2.5) {
+            this.jetpackBoostTimer = 0.42;
+            this.specialTimer = 0;
+            const side = this.group.position.x < playerPos.x ? -1 : 1;
+            move = perp.multiplyScalar(side * 2.4).add(dir.clone().multiplyScalar(-0.2));
+        }
+
+        if (move.lengthSq() > 0.001) {
+            const speedScale = this.jetpackBoostTimer > 0 ? 1.85 : 0.82;
+            move.normalize().multiplyScalar(this.speed * speedScale * dt);
+            this.group.position.add(move);
+            this.group.rotation.z = THREE.MathUtils.clamp(-move.x * 1.7, -0.34, 0.34);
+        }
+
+        if (dist <= this.attackRange && elapsed - this.lastFireTime > this.fireRate && this.jetpackBurstShots <= 0) {
+            this.lastFireTime = elapsed;
+            this.jetpackBurstShots = 3;
+            this.jetpackBurstTimer = 0.02;
+        }
+
+        if (this.jetpackBurstShots > 0) {
+            this.jetpackBurstTimer -= dt;
+            if (this.jetpackBurstTimer <= 0) {
+                this._fireJetpackShot(playerPos);
+                this.jetpackBurstShots--;
+                this.jetpackBurstTimer = 0.16;
+            }
+        }
+
+        const abovePlayer = Math.abs(this.group.position.x - playerPos.x) < 5.5 && Math.abs(this.group.position.z - playerPos.z) < 9.0;
+        if (abovePlayer && this.jetpackBombTimer > 3.1) {
+            this.jetpackBombTimer = 0;
+            this._dropJetpackBomb(playerPos);
+        }
+    }
+
+    _fireJetpackShot(playerPos) {
+        const muzzlePos = this.group.position.clone();
+        muzzlePos.y += 0.78;
+        const target = playerPos.clone();
+        target.y += 1.0;
+        const dir = new THREE.Vector3().subVectors(target, muzzlePos);
+        dir.x += (Math.random() - 0.5) * 0.09;
+        dir.z += (Math.random() - 0.5) * 0.09;
+        dir.normalize();
+
+        const bullet = new Projectile(this.scene, {
+            position: muzzlePos,
+            direction: dir,
+            speed: 23,
+            damage: this.damage,
+            owner: 'enemy',
+            type: 'bullet',
+            maxDistance: 58,
+        });
+        this.projectiles.push(bullet);
+    }
+
+    _dropJetpackBomb(playerPos) {
+        const pos = this.group.position.clone();
+        pos.y += 0.25;
+        const towardPlayer = new THREE.Vector3().subVectors(playerPos, pos);
+        towardPlayer.y = 0;
+        if (towardPlayer.lengthSq() > 0.01) towardPlayer.normalize();
+        else towardPlayer.set(0, 0, 1);
+        const dropDir = new THREE.Vector3(towardPlayer.x * 0.22, -1, towardPlayer.z * 0.22).normalize();
+
+        const bomb = new Projectile(this.scene, {
+            position: pos,
+            direction: dropDir,
+            speed: 3.2,
+            damage: this.damage + 8,
+            owner: 'enemy',
+            type: 'bomb',
+            maxDistance: 45,
+            gravity: 18,
+        });
+        this.projectiles.push(bomb);
     }
 
     _fireFlame(playerPos) {

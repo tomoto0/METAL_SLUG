@@ -31,15 +31,14 @@ export class World {
         this.chunks = [];
         this.chunkSize = 30;
         this.lastChunkZ = -this.chunkSize;
-        // viewRange 90→75: 後半シーンで活きるチャンク数を抑え、毎フレームの描画
+        // viewRange 90→60: 後半シーンで活きるチャンク数を抑え、毎フレームの描画
         // メッシュ数 / シャドウキャスタ数を削減（点滅・重さの主要因）。
         // フォグ（main.js）が遠景を 70 付近で十分フェードさせるためポップインは目立たない。
-        // cleanupRange 40 維持。
-        this.viewRange = 75;
-        this.cleanupRange = 40;
+        this.viewRange = 60;
+        this.cleanupRange = 28;
         // 1 フレームあたりの最大 dispose チャンク数。前方生成の速さに対し追従できる
-        // よう 3 に引き上げ、後方プロップの滞留を防ぐ。
-        this.maxChunkDisposesPerFrame = 3;
+        // よう 4 に引き上げ、後方プロップの滞留を防ぐ。
+        this.maxChunkDisposesPerFrame = 4;
 
         this.bgLayers = [];
         this.props = [];
@@ -458,7 +457,7 @@ export class World {
             blending: THREE.AdditiveBlending,
         });
         const shimmerGeo = new THREE.PlaneGeometry(2.0, 0.8);
-        for (let i = 0; i < 30; i++) {
+        for (let i = 0; i < 16; i++) {
             const m = new THREE.Mesh(shimmerGeo, shimmerMat);
             m.rotation.x = -Math.PI * 0.32;
             const lateral = (Math.random() - 0.5) * 70;
@@ -484,7 +483,7 @@ export class World {
             fog: false,
         });
         const sandGeo = new THREE.SphereGeometry(0.04, 4, 3);
-        for (let i = 0; i < 50; i++) {
+        for (let i = 0; i < 28; i++) {
             const grain = new THREE.Mesh(sandGeo, sandMat);
             grain.position.set(
                 (Math.random() - 0.5) * 60,
@@ -1490,6 +1489,62 @@ export class World {
         );
         jarNeck.position.set(w * 0.1, 0.8, d / 2 + 0.35);
         group.add(jarNeck);
+
+        // === 中東風 装飾デコレーション（小ぶり版） ===
+        // 物干しロープ（バルコニー脇）
+        if (Math.random() > 0.4) {
+            this._addClothesline(
+                group,
+                -w / 2 + 0.5, w / 2 - 0.5,
+                h - 0.5,
+                d / 2 + 0.16,
+                { count: 4, sag: 0.14 }
+            );
+        }
+        // 壁を這う蔓植物
+        if (Math.random() > 0.55) {
+            this._addHangingVines(
+                group, -w * 0.35, h * 0.85, d / 2 + 0.05,
+                1.2 + Math.random() * 0.6,
+                { stemCount: 2, flowerColor: 0xE85A8A }
+            );
+        }
+        // 屋根上の煙突
+        if (Math.random() > 0.65) {
+            this._addRoofChimney(
+                group,
+                w * 0.32 + (Math.random() - 0.5) * 0.4,
+                h + 2.2 + 0.3,
+                (Math.random() - 0.5) * d * 0.4
+            );
+        }
+        // 屋根上の鉢植え追加
+        if (Math.random() > 0.45) {
+            this._addPotPlantCluster(
+                group,
+                -w * 0.25 + (Math.random() - 0.5) * 0.5,
+                h + 2.2 + 0.3,
+                d / 2 - 0.3,
+                2
+            );
+        }
+        // ペナント紐
+        if (Math.random() > 0.5) {
+            this._addPennantString(
+                group,
+                -w / 2, h + 0.4, d / 2 - 0.1,
+                w / 2 - 0.3, h + 2.2 + 0.6, d / 2 + 0.2,
+                6
+            );
+        }
+        // 壁掛けタペストリー（バルコニー脇など）
+        if (Math.random() > 0.6) {
+            this._addWallTapestry(
+                group,
+                w * 0.3, 1.5, d / 2 + 0.11,
+                0.7, 1.1
+            );
+        }
     }
 
     /* --- バザール（縞テント屋台） --- */
@@ -2385,50 +2440,108 @@ export class World {
         this.bgLayers.push(layer);
     }
 
+    /** ヤシの木 — 節のある曲がった幹 + 葉軸＋小葉で表現したフロンド */
     _buildPalmTree(group) {
-        // 幹（曲がった）
-        const trunkMat = new THREE.MeshStandardMaterial({ color: 0x8B6914, roughness: 0.9 });
-        const segments = 4;
+        // 幹（節リング付き、ゆるく曲がる）
+        const trunkMat = new THREE.MeshStandardMaterial({ color: 0x7A5A2E, roughness: 0.95 });
+        const ringMat = new THREE.MeshStandardMaterial({ color: 0x4A3010, roughness: 1.0 });
+        const segments = 5;
         let prevY = 0;
         let prevX = 0;
-        const lean = (Math.random() - 0.5) * 0.4;
+        const lean = (Math.random() - 0.5) * 0.45;
         for (let s = 0; s < segments; s++) {
-            const segH = 1.5 + Math.random() * 0.5;
-            const topR = 0.12 - s * 0.02;
-            const botR = 0.2 - s * 0.02;
+            const segH = 1.5 + Math.random() * 0.45;
+            const topR = Math.max(0.16 - s * 0.022, 0.09);
+            const botR = Math.max(0.22 - s * 0.022, 0.11);
+            const cx = prevX + lean * s * 0.32;
             const seg = new THREE.Mesh(
-                new THREE.CylinderGeometry(Math.max(topR, 0.06), Math.max(botR, 0.08), segH, 6),
+                new THREE.CylinderGeometry(topR, botR, segH, 8),
                 trunkMat
             );
-            seg.position.set(prevX + lean * s * 0.3, prevY + segH / 2, 0);
-            seg.rotation.z = lean * s * 0.15;
+            seg.position.set(cx, prevY + segH / 2, 0);
+            seg.rotation.z = lean * s * 0.16;
             group.add(seg);
-            prevY += segH;
-            prevX += lean * 0.3;
-        }
 
-        // 葉
-        const leafMat = new THREE.MeshStandardMaterial({
-            color: 0x2D5A1E, roughness: 0.8, side: THREE.DoubleSide,
-        });
-        for (let i = 0; i < 7; i++) {
-            const leafGeo = new THREE.PlaneGeometry(0.7, 2.8);
-            const leaf = new THREE.Mesh(leafGeo, leafMat);
-            const angle = (i / 7) * Math.PI * 2;
-            leaf.position.set(
-                prevX + Math.cos(angle) * 0.4,
-                prevY + 0.5 + Math.random() * 0.3,
-                Math.sin(angle) * 0.4
+            // 節リング（ヤシ特有の節）
+            const ring = new THREE.Mesh(
+                new THREE.TorusGeometry(botR + 0.015, 0.025, 4, 10),
+                ringMat
             );
-            leaf.rotation.set(0.7 + Math.random() * 0.3, angle, 0);
-            group.add(leaf);
+            ring.position.set(cx - lean * 0.1, prevY + 0.04, 0);
+            ring.rotation.x = Math.PI / 2;
+            group.add(ring);
+
+            prevY += segH;
+            prevX += lean * 0.32;
+        }
+        const topX = prevX + lean * 0.4;
+        const topY = prevY;
+
+        // 王冠（葉柄基部）
+        const crown = new THREE.Mesh(
+            new THREE.SphereGeometry(0.24, 10, 6),
+            new THREE.MeshStandardMaterial({ color: 0x6A4A20, roughness: 0.9 })
+        );
+        crown.position.set(topX, topY + 0.05, 0);
+        crown.scale.set(1, 0.55, 1);
+        group.add(crown);
+
+        // フロンド（葉軸 + 両側に小葉）
+        const leafColors = [0x2F6020, 0x3F7A28, 0x357024];
+        const rachisMat = new THREE.MeshStandardMaterial({ color: 0x4A6A2A, roughness: 0.9 });
+        const fronds = 9 + Math.floor(Math.random() * 3);
+        const baseDroop = 0.55 + Math.random() * 0.2;
+        const leafletGeo = new THREE.PlaneGeometry(0.16, 0.7);
+        for (let i = 0; i < fronds; i++) {
+            const angle = (i / fronds) * Math.PI * 2 + Math.random() * 0.18;
+            const droop = baseDroop + (Math.random() - 0.5) * 0.15;
+            const leafMat = new THREE.MeshStandardMaterial({
+                color: leafColors[i % leafColors.length],
+                roughness: 0.85, side: THREE.DoubleSide, flatShading: true,
+            });
+
+            const frond = new THREE.Group();
+            const rachisLen = 2.4 + Math.random() * 0.5;
+
+            // 葉軸（外向きに伸びて先端で垂れる）
+            const rachis = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.025, 0.045, rachisLen, 5),
+                rachisMat
+            );
+            rachis.rotation.z = -Math.PI / 2;
+            rachis.position.set(rachisLen * 0.5, 0, 0);
+            // 葉軸を少し下方に傾ける
+            const rachisPivot = new THREE.Group();
+            rachisPivot.add(rachis);
+            rachisPivot.rotation.z = -droop * 0.4;
+            frond.add(rachisPivot);
+
+            // 小葉（左右ペアで葉軸に沿って配置）
+            const pairs = 7;
+            for (let k = 1; k <= pairs; k++) {
+                const t = k / (pairs + 1);
+                const along = t * rachisLen;
+                const sag = -Math.sin(t * Math.PI * 0.6) * droop * rachisLen * 0.45;
+                const leafLen = 0.85 - t * 0.35;
+                for (const side of [1, -1]) {
+                    const leaflet = new THREE.Mesh(leafletGeo, leafMat);
+                    leaflet.scale.y = leafLen / 0.7;
+                    leaflet.position.set(along, sag, side * 0.04);
+                    leaflet.rotation.set(side * 0.55, 0, -Math.PI / 2 - 0.15 * side);
+                    frond.add(leaflet);
+                }
+            }
+
+            frond.position.set(topX, topY + 0.18, 0);
+            frond.rotation.y = angle;
+            group.add(frond);
         }
 
         // 実のバリエーション： ココナッツ / ナツメヤシ（濃茶） / オレンジの房
         const fruitVariant = Math.random();
         if (fruitVariant > 0.3) {
             if (fruitVariant > 0.7) {
-                // オレンジの房（コンセプト画像風）
+                // オレンジの房
                 for (let c = 0; c < 2; c++) {
                     const ca = (c / 2) * Math.PI * 2 + Math.random() * 0.5;
                     for (let f = 0; f < 7; f++) {
@@ -2440,15 +2553,15 @@ export class World {
                             })
                         );
                         orange.position.set(
-                            prevX + Math.cos(ca) * 0.3 + (Math.random() - 0.5) * 0.15,
-                            prevY - 0.15 - Math.random() * 0.35,
+                            topX + Math.cos(ca) * 0.3 + (Math.random() - 0.5) * 0.15,
+                            topY - 0.15 - Math.random() * 0.35,
                             Math.sin(ca) * 0.3 + (Math.random() - 0.5) * 0.15
                         );
                         group.add(orange);
                     }
                 }
             } else if (fruitVariant > 0.5) {
-                // ナツメヤシの房（小さな濃茶の実がびっしり）
+                // ナツメヤシの房
                 for (let c = 0; c < 3; c++) {
                     const ca = (c / 3) * Math.PI * 2 + Math.random() * 0.3;
                     for (let f = 0; f < 10; f++) {
@@ -2457,29 +2570,30 @@ export class World {
                             new THREE.MeshStandardMaterial({ color: 0x5A2E12, roughness: 0.85 })
                         );
                         date.position.set(
-                            prevX + Math.cos(ca) * 0.25 + (Math.random() - 0.5) * 0.12,
-                            prevY - 0.1 - Math.random() * 0.4,
+                            topX + Math.cos(ca) * 0.25 + (Math.random() - 0.5) * 0.12,
+                            topY - 0.1 - Math.random() * 0.4,
                             Math.sin(ca) * 0.25 + (Math.random() - 0.5) * 0.12
                         );
                         group.add(date);
                     }
                 }
             } else {
-                // ココナッツ（デフォルト）
+                // ココナッツ
                 for (let c = 0; c < 3; c++) {
                     const coconut = new THREE.Mesh(
-                        new THREE.SphereGeometry(0.12, 6, 4),
+                        new THREE.SphereGeometry(0.13, 6, 4),
                         new THREE.MeshStandardMaterial({ color: 0x5A3A1A, roughness: 0.9 })
                     );
                     coconut.position.set(
-                        prevX + (Math.random() - 0.5) * 0.3,
-                        prevY - 0.2,
+                        topX + (Math.random() - 0.5) * 0.3,
+                        topY - 0.2,
                         (Math.random() - 0.5) * 0.3
                     );
                     group.add(coconut);
                 }
             }
         }
+        return group;
     }
 
     _buildPowerPole(group) {
@@ -4036,6 +4150,72 @@ export class World {
             }
         }
 
+        // === 中東風 装飾デコレーション ===
+        // 物干しロープ（屋根下、正面）— 50% で配置
+        if (Math.random() > 0.4) {
+            const ropeY = h + 0.05 - 0.4 - Math.random() * 0.3;
+            const margin = 0.6;
+            this._addClothesline(
+                group,
+                -w / 2 + margin,
+                w / 2 - margin,
+                ropeY,
+                d / 2 + 0.18,
+                { count: 4 + Math.floor(Math.random() * 3), sag: 0.18 }
+            );
+        }
+        // 蔓植物（壁を這う）— 30% で配置
+        if (Math.random() > 0.5) {
+            const vineX = (Math.random() - 0.5) * (w - 1.2);
+            this._addHangingVines(
+                group, vineX, h + 0.4, d / 2 + 0.06,
+                1.4 + Math.random() * 1.0,
+                { stemCount: 2 + Math.floor(Math.random() * 2) }
+            );
+        }
+        // ペナント紐（屋上から正面下方向に斜めに）— 40% で配置
+        if (Math.random() > 0.5) {
+            this._addPennantString(
+                group,
+                -w / 2 + 0.2, h + 0.6, d / 2 - 0.1,
+                w / 2 - 0.2, h + 0.2 + Math.random() * 0.4, d / 2 + 0.4,
+                7 + Math.floor(Math.random() * 3)
+            );
+        }
+        // 屋上の煙突（35% で配置）
+        if (Math.random() > 0.6) {
+            const cx = (Math.random() - 0.5) * w * 0.5;
+            const cz = (Math.random() - 0.5) * d * 0.4;
+            this._addRoofChimney(group, cx, h + 0.4, cz);
+        }
+        // 屋上の鉢植え（45% で配置）
+        if (Math.random() > 0.5) {
+            const px = (Math.random() - 0.5) * w * 0.5;
+            this._addPotPlantCluster(
+                group, px, h + 0.4, -d / 2 + 0.4 + Math.random() * 0.3,
+                2 + Math.floor(Math.random() * 2)
+            );
+        }
+        // 軒先の布屋根（35% で配置、ドアの反対側）
+        if (Math.random() > 0.6) {
+            const cnx = -doorX * 0.6 + (Math.random() - 0.5) * 1.2;
+            this._addFabricCanopy(
+                group,
+                cnx, 2.3 + Math.random() * 0.4, d / 2 - 0.05,
+                1.6 + Math.random() * 0.5,
+                0.85,
+                [0xD66B3A, 0x4A8DBC, 0xCB3E7A, 0x6FAA3C][Math.floor(Math.random() * 4)]
+            );
+        }
+        // 壁掛けタペストリー（25% で配置）
+        if (Math.random() > 0.7) {
+            const tx = (Math.random() - 0.5) * (w - 1.6);
+            this._addWallTapestry(
+                group, tx, 1.6 + Math.random() * 0.4, d / 2 + 0.12,
+                0.85, 1.3
+            );
+        }
+
         return group;
     }
 
@@ -4087,6 +4267,411 @@ export class World {
         );
         mullV.position.set(x, y, zFront + 0.10);
         group.add(mullV);
+    }
+
+    /* ========================================================
+     *  中東風 装飾ヘルパー（建物に追加する小道具群）
+     *    - 物干し竿/ロープ（カラフルな洗濯物）
+     *    - 蔓植物（壁を這う緑）
+     *    - ペナント紐（三角旗の連鎖）
+     *    - 鉢植え／植木壺
+     *    - 煙突＋小さな煙の塊
+     *    - 屋根上の物干しラック
+     *    - 軒先の布屋根（テント風）
+     *    - 壁掛け絨毯/タペストリー
+     * ======================================================== */
+
+    /** 物干しロープ + 吊り下がる洗濯物。建物の正面/側面に配置 */
+    _addClothesline(group, x1, x2, y, z, opts = {}) {
+        const cg = new THREE.Group();
+        const ropeMat = new THREE.MeshStandardMaterial({ color: 0x8C7050, roughness: 0.95 });
+        const length = Math.abs(x2 - x1);
+        const sag = opts.sag || 0.18;
+        // 中央のたるみを表現するため、3区間で結ぶ
+        const segs = 3;
+        for (let i = 0; i < segs; i++) {
+            const t1 = i / segs;
+            const t2 = (i + 1) / segs;
+            const sx1 = x1 + (x2 - x1) * t1;
+            const sx2 = x1 + (x2 - x1) * t2;
+            const sy1 = y - sag * Math.sin(Math.PI * t1);
+            const sy2 = y - sag * Math.sin(Math.PI * t2);
+            const segLen = Math.hypot(sx2 - sx1, sy2 - sy1);
+            const rope = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.018, 0.018, segLen, 4),
+                ropeMat
+            );
+            rope.position.set((sx1 + sx2) / 2, (sy1 + sy2) / 2, z);
+            rope.rotation.z = Math.atan2(sy2 - sy1, sx2 - sx1) - Math.PI / 2;
+            cg.add(rope);
+        }
+        // 物干しの両端ポール（壁に固定するブラケット風）
+        const bracketMat = new THREE.MeshStandardMaterial({ color: 0x5A3A1A, roughness: 0.9 });
+        for (const px of [x1, x2]) {
+            const bracket = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.04, 0.05, 0.45, 5),
+                bracketMat
+            );
+            bracket.rotation.z = Math.PI / 2;
+            bracket.position.set(px, y, z - 0.18);
+            cg.add(bracket);
+        }
+        // 洗濯物（カラフルな布、ランダムサイズ）
+        const clothColors = [0xD8543A, 0x3A6FA0, 0xE8B940, 0xF0DCB0, 0x6F8C3A, 0xBC4582, 0xD68B40, 0x4A8DA8];
+        const itemCount = opts.count || 5;
+        for (let i = 0; i < itemCount; i++) {
+            const t = (i + 0.5) / itemCount;
+            const cx = x1 + (x2 - x1) * t;
+            const cy = y - sag * Math.sin(Math.PI * t);
+            const cw = 0.32 + Math.random() * 0.22;
+            const ch = 0.55 + Math.random() * 0.35;
+            const color = clothColors[Math.floor(Math.random() * clothColors.length)];
+            const cloth = new THREE.Mesh(
+                new THREE.PlaneGeometry(cw, ch),
+                new THREE.MeshStandardMaterial({
+                    color, roughness: 0.92, side: THREE.DoubleSide,
+                })
+            );
+            cloth.position.set(cx, cy - ch / 2 - 0.04, z);
+            cloth.rotation.z = (Math.random() - 0.5) * 0.18;
+            // 風になびく感じで Y 軸まわりに少しひねる
+            cloth.rotation.y = (Math.random() - 0.5) * 0.4;
+            cg.add(cloth);
+            // 洗濯ばさみ風の小さな点
+            const peg = new THREE.Mesh(
+                new THREE.BoxGeometry(0.06, 0.04, 0.04),
+                bracketMat
+            );
+            peg.position.set(cx, cy + 0.02, z + 0.02);
+            cg.add(peg);
+        }
+        group.add(cg);
+        return cg;
+    }
+
+    /** 壁を這う蔓植物（葉のクラスタ） */
+    _addHangingVines(group, x, yTop, z, span = 1.8, opts = {}) {
+        const vg = new THREE.Group();
+        const stemMat = new THREE.MeshStandardMaterial({ color: 0x4A6B2A, roughness: 0.9 });
+        const leafMatA = new THREE.MeshStandardMaterial({
+            color: 0x5C8A3A, roughness: 0.85, side: THREE.DoubleSide,
+        });
+        const leafMatB = new THREE.MeshStandardMaterial({
+            color: 0x3A6A28, roughness: 0.88, side: THREE.DoubleSide,
+        });
+        const flowerMat = new THREE.MeshStandardMaterial({
+            color: opts.flowerColor || 0xC85A8A, roughness: 0.7, emissive: 0x2A0A18, emissiveIntensity: 0.2,
+        });
+        // 主茎（蛇行する垂直線）
+        const stemCount = opts.stemCount || 3;
+        for (let s = 0; s < stemCount; s++) {
+            const sx = x + (s - (stemCount - 1) / 2) * 0.35;
+            const sl = span * (0.7 + Math.random() * 0.5);
+            const stem = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.025, 0.02, sl, 4),
+                stemMat
+            );
+            stem.position.set(sx, yTop - sl / 2, z);
+            stem.rotation.z = (Math.random() - 0.5) * 0.15;
+            vg.add(stem);
+            // 葉のクラスタ
+            const leafCount = Math.floor(sl * 5);
+            for (let l = 0; l < leafCount; l++) {
+                const t = l / leafCount;
+                const ly = yTop - sl * t;
+                const leaf = new THREE.Mesh(
+                    new THREE.PlaneGeometry(0.18, 0.14),
+                    Math.random() > 0.5 ? leafMatA : leafMatB
+                );
+                const lateral = (Math.random() - 0.5) * 0.5;
+                leaf.position.set(sx + lateral, ly, z + 0.04);
+                leaf.rotation.z = (Math.random() - 0.5) * 1.2;
+                leaf.rotation.y = (Math.random() - 0.5) * 0.6;
+                vg.add(leaf);
+            }
+            // 末端の小さな花（確率）
+            if (Math.random() > 0.4) {
+                const flower = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.06, 6, 4),
+                    flowerMat
+                );
+                flower.position.set(sx + (Math.random() - 0.5) * 0.2, yTop - sl + 0.05, z + 0.06);
+                vg.add(flower);
+            }
+        }
+        group.add(vg);
+        return vg;
+    }
+
+    /** 三角ペナント紐（屋上から軒下へ斜めに張る色とりどりの旗） */
+    _addPennantString(group, ax, ay, az, bx, by, bz, count = 8) {
+        const pg = new THREE.Group();
+        const ropeMat = new THREE.MeshStandardMaterial({ color: 0x6A4A28, roughness: 0.9 });
+        const dx = bx - ax, dy = by - ay, dz = bz - az;
+        const len = Math.hypot(dx, dy, dz);
+        // ロープ本体
+        const rope = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.015, 0.015, len, 4),
+            ropeMat
+        );
+        rope.position.set((ax + bx) / 2, (ay + by) / 2 - 0.1, (az + bz) / 2);
+        rope.rotation.z = Math.atan2(dy, dx) - Math.PI / 2;
+        rope.rotation.x = Math.atan2(dz, Math.hypot(dx, dy));
+        pg.add(rope);
+        // 三角ペナント
+        const pennantColors = [0xE84A2A, 0xE8C040, 0x4A8DBC, 0x6FAA3C, 0xD8528A, 0xEEDCAA];
+        for (let i = 0; i < count; i++) {
+            const t = (i + 0.5) / count;
+            const cx = ax + dx * t;
+            const cy = ay + dy * t - 0.1 - 0.05 * Math.sin(Math.PI * t); // 少したるみ
+            const cz = az + dz * t;
+            const color = pennantColors[i % pennantColors.length];
+            const flagShape = new THREE.Shape();
+            flagShape.moveTo(0, 0);
+            flagShape.lineTo(0.22, -0.05);
+            flagShape.lineTo(0, -0.30);
+            const flagGeo = new THREE.ShapeGeometry(flagShape);
+            const flag = new THREE.Mesh(
+                flagGeo,
+                new THREE.MeshStandardMaterial({
+                    color, roughness: 0.85, side: THREE.DoubleSide,
+                })
+            );
+            flag.position.set(cx, cy, cz + 0.02);
+            flag.rotation.z = Math.atan2(dy, dx) + Math.PI;
+            flag.rotation.y = (Math.random() - 0.5) * 0.5;
+            pg.add(flag);
+        }
+        group.add(pg);
+        return pg;
+    }
+
+    /** 屋上の鉢植えクラスタ（複数の壺＋緑/花） */
+    _addPotPlantCluster(group, cx, cy, cz, count = 3) {
+        const pg = new THREE.Group();
+        const potColors = [0x8B4A22, 0x7A4018, 0xA66A38, 0x6A2E10];
+        const greenA = new THREE.MeshStandardMaterial({ color: 0x4A7A2A, roughness: 0.9 });
+        const greenB = new THREE.MeshStandardMaterial({ color: 0x6FAA3C, roughness: 0.85 });
+        const flowerMat = new THREE.MeshStandardMaterial({
+            color: 0xE85A40, roughness: 0.7,
+        });
+        for (let i = 0; i < count; i++) {
+            const r = 0.16 + Math.random() * 0.10;
+            const ph = 0.32 + Math.random() * 0.14;
+            const ox = (i - (count - 1) / 2) * 0.42 + (Math.random() - 0.5) * 0.1;
+            const oz = (Math.random() - 0.5) * 0.18;
+            const pot = new THREE.Mesh(
+                new THREE.CylinderGeometry(r * 0.85, r, ph, 8),
+                new THREE.MeshStandardMaterial({
+                    color: potColors[Math.floor(Math.random() * potColors.length)],
+                    roughness: 0.92,
+                })
+            );
+            pot.position.set(cx + ox, cy + ph / 2, cz + oz);
+            pg.add(pot);
+            // 鉢の縁
+            const rim = new THREE.Mesh(
+                new THREE.CylinderGeometry(r * 0.92, r * 0.85, 0.06, 8),
+                new THREE.MeshStandardMaterial({ color: 0x4A2A12, roughness: 0.95 })
+            );
+            rim.position.set(cx + ox, cy + ph - 0.02, cz + oz);
+            pg.add(rim);
+            // 葉/植物
+            const leaf = new THREE.Mesh(
+                new THREE.SphereGeometry(r * 1.2, 8, 6),
+                Math.random() > 0.5 ? greenA : greenB
+            );
+            leaf.scale.set(1, 0.7 + Math.random() * 0.3, 1);
+            leaf.position.set(cx + ox, cy + ph + r * 0.6, cz + oz);
+            pg.add(leaf);
+            // ところどころ花
+            if (Math.random() > 0.55) {
+                for (let f = 0; f < 3; f++) {
+                    const flower = new THREE.Mesh(
+                        new THREE.SphereGeometry(0.05, 5, 4),
+                        flowerMat
+                    );
+                    flower.position.set(
+                        cx + ox + (Math.random() - 0.5) * r * 1.4,
+                        cy + ph + r * 0.6 + (Math.random() - 0.5) * r * 0.6,
+                        cz + oz + (Math.random() - 0.5) * r * 1.4
+                    );
+                    pg.add(flower);
+                }
+            }
+        }
+        group.add(pg);
+        return pg;
+    }
+
+    /** 屋上の煙突（小型レンガ煙突＋静止煙の塊） */
+    _addRoofChimney(group, x, baseY, z) {
+        const cg = new THREE.Group();
+        const brickMat = new THREE.MeshStandardMaterial({ color: 0x9A5A38, roughness: 0.95 });
+        const brickDk = new THREE.MeshStandardMaterial({ color: 0x6A3A20, roughness: 0.97 });
+        const w = 0.42, d = 0.42, h = 0.95 + Math.random() * 0.4;
+        const stack = new THREE.Mesh(
+            new THREE.BoxGeometry(w, h, d), brickMat
+        );
+        stack.position.set(x, baseY + h / 2, z);
+        cg.add(stack);
+        // レンガの目地（横線）
+        for (let r = 0; r < 4; r++) {
+            const line = new THREE.Mesh(
+                new THREE.BoxGeometry(w + 0.02, 0.03, d + 0.02), brickDk
+            );
+            line.position.set(x, baseY + 0.18 + r * 0.22, z);
+            cg.add(line);
+        }
+        // 煙突の口（暗い穴）
+        const cap = new THREE.Mesh(
+            new THREE.BoxGeometry(w + 0.08, 0.08, d + 0.08), brickDk
+        );
+        cap.position.set(x, baseY + h + 0.04, z);
+        cg.add(cap);
+        const hole = new THREE.Mesh(
+            new THREE.BoxGeometry(w * 0.5, 0.05, d * 0.5),
+            new THREE.MeshStandardMaterial({ color: 0x111111 })
+        );
+        hole.position.set(x, baseY + h + 0.06, z);
+        cg.add(hole);
+        // 静止煙（半透明の球を3つ重ねる）
+        const smokeMat = new THREE.MeshStandardMaterial({
+            color: 0xC8C0B0, transparent: true, opacity: 0.55, roughness: 1.0,
+        });
+        for (let s = 0; s < 3; s++) {
+            const puff = new THREE.Mesh(
+                new THREE.SphereGeometry(0.18 + s * 0.06, 6, 5),
+                smokeMat
+            );
+            puff.position.set(
+                x + (Math.random() - 0.5) * 0.12 + s * 0.06,
+                baseY + h + 0.25 + s * 0.22,
+                z + (Math.random() - 0.5) * 0.12
+            );
+            cg.add(puff);
+        }
+        group.add(cg);
+        return cg;
+    }
+
+    /** 軒先の布屋根（テント風の柔らかい布、両端は柱で支える） */
+    _addFabricCanopy(group, cx, cy, cz, w = 1.8, d = 0.9, color = 0xD66B3A) {
+        const cg = new THREE.Group();
+        const fabricMat = new THREE.MeshStandardMaterial({
+            color, roughness: 0.92, side: THREE.DoubleSide,
+        });
+        const trimMat = new THREE.MeshStandardMaterial({
+            color: 0xE8C870, roughness: 0.85, side: THREE.DoubleSide,
+        });
+        const poleMat = new THREE.MeshStandardMaterial({ color: 0x5A3A1A, roughness: 0.92 });
+        // 屋根布（少したわむように 3 セグメント）
+        for (let i = 0; i < 3; i++) {
+            const t1 = i / 3;
+            const t2 = (i + 1) / 3;
+            const sag1 = -0.08 * Math.sin(Math.PI * t1);
+            const sag2 = -0.08 * Math.sin(Math.PI * t2);
+            const segW = w / 3;
+            const seg = new THREE.Mesh(
+                new THREE.PlaneGeometry(segW + 0.005, d),
+                fabricMat
+            );
+            seg.position.set(
+                cx - w / 2 + segW * (i + 0.5),
+                cy + (sag1 + sag2) / 2,
+                cz + d / 2
+            );
+            seg.rotation.x = -Math.PI / 2 - 0.2 + (sag2 - sag1) * 1.5;
+            cg.add(seg);
+        }
+        // 縞模様の縁取り（前縁にだけ細い帯）
+        const trim = new THREE.Mesh(
+            new THREE.BoxGeometry(w, 0.05, 0.08),
+            trimMat
+        );
+        trim.position.set(cx, cy - 0.05, cz + d + 0.02);
+        cg.add(trim);
+        // スカロップ（波状の前縁）
+        const scallopCount = Math.floor(w / 0.3);
+        for (let s = 0; s < scallopCount; s++) {
+            const sc = new THREE.Mesh(
+                new THREE.ConeGeometry(0.15, 0.22, 3, 1),
+                fabricMat
+            );
+            sc.position.set(
+                cx - w / 2 + 0.15 + s * (w / scallopCount),
+                cy - 0.18,
+                cz + d + 0.04
+            );
+            sc.rotation.x = Math.PI;
+            sc.scale.set(1, 1, 0.3);
+            cg.add(sc);
+        }
+        // 前縁の支柱
+        for (const sx of [-1, 1]) {
+            const pole = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.04, 0.05, 1.4, 5),
+                poleMat
+            );
+            pole.position.set(cx + sx * w / 2, cy - 0.7, cz + d);
+            cg.add(pole);
+        }
+        group.add(cg);
+        return cg;
+    }
+
+    /** 壁掛けタペストリー（中東モチーフのカラフルな織物） */
+    _addWallTapestry(group, x, y, z, w = 0.9, h = 1.4) {
+        const tg = new THREE.Group();
+        // 5 色の縞模様で「絨毯」感を出す
+        const stripeColors = [0xB23A2A, 0x2E5F8C, 0xE2B040, 0xCFB890, 0x6A2E1A, 0x3A6F4A];
+        const stripeCount = 7;
+        const stripeH = h / stripeCount;
+        for (let i = 0; i < stripeCount; i++) {
+            const color = stripeColors[(i * 2) % stripeColors.length];
+            const stripe = new THREE.Mesh(
+                new THREE.PlaneGeometry(w, stripeH * 0.96),
+                new THREE.MeshStandardMaterial({ color, roughness: 0.92, side: THREE.DoubleSide })
+            );
+            stripe.position.set(x, y + h / 2 - stripeH * (i + 0.5), z);
+            tg.add(stripe);
+            // 細かい菱形パターン（小さな点を中央に配置）
+            if (i % 2 === 1) {
+                const diamondMat = new THREE.MeshBasicMaterial({ color: 0xEEDCAA });
+                const dCount = Math.max(2, Math.floor(w / 0.18));
+                for (let d = 0; d < dCount; d++) {
+                    const dx = -w / 2 + 0.12 + d * (w - 0.24) / Math.max(dCount - 1, 1);
+                    const diamond = new THREE.Mesh(
+                        new THREE.PlaneGeometry(0.06, 0.06),
+                        diamondMat
+                    );
+                    diamond.rotation.z = Math.PI / 4;
+                    diamond.position.set(x + dx, y + h / 2 - stripeH * (i + 0.5), z + 0.005);
+                    tg.add(diamond);
+                }
+            }
+        }
+        // 上縁の吊り棒
+        const rod = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.025, 0.025, w + 0.18, 5),
+            new THREE.MeshStandardMaterial({ color: 0x5A3A1A, roughness: 0.9 })
+        );
+        rod.rotation.z = Math.PI / 2;
+        rod.position.set(x, y + h / 2 + 0.04, z + 0.015);
+        tg.add(rod);
+        // 房（下端のフリンジ）
+        const fringeMat = new THREE.MeshStandardMaterial({ color: 0xEEDCAA, roughness: 0.9 });
+        for (let f = 0; f < 8; f++) {
+            const fx = -w / 2 + 0.06 + f * (w - 0.12) / 7;
+            const tassel = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.012, 0.012, 0.08, 4),
+                fringeMat
+            );
+            tassel.position.set(x + fx, y - h / 2 - 0.04, z + 0.005);
+            tg.add(tassel);
+        }
+        group.add(tg);
+        return tg;
     }
 
     /** 装飾された石壁（コンセプト画像中央右の彫刻入りの壁） */
@@ -4304,6 +4889,58 @@ export class World {
                 d / 2 + 0.05
             );
             group.add(blot);
+        }
+
+        // === 中東風 装飾 ===
+        // 蔓植物（壁を這う）— 強めに表現
+        if (Math.random() > 0.3) {
+            this._addHangingVines(
+                group,
+                -w / 2 + 0.6 + Math.random() * 0.6,
+                h - 0.3,
+                d / 2 + 0.06,
+                2.0 + Math.random() * 1.0,
+                { stemCount: 3, flowerColor: 0xE85A2A }
+            );
+        }
+        if (Math.random() > 0.4) {
+            this._addHangingVines(
+                group,
+                w / 2 - 0.6 - Math.random() * 0.6,
+                h - 0.3,
+                d / 2 + 0.06,
+                1.6 + Math.random() * 1.2,
+                { stemCount: 2, flowerColor: 0xC85A8A }
+            );
+        }
+        // ペナント紐（壁の上端から斜めに）
+        if (Math.random() > 0.5) {
+            this._addPennantString(
+                group,
+                -w / 2 + 0.2, h + 0.15, d / 2 - 0.05,
+                w / 2 - 0.2, h - 0.6 + Math.random() * 0.4, d / 2 + 0.3,
+                8 + Math.floor(Math.random() * 3)
+            );
+        }
+        // 物干しロープ（壁中段に水平）
+        if (Math.random() > 0.55) {
+            this._addClothesline(
+                group,
+                -w / 2 + 0.5, w / 2 - 0.5,
+                h * 0.55,
+                d / 2 + 0.15,
+                { count: 5, sag: 0.16 }
+            );
+        }
+        // 壁掛けタペストリー
+        if (Math.random() > 0.45) {
+            this._addWallTapestry(
+                group,
+                (Math.random() - 0.5) * (w - 1.4),
+                h * 0.6,
+                d / 2 + 0.10,
+                0.95, 1.5
+            );
         }
 
         return group;
@@ -5177,6 +5814,26 @@ export class World {
             chunk.objects.push(tree);
             tag(tree, 'destructible', 0.8);
         }
+        // 路傍のヤシの木（オアシス的に時々群生）
+        if (Math.random() > 0.5) {
+            const side = Math.random() > 0.5 ? 1 : -1;
+            const cluster = Math.random() > 0.7 ? 2 + Math.floor(Math.random() * 2) : 1;
+            const baseZ = startZ + Math.random() * this.chunkSize;
+            const baseX = side * (7.5 + Math.random() * 3.5);
+            for (let p = 0; p < cluster; p++) {
+                const palm = this._buildPalmTree(new THREE.Group());
+                palm.position.set(
+                    baseX + (Math.random() - 0.5) * 1.6,
+                    0,
+                    baseZ + (p - (cluster - 1) / 2) * (1.4 + Math.random() * 0.6)
+                );
+                palm.rotation.y = Math.random() * Math.PI * 2;
+                palm.scale.setScalar(0.85 + Math.random() * 0.35);
+                this.scene.add(palm);
+                chunk.objects.push(palm);
+                tag(palm, 'destructible', 0.9);
+            }
+        }
         // 単独の小屋（地上レベル: 大型建造物 — ダイナミックに大きく）
         if (Math.random() > 0.7) {
             const hutRadius = 1.8 + Math.random() * 0.6;
@@ -5665,10 +6322,15 @@ export class World {
             }
 
             // 崩落高架（巨大スカイブリッジ風）
+            // 道路中央寄り (旧: ±1.75) だと block 半径 (≈6.1〜8.5) が
+            // プレイヤー横移動範囲 ±8 を超えて道を完全に塞ぐため、必ず片側に寄せ
+            // phase に応じて反対側に通行帯を確保する。
             if (endgamePhase >= 1 && Math.random() < Math.min(0.9, 0.6 + endgamePhase * 0.06)) {
                 const overpass = this._buildBrokenOverpass(new THREE.Group(), endgamePhase);
+                const overpassSide = Math.random() > 0.5 ? 1 : -1;
+                const overpassOffset = 2.6 + Math.random() * 1.4 + endgamePhase * 0.18;
                 overpass.position.set(
-                    (Math.random() - 0.5) * 3.5,
+                    overpassSide * overpassOffset,
                     0,
                     startZ + Math.random() * this.chunkSize
                 );
@@ -5774,9 +6436,88 @@ export class World {
             }
         }
 
+        this._applyChunkPerformanceHints(chunk, startZ);
+        this._trimChunkForPerformance(chunk, startZ);
+
         this.chunks.push(chunk);
         this.lastChunkZ = startZ;
         this._obstacleCacheDirty = true;
+    }
+
+    _isPerformanceChunk(z) {
+        return this._isFinalStage(z) || this._getEndgamePhase(z) >= 0;
+    }
+
+    _getChunkObjectBudget(z) {
+        const phase = this._getEndgamePhase(z);
+        if (phase >= 5) return 20;
+        if (phase >= 0) return 23;
+        if (this._isFinalStage(z)) return 26;
+        if (this._isHeavyStage(z)) return 34;
+        return 42;
+    }
+
+    _applyChunkPerformanceHints(chunk, z) {
+        const isPerfChunk = this._isPerformanceChunk(z);
+        for (const obj of chunk.objects) {
+            obj.traverse(child => {
+                if (!child.isMesh) return;
+                if (isPerfChunk) {
+                    child.castShadow = false;
+                    child.receiveShadow = false;
+                } else if (child.castShadow && child.position.y > 3) {
+                    child.castShadow = false;
+                }
+            });
+        }
+    }
+
+    _getTrimPriority(obj) {
+        const info = obj.userData && obj.userData.obstacle;
+        if (!info) return 100;
+        if (info.type === 'block' || info.explosive) return 0;
+        if (info.radius <= 1.5 && info.hp <= 20) return 70;
+        if (info.radius <= 2.2 && info.hp <= 25) return 45;
+        if (!info.dropTable && info.dropChance <= 0.25) return 35;
+        return 12;
+    }
+
+    _trimChunkForPerformance(chunk, z) {
+        const budget = this._getChunkObjectBudget(z);
+        if (chunk.objects.length <= budget) return;
+
+        const candidates = chunk.objects
+            .map((obj, idx) => ({ obj, idx, priority: this._getTrimPriority(obj) }))
+            .filter(entry => entry.priority > 0)
+            .sort((a, b) => b.priority - a.priority || a.idx - b.idx);
+
+        while (chunk.objects.length > budget && candidates.length > 0) {
+            const entry = candidates.shift();
+            const idx = chunk.objects.indexOf(entry.obj);
+            if (idx === -1) continue;
+            chunk.objects.splice(idx, 1);
+            this._disposeChunkObject(entry.obj);
+        }
+    }
+
+    _disposeChunkObject(obj) {
+        this.scene.remove(obj);
+        obj.traverse(child => {
+            if (child.userData && child.userData.dynamicRef) {
+                const idx = this.dynamicProps.indexOf(child.userData.dynamicRef);
+                if (idx >= 0) this.dynamicProps.splice(idx, 1);
+            }
+            if (!child.isMesh) return;
+            const g = child.geometry;
+            if (g && g.dispose && !(g.userData && g.userData.shared)) g.dispose();
+            const mats = Array.isArray(child.material) ? child.material : [child.material];
+            mats.forEach(mat => {
+                if (!mat) return;
+                if (mat.userData && mat.userData.shared) return;
+                if (mat.map && mat.map.dispose && !(mat.map.userData && mat.map.userData.shared)) mat.map.dispose();
+                if (mat.dispose) mat.dispose();
+            });
+        });
     }
 
     /**
@@ -7773,9 +8514,14 @@ export class World {
         });
 
         // ダイナミックプロップのアニメーション
+        // 後半の要塞ギミックは見た目の密度が高いので、数が多い時は分散更新して
+        // 1フレーム内の transform/material 更新数を抑える。
+        this._dynamicFrame = (this._dynamicFrame || 0) + 1;
+        const dynamicStride = this.dynamicProps.length > 24 ? 3 : (this.dynamicProps.length > 14 ? 2 : 1);
         for (let i = this.dynamicProps.length - 1; i >= 0; i--) {
             const p = this.dynamicProps[i];
             p.time += dt;
+            if (dynamicStride > 1 && ((i + this._dynamicFrame) % dynamicStride) !== 0) continue;
             switch (p.type) {
                 case 'derrick': {
                     // 炎: 上下に揺らぎ、明滅
@@ -7932,9 +8678,15 @@ export class World {
         // チャンク削除（後方 -Z）
         // 1 フレームあたり maxChunkDisposesPerFrame 個までに制限し、解放コストを分散する。
         // 残ったチャンクは次フレーム以降に処理されるため、メモリ蓄積は数フレーム遅延するだけ。
+        // メモリプレッシャー検出時は main.js から _memPressureBoost が立ち、その分だけ追加で dispose する。
         let disposedThisFrame = 0;
+        let frameLimit = this.maxChunkDisposesPerFrame;
+        if (this._memPressureBoost && this._memPressureBoost > 0) {
+            frameLimit += this._memPressureBoost;
+            this._memPressureBoost = 0;
+        }
         for (let i = this.chunks.length - 1; i >= 0; i--) {
-            if (disposedThisFrame >= this.maxChunkDisposesPerFrame) break;
+            if (disposedThisFrame >= frameLimit) break;
             const chunk = this.chunks[i];
             if (chunk.startZ + this.chunkSize < scrollZ - this.cleanupRange) {
                 chunk.objects.forEach(obj => {
@@ -7962,7 +8714,8 @@ export class World {
         // ダイナミックプロップ上限（防衛的）— 想定外の蓄積を防ぐ
         // 各プロップの mesh 参照は破棄済み chunk と共に既に dispose されているので
         // ここでは配列から外すのみで安全。
-        const MAX_DYNAMIC_PROPS = 32;
+        const endgamePhase = this._getEndgamePhase(scrollZ);
+        const MAX_DYNAMIC_PROPS = endgamePhase >= 0 ? 18 : (this._isFinalStage(scrollZ) ? 24 : 32);
         if (this.dynamicProps.length > MAX_DYNAMIC_PROPS) {
             this.dynamicProps.splice(0, this.dynamicProps.length - MAX_DYNAMIC_PROPS);
         }

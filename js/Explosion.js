@@ -41,6 +41,14 @@ const _geoCache = {
     // ロック/瓦礫（爆発後の地面に残る岩塊）
     rock_s:         new THREE.DodecahedronGeometry(0.18, 0),
     rock_m:         new THREE.DodecahedronGeometry(0.28, 0),
+    // 焦げ跡: 半径ごとにキャッシュ（呼び出し側は 0.8 / 2.0 / 3.5）
+    // 半径違いの CircleGeometry を毎爆発で生成すると後半 Wave で
+    // 数百枚の Geometry がプール外に蓄積する。
+    scorch_s:       new THREE.CircleGeometry(0.8, 16),
+    scorch_m:       new THREE.CircleGeometry(2.0, 16),
+    scorch_l:       new THREE.CircleGeometry(3.5, 16),
+    // mega 爆発の中心核（毎メガ爆発で別 sphere を生成しないため共有）
+    sphere_mega_core: new THREE.SphereGeometry(1.2, 10, 8),
 };
 
 // 同時に生成できる爆発由来 PointLight の数を制限（GPU 負荷上限）
@@ -117,10 +125,12 @@ export class Explosion {
     constructor(scene, position, {
         type = 'small',  // 'muzzle' | 'small' | 'large'
         color = 0xFF6600,
+        residueLife = null,
     } = {}) {
         this.scene = scene;
         this.alive = true;
         this.age = 0;
+        this.residueLife = residueLife;
         this.group = new THREE.Group();
         this.group.position.copy(position);
         this.particles = [];
@@ -455,10 +465,9 @@ export class Explosion {
     // Feature 6: 巨大手榴弾爆発 (mega)
     // ============================================
     _buildMegaExplosion() {
-        // コア - 巨大白色
-        const coreGeo = new THREE.SphereGeometry(1.2, 10, 8);
+        // コア - 巨大白色（共有ジオメトリ使用）
         const coreMat = new THREE.MeshBasicMaterial({ color: 0xFFFFFF, transparent: true, opacity: 1.0, blending: THREE.AdditiveBlending, depthWrite: false });
-        const core = new THREE.Mesh(coreGeo, coreMat);
+        const core = new THREE.Mesh(_geoCache.sphere_mega_core, coreMat);
         this.group.add(core);
         this.particles.push({ mesh: core, vx: 0, vy: 0.5, vz: 0, scale: 3.0, noGravity: true, colorFade: true, startColor: new THREE.Color(0xFFFFFF), endColor: new THREE.Color(0xFF2200) });
 
@@ -655,7 +664,7 @@ export class Explosion {
                 rotSpeed: (Math.random() - 0.5) * 8,
                 groundY: 0.08,
                 resting: false,
-                lifeTimer: 4.0, // 4秒後に削除（短縮して滞留を防ぐ）
+                lifeTimer: this.residueLife !== null ? this.residueLife : 4.0, // 一定時間後に削除
                 lifeAge: 0,     // 経過時間を追跡
             });
         }
@@ -690,7 +699,13 @@ export class Explosion {
     // 地面の焦げ跡
     // ============================================
     _addGroundScorch(radius) {
-        const scorchGeo = new THREE.CircleGeometry(radius, 16);
+        // 共有ジオメトリ: 呼び出し側半径に対応する _geoCache を選択。
+        // 半径ベースの Circle を毎爆発で生成・dispose すると後半シーンで
+        // GPU バッファの fragmentation と GC pressure が積もる。
+        let scorchGeo;
+        if (radius <= 1.0)        scorchGeo = _geoCache.scorch_s; // 0.8 用
+        else if (radius <= 2.5)   scorchGeo = _geoCache.scorch_m; // 2.0 用
+        else                      scorchGeo = _geoCache.scorch_l; // 3.5 用
         const scorchMat = new THREE.MeshBasicMaterial({
             color: 0x111111,
             transparent: true,
@@ -707,7 +722,7 @@ export class Explosion {
         this.extras.push({
             type: 'scorch',
             mesh: scorch,
-            fadeTimer: 5.0, // 5秒後にフェードアウト（短縮）
+            fadeTimer: this.residueLife !== null ? this.residueLife : 5.0, // 一定時間後にフェードアウト
             fadeAge: 0,     // 経過時間を追跡
             scene: this.scene,
         });
@@ -856,7 +871,8 @@ export class Explosion {
     }
 
     destroy() {
-        if (!this.alive) return;
+        const hasLivePayload = !!(this.group && this.group.parent) || this.extras.length > 0 || !!this.flashLight;
+        if (!this.alive && !hasLivePayload) return;
         this.alive = false;
         // ライトをプールに返却
         if (this.flashLight) {
@@ -864,7 +880,7 @@ export class Explosion {
             this.flashLight = null;
             _activeExplosionLights = Math.max(0, _activeExplosionLights - 1);
         }
-        this.scene.remove(this.group);
+        if (this.group && this.group.parent) this.scene.remove(this.group);
         const cachedGeoms = Object.values(_geoCache);
         this.group.traverse(child => {
             if (child.isMesh) {

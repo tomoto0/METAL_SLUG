@@ -61,6 +61,7 @@ export class UIManager {
         this.maxCombo = 0;
 
         this.killFeedQueue = [];
+        this.itemPickupQueue = [];
         this.waveAnnounceTimer = 0;
         this.scorePopups = [];
         this.damageFlashTimer = 0;
@@ -283,6 +284,54 @@ export class UIManager {
         this._spawnCenterBanner(`POW! ${label}`, '#FFEE44');
     }
 
+    showItemPickup(type, bonus = 0) {
+        const info = this._getItemPickupInfo(type, bonus);
+        const host = document.getElementById('ui-overlay') || document.body;
+
+        const el = document.createElement('div');
+        el.className = 'item-pickup-banner';
+        el.style.setProperty('--pickup-color', info.color);
+        const stack = Math.min(this.itemPickupQueue.length, 2);
+        el.style.setProperty('--pickup-offset', `${stack * 48}px`);
+        el.style.setProperty('--pickup-mobile-offset', `${stack * 58}px`);
+        el.innerHTML = `
+            <span class="item-pickup-code">${info.code}</span>
+            <span class="item-pickup-title">${info.title}</span>
+            <span class="item-pickup-detail">${info.detail}</span>
+        `;
+        host.appendChild(el);
+
+        const entry = { el, timer: null };
+        entry.timer = setTimeout(() => {
+            if (el.parentNode) el.remove();
+            this.itemPickupQueue = this.itemPickupQueue.filter(item => item !== entry);
+        }, 1350);
+        this.itemPickupQueue.push(entry);
+
+        while (this.itemPickupQueue.length > 3) {
+            const old = this.itemPickupQueue.shift();
+            clearTimeout(old.timer);
+            if (old.el.parentNode) old.el.remove();
+        }
+    }
+
+    _getItemPickupInfo(type, bonus = 0) {
+        const table = {
+            health:      { code: '[MED KIT]', title: 'LIFE RESTORED', detail: '+30 HP', color: '#66ff88' },
+            grenade:     { code: '[BOMB]', title: 'GRENADE STOCK', detail: '+10 BOMBS', color: '#ff9b42' },
+            score:       { code: '[MEDAL]', title: 'BONUS SCORE', detail: `+${bonus || 300} PTS`, color: '#ffdd44' },
+            score_big:   { code: '[TREASURE]', title: 'BIG BONUS', detail: `+${bonus || 5000} PTS`, color: '#ffe96b' },
+            weapon_H:    { code: '[H]', title: 'HEAVY MACHINE GUN', detail: '200 ROUNDS', color: '#ffcc33' },
+            weapon_R:    { code: '[R]', title: 'ROCKET LAUNCHER', detail: '30 ROCKETS', color: '#ff5544' },
+            weapon_F:    { code: '[F]', title: 'FLAME SHOT', detail: '50 BURSTS', color: '#ff7a22' },
+            weapon_S:    { code: '[S]', title: 'SHOTGUN', detail: '30 SHELLS', color: '#44e0aa' },
+            power_BIG:   { code: '[P]', title: 'BIG SHOT', detail: '12 SEC BOOST', color: '#ff66bb' },
+            power_SPREAD:{ code: '[3]', title: '3-WAY FIRE', detail: '14 SEC BOOST', color: '#55d8ff' },
+            power_FLAME: { code: '[F]', title: 'FLAME BOOST', detail: '10 SEC BOOST', color: '#ff8b28' },
+        };
+        return table[type] || { code: '[ITEM]', title: 'SUPPLY GET', detail: 'EFFECT ACTIVE', color: '#ffffff' };
+    }
+
     // Feature 5: 中央バナー表示
     _spawnCenterBanner(text, color = '#FFEE44') {
         const el = document.createElement('div');
@@ -368,6 +417,11 @@ export class UIManager {
         this.scorePopups = [];
         this.killFeedQueue.forEach(item => item.el.remove());
         this.killFeedQueue = [];
+        this.itemPickupQueue.forEach(item => {
+            clearTimeout(item.timer);
+            if (item.el.parentNode) item.el.remove();
+        });
+        this.itemPickupQueue = [];
 
         if (this.damageFlashEl) this.damageFlashEl.style.opacity = '0';
         if (this.chargeMeterFill) this.chargeMeterFill.style.transform = 'scaleX(0)';
@@ -595,6 +649,7 @@ export class UIManager {
             'aircraft-drone': 'RAZOR DRONE',
             'aircraft-interceptor': 'INTERCEPTOR',
             'aircraft-gunship': 'GUNSHIP',
+            'aircraft-tomahawk': 'TOMAHAWK',
         };
 
         const key = `${enemyType}-${subType}`;

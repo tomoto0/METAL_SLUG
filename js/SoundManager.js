@@ -158,6 +158,7 @@ export class SoundManager {
         gain.connect(this.sfxGain);
         osc.start(t);
         osc.stop(t + 0.06);
+        this._autoDisconnect(osc, gain);
 
         // ノイズコンポーネント
         this._playNoise(t, 0.04, 0.12, 2000, 5000);
@@ -185,6 +186,7 @@ export class SoundManager {
         gain.connect(this.sfxGain);
         osc.start(t);
         osc.stop(t + 0.4);
+        this._autoDisconnect(osc, dist, gain);
 
         // 衝撃波ノイズ
         this._playNoise(t, 0.15, 0.25, 100, 4000);
@@ -201,6 +203,7 @@ export class SoundManager {
         subGain.connect(this.sfxGain);
         sub.start(t);
         sub.stop(t + 0.5);
+        this._autoDisconnect(sub, subGain);
     }
 
     /** 敵被弾（メタリック） */
@@ -221,6 +224,7 @@ export class SoundManager {
         gain.connect(this.sfxGain);
         osc.start(t);
         osc.stop(t + 0.1);
+        this._autoDisconnect(osc, gain);
     }
 
     /** 小爆発（歩兵撃破） */
@@ -244,6 +248,7 @@ export class SoundManager {
         gain.connect(this.sfxGain);
         osc.start(t);
         osc.stop(t + 0.3);
+        this._autoDisconnect(osc, dist, gain);
 
         this._playNoise(t, 0.15, 0.2, 200, 6000);
     }
@@ -269,6 +274,7 @@ export class SoundManager {
         gain.connect(this.sfxGain);
         osc.start(t);
         osc.stop(t + 0.8);
+        this._autoDisconnect(osc, dist, gain);
 
         // クラッシュノイズ
         this._playNoise(t, 0.3, 0.5, 100, 8000);
@@ -300,6 +306,7 @@ export class SoundManager {
         gain.connect(this.sfxGain);
         osc.start(t);
         osc.stop(t + 0.2);
+        this._autoDisconnect(osc, gain);
 
         // 警告ビープ
         const warn = this.ctx.createOscillator();
@@ -312,6 +319,7 @@ export class SoundManager {
         warnGain.connect(this.sfxGain);
         warn.start(t + 0.05);
         warn.stop(t + 0.2);
+        this._autoDisconnect(warn, warnGain);
     }
 
     /** コンボヒット音（ピッチが上がる） */
@@ -333,6 +341,7 @@ export class SoundManager {
         gain.connect(this.sfxGain);
         osc.start(t);
         osc.stop(t + 0.15);
+        this._autoDisconnect(osc, gain);
     }
 
     /** ウェーブ開始ファンファーレ */
@@ -354,6 +363,7 @@ export class SoundManager {
             gain.connect(this.sfxGain);
             osc.start(t + i * 0.1);
             osc.stop(t + i * 0.1 + 0.2);
+            this._autoDisconnect(osc, gain);
         });
     }
 
@@ -382,6 +392,7 @@ export class SoundManager {
             gain.connect(this.sfxGain);
             osc.start(t + i * 0.3);
             osc.stop(t + i * 0.3 + 0.4);
+            this._autoDisconnect(osc, filter, gain);
         });
 
         this.stopBGM();
@@ -407,6 +418,7 @@ export class SoundManager {
             gain.connect(this.sfxGain);
             osc.start(t + i * 0.08);
             osc.stop(t + i * 0.08 + 0.15);
+            this._autoDisconnect(osc, gain);
         });
     }
 
@@ -570,6 +582,7 @@ export class SoundManager {
             gain.connect(this.bgmGain);
             osc.start(t);
             osc.stop(t + dur * 0.8);
+            this._autoDisconnect(osc, filter, gain);
         }
 
         // === メロディ（8ビートごとに短いフレーズ） ===
@@ -600,6 +613,7 @@ export class SoundManager {
                 gain.connect(this.bgmGain);
                 osc.start(t + i * dur);
                 osc.stop(t + i * dur + dur);
+                this._autoDisconnect(osc, filter, gain);
             });
         }
     }
@@ -618,18 +632,16 @@ export class SoundManager {
         gain.connect(this.bgmGain);
         osc.start(t);
         osc.stop(t + 0.15);
+        this._autoDisconnect(osc, gain);
     }
 
     _playSnare(t) {
-        // ノイズ成分
-        const bufSize = this.ctx.sampleRate * 0.1;
-        const buf = this.ctx.createBuffer(1, bufSize, this.ctx.sampleRate);
-        const data = buf.getChannelData(0);
-        for (let i = 0; i < bufSize; i++) {
-            data[i] = (Math.random() * 2 - 1) * 0.5;
-        }
+        // ノイズ成分（共有バッファをランダムオフセットで使い回す）
+        const sharedBuf = this._getSharedNoiseBuffer();
+        const dur = 0.1;
+        const offset = Math.random() * Math.max(0, sharedBuf.duration - dur - 0.01);
         const noise = this.ctx.createBufferSource();
-        noise.buffer = buf;
+        noise.buffer = sharedBuf;
 
         const filter = this.ctx.createBiquadFilter();
         filter.type = 'highpass';
@@ -637,13 +649,14 @@ export class SoundManager {
 
         const gain = this.ctx.createGain();
         gain.gain.setValueAtTime(0.15, t);
-        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
 
         noise.connect(filter);
         filter.connect(gain);
         gain.connect(this.bgmGain);
-        noise.start(t);
-        noise.stop(t + 0.1);
+        noise.start(t, offset, dur);
+        noise.stop(t + dur);
+        this._autoDisconnect(noise, filter, gain);
 
         // トーン成分
         const osc = this.ctx.createOscillator();
@@ -657,17 +670,15 @@ export class SoundManager {
         oscGain.connect(this.bgmGain);
         osc.start(t);
         osc.stop(t + 0.08);
+        this._autoDisconnect(osc, oscGain);
     }
 
     _playHihat(t, vol) {
-        const bufSize = this.ctx.sampleRate * 0.05;
-        const buf = this.ctx.createBuffer(1, bufSize, this.ctx.sampleRate);
-        const data = buf.getChannelData(0);
-        for (let i = 0; i < bufSize; i++) {
-            data[i] = (Math.random() * 2 - 1);
-        }
+        const sharedBuf = this._getSharedNoiseBuffer();
+        const dur = 0.04;
+        const offset = Math.random() * Math.max(0, sharedBuf.duration - dur - 0.01);
         const noise = this.ctx.createBufferSource();
-        noise.buffer = buf;
+        noise.buffer = sharedBuf;
 
         const filter = this.ctx.createBiquadFilter();
         filter.type = 'highpass';
@@ -675,13 +686,14 @@ export class SoundManager {
 
         const gain = this.ctx.createGain();
         gain.gain.setValueAtTime(vol, t);
-        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.04);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
 
         noise.connect(filter);
         filter.connect(gain);
         gain.connect(this.bgmGain);
-        noise.start(t);
-        noise.stop(t + 0.04);
+        noise.start(t, offset, dur);
+        noise.stop(t + dur);
+        this._autoDisconnect(noise, filter, gain);
     }
 
     // ============================================
@@ -692,16 +704,72 @@ export class SoundManager {
         return this.initialized && !this.muted && this.ctx && this.ctx.state !== 'closed';
     }
 
-    _playNoise(startTime, gain, duration, lowFreq, highFreq) {
-        const bufSize = Math.floor(this.ctx.sampleRate * duration);
-        const buf = this.ctx.createBuffer(1, bufSize, this.ctx.sampleRate);
-        const data = buf.getChannelData(0);
-        for (let i = 0; i < bufSize; i++) {
-            data[i] = Math.random() * 2 - 1;
+    /**
+     * 共有ホワイトノイズバッファ（2 秒分）。
+     * 連射時に毎回 createBuffer + 数千要素の Float ループを実行すると
+     * AudioBuffer インスタンスがブラウザ内部でしばらく解放されず、
+     * JS ヒープ + WebAudio 用バッファメモリが膨張する。
+     * 1 度作って使い回し、duration 引数で再生長を切り出す。
+     */
+    _getSharedNoiseBuffer() {
+        if (!this._sharedNoiseBuffer) {
+            const bufSize = Math.floor(this.ctx.sampleRate * 2.0);
+            const buf = this.ctx.createBuffer(1, bufSize, this.ctx.sampleRate);
+            const data = buf.getChannelData(0);
+            for (let i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
+            this._sharedNoiseBuffer = buf;
         }
+        return this._sharedNoiseBuffer;
+    }
+
+    /**
+     * ディストーションカーブ（44100 サンプル = 176KB）の amount 別キャッシュ。
+     * playCannon / playExplosion* が毎発射で _createDistortion を呼ぶと
+     * 連射 1 回ごとに 176KB が確保される（1000 連射で ~170MB）。
+     * 同一 amount のカーブは再利用する。
+     */
+    _getDistortionCurve(amount) {
+        if (!this._distortionCurves) this._distortionCurves = new Map();
+        let curve = this._distortionCurves.get(amount);
+        if (curve) return curve;
+        const k = amount;
+        const samples = 44100;
+        curve = new Float32Array(samples);
+        const deg = Math.PI / 180;
+        for (let i = 0; i < samples; i++) {
+            const x = (i * 2) / samples - 1;
+            curve[i] = ((3 + k) * x * 20 * deg) / (Math.PI + k * Math.abs(x));
+        }
+        this._distortionCurves.set(amount, curve);
+        return curve;
+    }
+
+    /**
+     * 再生終了したノードチェーンを必ず disconnect する。
+     * Web Audio は stop() しても接続を持ったままだと
+     * ガベージコレクト対象にならないブラウザがあり、
+     * 連射のたびに OscillatorNode/GainNode/BiquadFilterNode が滞留する。
+     * 各ノードに onended を取り付けて確実に切り離す。
+     */
+    _autoDisconnect(endNode, ...nodes) {
+        if (!endNode) return;
+        endNode.onended = () => {
+            try { endNode.disconnect(); } catch (_) { /* already disconnected */ }
+            nodes.forEach(n => {
+                if (!n) return;
+                try { n.disconnect(); } catch (_) { /* noop */ }
+            });
+        };
+    }
+
+    _playNoise(startTime, gain, duration, lowFreq, highFreq) {
+        // 共有バッファのランダムオフセットから duration 分だけ再生
+        const sharedBuf = this._getSharedNoiseBuffer();
+        const maxOffset = Math.max(0, sharedBuf.duration - duration - 0.01);
+        const offset = Math.random() * maxOffset;
 
         const noise = this.ctx.createBufferSource();
-        noise.buffer = buf;
+        noise.buffer = sharedBuf;
 
         const bandpass = this.ctx.createBiquadFilter();
         bandpass.type = 'bandpass';
@@ -715,21 +783,14 @@ export class SoundManager {
         noise.connect(bandpass);
         bandpass.connect(gainNode);
         gainNode.connect(this.sfxGain);
-        noise.start(startTime);
+        noise.start(startTime, offset, duration);
         noise.stop(startTime + duration);
+        this._autoDisconnect(noise, bandpass, gainNode);
     }
 
     _createDistortion(amount) {
         const dist = this.ctx.createWaveShaper();
-        const k = amount;
-        const samples = 44100;
-        const curve = new Float32Array(samples);
-        const deg = Math.PI / 180;
-        for (let i = 0; i < samples; i++) {
-            const x = (i * 2) / samples - 1;
-            curve[i] = ((3 + k) * x * 20 * deg) / (Math.PI + k * Math.abs(x));
-        }
-        dist.curve = curve;
+        dist.curve = this._getDistortionCurve(amount);
         dist.oversample = '2x';
         return dist;
     }

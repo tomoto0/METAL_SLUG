@@ -10,10 +10,6 @@ export class InputManager {
         this.rightMousePressed = false;
         this.canvas = canvas;
 
-        // マウスが最近動いたかどうか（マウス照準 vs キーボード照準の切り替え用）
-        this.mouseActive = true;
-        this._mouseIdleTimer = 0;
-
         // バルカン自動射撃モード（V キーでトグル。デフォルトON）
         this.autoFireMode = true;
 
@@ -25,7 +21,7 @@ export class InputManager {
             'Space',
             'KeyC', 'ControlLeft', 'ControlRight',
             'ShiftLeft', 'ShiftRight',
-            'KeyE', 'KeyF', 'KeyG', 'KeyQ', 'KeyV', 'KeyM', 'KeyR',
+            'KeyE', 'KeyF', 'KeyB', 'KeyQ', 'KeyV', 'KeyM', 'KeyR',
         ]);
 
         window.addEventListener('keydown', (e) => {
@@ -62,9 +58,6 @@ export class InputManager {
             // NDC (-1 to 1)
             this.mouseX = (e.clientX / window.innerWidth) * 2 - 1;
             this.mouseY = -(e.clientY / window.innerHeight) * 2 + 1;
-            // マウスが動いたらマウス照準モードに
-            this.mouseActive = true;
-            this._mouseIdleTimer = 0;
         });
 
         window.addEventListener('mousedown', (e) => {
@@ -153,14 +146,14 @@ export class InputManager {
     }
 
     /**
-     * 手榴弾: G キー (pressed = just pressed, held = held down for preview)
+     * ボム: B キー (pressed = just pressed, held = held down for preview)
      */
     get grenadePressed() {
-        return this.isKeyPressed('KeyG');
+        return this.isKeyPressed('KeyB');
     }
 
     get grenadeHeld() {
-        return this.isKeyDown('KeyG');
+        return this.isKeyDown('KeyB');
     }
 
     /**
@@ -200,14 +193,4 @@ export class InputManager {
         return this.isKeyPressed('KeyV');
     }
 
-    // 照準はマウス専用（WASD キーボードエイムは廃止）
-    get aimUp()    { return false; }
-    get aimDown()  { return false; }
-    get aimLeft()  { return false; }
-    get aimRight() { return false; }
-
-    updateAimMode(dt) {
-        // マウス専用モードを維持
-        this.mouseActive = true;
-    }
 }

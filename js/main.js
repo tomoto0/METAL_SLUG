@@ -18,7 +18,7 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPrefere
 renderer.setSize(window.innerWidth, window.innerHeight);
 // 適応解像度: 初期は最大1.5、低FPSなら自動的に下げる
 const MAX_PIXEL_RATIO = Math.min(window.devicePixelRatio, 1.5);
-const MIN_PIXEL_RATIO = 0.85;
+const MIN_PIXEL_RATIO = 0.75;
 let currentPixelRatio = MAX_PIXEL_RATIO;
 renderer.setPixelRatio(currentPixelRatio);
 renderer.shadowMap.enabled = true;
@@ -87,9 +87,9 @@ scene.add(ambientLight);
 const dirLight = new THREE.DirectionalLight(0xFFF0B8, 2.5);
 dirLight.position.set(22, 38, 14);
 dirLight.castShadow = true;
-// 2048→1024、影カメラ範囲も実プレイ範囲に絞り、毎フレームのシャドウパス負荷を大幅削減
-dirLight.shadow.mapSize.width = 1024;
-dirLight.shadow.mapSize.height = 1024;
+// 2048→512、影カメラ範囲も実プレイ範囲に絞り、毎フレームのシャドウパス負荷を大幅削減
+dirLight.shadow.mapSize.width = 512;
+dirLight.shadow.mapSize.height = 512;
 dirLight.shadow.camera.near = 0.5;
 dirLight.shadow.camera.far = 90;
 dirLight.shadow.camera.left = -28;
@@ -484,6 +484,9 @@ function restartGame() {
     // 残ったまま新ゲームに入ると、開始直後の数フレームで強制 shift が走り、
     // 表示エフェクトが一瞬で消える点滅が発生する。
     memPressureTimer = 0;
+    memPressureLevel = 0;
+    memPressureCooldown = 0;
+    renderListsCleanupTimer = 0;
     hitstopTimer = 0;
     cameraKickTimer = 0;
     cameraKickAmount = 0;
@@ -501,6 +504,10 @@ function restartGame() {
     // シーン防衛的クリーンアップ: 既知の永続オブジェクト以外の遺残メッシュを除去。
     // dispose 漏れの最後のセーフティネット。
     _deepCleanScene();
+    // 前ゲームの RenderList キャッシュも解放しておく（テクスチャ・プログラム参照のリーク予防）。
+    if (renderer.renderLists && renderer.renderLists.dispose) {
+        renderer.renderLists.dispose();
+    }
     // シェーダプリコンパイル: 新生成チャンクのマテリアルが初フレームで
     // インラインコンパイルされるとフレームが詰まる（リスタート直後の重さの一因）。
     try { renderer.compile(scene, camera); } catch (e) { /* noop */ }
@@ -535,6 +542,16 @@ let lastTime = -1;
 let isFirstFrame = true;
 let elapsedTime = 0;
 let memPressureTimer = 0;
+// 数秒に 1 度の renderer.renderLists.dispose() 用タイマー。
+// renderLists は draw call ごとの一時リストをキャッシュするが、
+// 長時間プレイで shader program / RenderList オブジェクトが滞留して
+// JS ヒープが膨張するのを防ぐため定期的に解放する。
+let renderListsCleanupTimer = 0;
+// 直近のメモリ圧レベル（0=平常, 1=高, 2=危機）。
+// 1 度危機に入ったら一定時間は緩めの閾値で監視を続け、
+// 復帰直後に再度膨張する振動を防ぐ。
+let memPressureLevel = 0;
+let memPressureCooldown = 0;
 
 // エフェクトを安全に解放する（destroy() があればそれを優先、無ければ traverse で dispose）
 function forceReleaseEffect(effect) {
@@ -678,6 +695,7 @@ function gameLoop(timestamp) {
                 gameManager.score += bonus;
                 if (gameManager.onScoreChange) gameManager.onScoreChange(gameManager.score);
             }
+            uiManager.showItemPickup(item.type, bonus);
             soundManager.playCombo(3);
             item.destroy();
         }
@@ -704,32 +722,123 @@ function gameLoop(timestamp) {
     }
     // アクティブキャラのエフェクト上限管理
     // shift しただけだと scene 上の Mesh は残るので、必ず後処理で解放する。
-    // 上限を 24 → 40 に緩和（表示中の煙/炎/爆発粒子が突然消える"点滅"症状を抑制）
+    // Wave 12以降は同時敵・発射物が増えるため、エフェクト保持数も少し絞る。
     const activeEffects = activeEntity.effects || [];
-    while (activeEffects.length > 40) {
+    const activeEffectLimit = gameManager.getCurrentWave() >= 12 ? 32 : 40;
+    while (activeEffects.length > activeEffectLimit) {
         const old = activeEffects.shift();
         forceReleaseEffect(old);
     }
 
-    // ランタイム全体のメモリプレッシャー監視 (Three.js リソース数で評価)
-    // ItemDrop/Explosion の dispose 漏れを修正したので閾値超過頻度は下がるはず。
-    // 閾値 1800 → 2600（余裕）、シフト下限 22 → 30 に緩和し、
-    // 表示中エフェクトが突然消える「点滅」を更に抑制する。
+    // ランタイム全体のメモリプレッシャー監視
+    // - Three.js リソース数 (geometries / textures) と draw call
+    // - JS ヒープ (Chrome の performance.memory が利用可能なら)
+    // 3 段階で段階的にクリーンアップし、5GB に達するような暴走を防ぐ。
     memPressureTimer += rawDt;
-    if (memPressureTimer >= 0.3) {
+    if (memPressureCooldown > 0) memPressureCooldown -= rawDt;
+    if (memPressureTimer >= 0.5) {
         memPressureTimer = 0;
         const geoCount = renderer.info.memory.geometries;
-        if (geoCount > 2600) {
-            while (gameManager.effects.length > 30) {
+        const texCount = renderer.info.memory.textures;
+        const renderCalls = renderer.info.render.calls;
+        // Chrome は performance.memory.usedJSHeapSize を MB 単位で取得できる。
+        // 他ブラウザでは undefined のため、その場合はリソース数のみで判定する。
+        const heapMB = (performance && performance.memory && performance.memory.usedJSHeapSize)
+            ? performance.memory.usedJSHeapSize / (1024 * 1024) : 0;
+
+        // クールダウン中は閾値を緩めて頻繁な切替を防ぐ
+        const onCooldown = memPressureCooldown > 0;
+        const HIGH_GEO     = onCooldown ? 1500 : 1800;
+        const HIGH_TEX     = onCooldown ? 250  : 320;
+        const HIGH_CALLS   = onCooldown ? 700  : 850;
+        const HIGH_HEAP_MB = onCooldown ? 900  : 1200;
+        const CRIT_GEO     = onCooldown ? 1900 : 2200;
+        const CRIT_TEX     = onCooldown ? 380  : 460;
+        const CRIT_CALLS   = onCooldown ? 950  : 1100;
+        const CRIT_HEAP_MB = onCooldown ? 1500 : 1900;
+
+        const isHigh =
+            geoCount > HIGH_GEO || texCount > HIGH_TEX ||
+            renderCalls > HIGH_CALLS || (heapMB > 0 && heapMB > HIGH_HEAP_MB);
+        const isCritical =
+            geoCount > CRIT_GEO || texCount > CRIT_TEX ||
+            renderCalls > CRIT_CALLS || (heapMB > 0 && heapMB > CRIT_HEAP_MB);
+
+        if (isCritical) {
+            memPressureLevel = 2;
+            memPressureCooldown = 6.0;
+            // 解像度を下限に固定
+            if (currentPixelRatio > MIN_PIXEL_RATIO) {
+                currentPixelRatio = MIN_PIXEL_RATIO;
+                renderer.setPixelRatio(currentPixelRatio);
+            }
+            // GameManager とアクティブキャラのエフェクトをほぼ全廃
+            while (gameManager.effects.length > 12) {
                 const old = gameManager.effects.shift();
                 gameManager._forceDestroyEffect(old);
             }
-            while (activeEffects.length > 30) {
+            while (activeEffects.length > 12) {
                 const old = activeEffects.shift();
                 forceReleaseEffect(old);
             }
-            // 後方の敵を強制クリーンアップ
+            // 残弾も古いものから削る（敵 / ボス / プレイヤー）
+            gameManager.enemies.forEach(enemy => {
+                while (enemy.projectiles && enemy.projectiles.length > 6) {
+                    const old = enemy.projectiles.shift();
+                    if (old && old.destroy) old.destroy();
+                }
+            });
+            if (gameManager.boss && gameManager.boss.projectiles) {
+                while (gameManager.boss.projectiles.length > 12) {
+                    const old = gameManager.boss.projectiles.shift();
+                    if (old && old.destroy) old.destroy();
+                }
+            }
+            while (activeProjectiles.length > 20) {
+                const old = activeProjectiles.shift();
+                if (old && old.destroy) old.destroy();
+            }
+            // 後方の敵 / アイテム / POW を即座にクリーンアップ
             gameManager.cleanupTimer = 999;
+            // World のチャンク dispose をこのフレーム多めに許可
+            if (world && world.maxChunkDisposesPerFrame !== undefined) {
+                world._memPressureBoost = 6;
+            }
+            // renderer の RenderList キャッシュ + WebGL info を解放
+            if (renderer.renderLists && renderer.renderLists.dispose) {
+                renderer.renderLists.dispose();
+            }
+        } else if (isHigh) {
+            memPressureLevel = 1;
+            memPressureCooldown = 3.0;
+            if (currentPixelRatio > MIN_PIXEL_RATIO) {
+                currentPixelRatio = Math.max(MIN_PIXEL_RATIO, currentPixelRatio - 0.15);
+                renderer.setPixelRatio(currentPixelRatio);
+            }
+            while (gameManager.effects.length > 24) {
+                const old = gameManager.effects.shift();
+                gameManager._forceDestroyEffect(old);
+            }
+            while (activeEffects.length > 24) {
+                const old = activeEffects.shift();
+                forceReleaseEffect(old);
+            }
+            // GameManager の cleanup を 1 段早める
+            gameManager.cleanupTimer = Math.max(gameManager.cleanupTimer, 0.45);
+        } else if (memPressureLevel > 0 && memPressureCooldown <= 0) {
+            memPressureLevel = 0;
+        }
+    }
+
+    // RenderList キャッシュの定期解放（10 秒ごと）。
+    // dispose しても scene 上のオブジェクトには影響しないが、
+    // three.js が draw call ごとに保持する内部キャッシュ
+    // (WebGLRenderList / WebGLProgram の参照) を解放してヒープ膨張を抑える。
+    renderListsCleanupTimer += rawDt;
+    if (renderListsCleanupTimer >= 10.0) {
+        renderListsCleanupTimer = 0;
+        if (renderer.renderLists && renderer.renderLists.dispose) {
+            renderer.renderLists.dispose();
         }
     }
 

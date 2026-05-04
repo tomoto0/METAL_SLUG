@@ -136,6 +136,10 @@ export class Enemy {
         // 残弾も消す
         this.projectiles.forEach(p => p.destroy());
         this.projectiles = [];
+        // _recordMaterials() で蓄えた mesh 参照を切る。
+        // dispose 済みでも JS 側参照が残ると敵 1 体あたり数十 mesh 分の
+        // クロージャが GC 対象にならず、長時間プレイで累積する。
+        this.originalMaterials.length = 0;
     }
 
     getPosition() {

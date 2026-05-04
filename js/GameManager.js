@@ -13,6 +13,13 @@ const _hitTmpV = new THREE.Vector3();
 const _hitTmpSeg = new THREE.Vector3();
 const _hitTmpDelta = new THREE.Vector3();
 
+const _sharedDebrisGeo = new THREE.BoxGeometry(1, 1, 1);
+_sharedDebrisGeo.userData.shared = true;
+const _sharedSparkGeo = new THREE.BoxGeometry(1, 1, 1);
+_sharedSparkGeo.userData.shared = true;
+const _sharedCrashSmokeGeo = new THREE.SphereGeometry(1, 5, 4);
+_sharedCrashSmokeGeo.userData.shared = true;
+
 /**
  * ゲーム全体の管理（サイドスクロール版）
  * - 敵は主に画面右側からスポーン
@@ -47,6 +54,7 @@ export class GameManager {
 
         // ボス
         this.boss = null;
+        this.defeatedBosses = [];
         this.bossSpawnedWaves = new Set();
         this.onBossHpChange = null;
         this.onBossDefeated = null;
@@ -119,6 +127,7 @@ export class GameManager {
                     { type: 'infantry', subType: 'shield',       weight: 2 },
                     { type: 'infantry', subType: 'officer',      weight: 1 },
                     { type: 'infantry', subType: 'flamethrower', weight: 2 },
+                    { type: 'infantry', subType: 'jetpack_raider', weight: 1 },
                     { type: 'tank',     subType: 'light',        weight: 1 },
                 ],
             },
@@ -131,6 +140,7 @@ export class GameManager {
                     { type: 'infantry',  subType: 'rocket',         weight: 1 },
                     { type: 'infantry',  subType: 'sniper',         weight: 1 },
                     { type: 'infantry',  subType: 'perched_sniper', weight: 1 },
+                    { type: 'infantry',  subType: 'jetpack_raider', weight: 1 },
                     { type: 'aircraft',  subType: 'scout_heli',     weight: 2 },
                     { type: 'aircraft',  subType: 'attack_heli',    weight: 1 },
                 ],
@@ -143,6 +153,7 @@ export class GameManager {
                     { type: 'infantry', subType: 'flamethrower', weight: 1 },
                     { type: 'infantry', subType: 'shield',       weight: 1 },
                     { type: 'infantry', subType: 'rocket',       weight: 1 },
+                    { type: 'aircraft', subType: 'tomahawk',     weight: 1 },
                 ],
             },
             // --- Wave 9: ミイラの大群 + 火炎兵連携 ---
@@ -154,6 +165,7 @@ export class GameManager {
                     { type: 'infantry', subType: 'sniper',       weight: 1 },
                     { type: 'infantry', subType: 'ninja',        weight: 2 },
                     { type: 'tank',     subType: 'light',        weight: 1 },
+                    { type: 'aircraft', subType: 'tomahawk',     weight: 1 },
                 ],
             },
             // --- Wave 10: 全方位空襲（爆撃機・戦闘機 + 屋上スナイパー）---
@@ -165,9 +177,11 @@ export class GameManager {
                     { type: 'infantry', subType: 'rocket',         weight: 1 },
                     { type: 'infantry', subType: 'juggernaut',     weight: 1 },
                     { type: 'infantry', subType: 'perched_sniper', weight: 1 },
+                    { type: 'infantry', subType: 'jetpack_raider', weight: 1 },
                     { type: 'aircraft', subType: 'attack_heli',    weight: 2 },
                     { type: 'aircraft', subType: 'bomber',         weight: 2 },
                     { type: 'aircraft', subType: 'fighter',        weight: 1 },
+                    { type: 'aircraft', subType: 'tomahawk',       weight: 1 },
                 ],
             },
             // --- Wave 11: 機甲師団（双戦車 + 重装歩兵）---
@@ -183,6 +197,7 @@ export class GameManager {
                     { type: 'tank',     subType: 'light',        weight: 2 },
                     { type: 'tank',     subType: 'heavy',        weight: 2 },
                     { type: 'aircraft', subType: 'scout_heli',   weight: 1 },
+                    { type: 'aircraft', subType: 'tomahawk',     weight: 1 },
                 ],
             },
             // --- Wave 12: 精鋭乱戦 + 最終ボス Tani Oh 強化版 ---
@@ -198,6 +213,7 @@ export class GameManager {
                     { type: 'infantry', subType: 'officer',      weight: 1 },
                     { type: 'infantry', subType: 'juggernaut',   weight: 1 },
                     { type: 'tank',     subType: 'heavy',        weight: 1 },
+                    { type: 'aircraft', subType: 'tomahawk',     weight: 1 },
                 ],
             },
             // --- Wave 13: 焦土進軍（重装歩兵の先鋒 + 屋上スナイパー）---
@@ -211,6 +227,7 @@ export class GameManager {
                     { type: 'infantry', subType: 'perched_sniper', weight: 2 },
                     { type: 'tank',     subType: 'heavy',          weight: 2 },
                     { type: 'aircraft', subType: 'attack_heli',    weight: 1 },
+                    { type: 'aircraft', subType: 'tomahawk',       weight: 1 },
                 ],
             },
             // --- Wave 14: 砂嵐制圧線（空地同時圧力）---
@@ -220,10 +237,12 @@ export class GameManager {
                     { type: 'infantry', subType: 'juggernaut',   weight: 2 },
                     { type: 'infantry', subType: 'ninja',        weight: 2 },
                     { type: 'infantry', subType: 'sniper',       weight: 2 },
+                    { type: 'infantry', subType: 'jetpack_raider', weight: 1 },
                     { type: 'tank',     subType: 'light',        weight: 2 },
                     { type: 'tank',     subType: 'heavy',        weight: 2 },
                     { type: 'aircraft', subType: 'bomber',       weight: 2 },
                     { type: 'aircraft', subType: 'fighter',      weight: 1 },
+                    { type: 'aircraft', subType: 'tomahawk',     weight: 1 },
                 ],
             },
             // --- Wave 15: 鉄血混成旅団（精鋭歩兵ラッシュ）---
@@ -236,6 +255,7 @@ export class GameManager {
                     { type: 'infantry', subType: 'machinegun',   weight: 2 },
                     { type: 'infantry', subType: 'hunter',       weight: 2 },
                     { type: 'tank',     subType: 'heavy',        weight: 2 },
+                    { type: 'aircraft', subType: 'tomahawk',     weight: 1 },
                 ],
             },
             // --- Wave 16: 要塞突破戦（超強化ボス戦前哨）---
@@ -249,6 +269,7 @@ export class GameManager {
                     { type: 'infantry', subType: 'perched_sniper', weight: 2 },
                     { type: 'tank',     subType: 'heavy',          weight: 2 },
                     { type: 'aircraft', subType: 'attack_heli',    weight: 2 },
+                    { type: 'aircraft', subType: 'tomahawk',       weight: 1 },
                 ],
             },
             // --- Wave 17: 終末連隊（ボス後の殲滅フェーズ）---
@@ -262,6 +283,7 @@ export class GameManager {
                     { type: 'tank',     subType: 'heavy',        weight: 2 },
                     { type: 'aircraft', subType: 'bomber',       weight: 2 },
                     { type: 'aircraft', subType: 'fighter',      weight: 2 },
+                    { type: 'aircraft', subType: 'tomahawk',     weight: 2 },
                 ],
             },
             // --- Wave 18: 装甲遊撃隊（新精鋭兵の投入）---
@@ -272,9 +294,11 @@ export class GameManager {
                     { type: 'infantry', subType: 'juggernaut',   weight: 2 },
                     { type: 'infantry', subType: 'ninja',        weight: 2 },
                     { type: 'infantry', subType: 'sniper',       weight: 1 },
+                    { type: 'infantry', subType: 'jetpack_raider', weight: 2 },
                     { type: 'tank',     subType: 'heavy',        weight: 2 },
                     { type: 'tank',     subType: 'flak',         weight: 1 },
                     { type: 'aircraft', subType: 'interceptor',  weight: 1 },
+                    { type: 'aircraft', subType: 'tomahawk',     weight: 2 },
                 ],
             },
             // --- Wave 19: 工兵火線（爆破兵とドローンの面制圧）---
@@ -288,6 +312,7 @@ export class GameManager {
                     { type: 'tank',     subType: 'flak',         weight: 2 },
                     { type: 'aircraft', subType: 'drone',        weight: 3 },
                     { type: 'aircraft', subType: 'fighter',      weight: 1 },
+                    { type: 'aircraft', subType: 'tomahawk',     weight: 1 },
                 ],
             },
             // --- Wave 20: 空中機動要塞（ガンシップ初登場）---
@@ -301,6 +326,7 @@ export class GameManager {
                     { type: 'aircraft', subType: 'gunship',      weight: 3 },
                     { type: 'aircraft', subType: 'interceptor',  weight: 2 },
                     { type: 'aircraft', subType: 'drone',        weight: 2 },
+                    { type: 'aircraft', subType: 'tomahawk',     weight: 2 },
                 ],
             },
             // --- Wave 21: 超重包囲網（地上重機と空襲の同時圧力）---
@@ -315,6 +341,7 @@ export class GameManager {
                     { type: 'tank',     subType: 'siege',        weight: 2 },
                     { type: 'aircraft', subType: 'gunship',      weight: 2 },
                     { type: 'aircraft', subType: 'interceptor',  weight: 2 },
+                    { type: 'aircraft', subType: 'tomahawk',     weight: 2 },
                 ],
             },
             // --- Wave 22: 最終防衛線（新敵種ほぼ全投入 + 屋上狙撃手強化）---
@@ -327,6 +354,7 @@ export class GameManager {
                     { type: 'infantry', subType: 'ninja',          weight: 2 },
                     { type: 'infantry', subType: 'sniper',         weight: 2 },
                     { type: 'infantry', subType: 'perched_sniper', weight: 3 },
+                    { type: 'infantry', subType: 'jetpack_raider', weight: 2 },
                     { type: 'tank',     subType: 'heavy',          weight: 2 },
                     { type: 'tank',     subType: 'flak',           weight: 2 },
                     { type: 'tank',     subType: 'siege',          weight: 2 },
@@ -334,6 +362,7 @@ export class GameManager {
                     { type: 'aircraft', subType: 'interceptor',    weight: 2 },
                     { type: 'aircraft', subType: 'drone',          weight: 2 },
                     { type: 'aircraft', subType: 'bomber',         weight: 1 },
+                    { type: 'aircraft', subType: 'tomahawk',       weight: 2 },
                 ],
             },
             // --- Wave 23: 無限地獄（全敵種ランダム）---
@@ -356,6 +385,7 @@ export class GameManager {
                     { type: 'infantry', subType: 'commando',     weight: 2 },
                     { type: 'infantry', subType: 'demolition',   weight: 2 },
                     { type: 'infantry', subType: 'perched_sniper', weight: 2 },
+                    { type: 'infantry', subType: 'jetpack_raider', weight: 2 },
                     { type: 'tank',     subType: 'light',        weight: 1 },
                     { type: 'tank',     subType: 'heavy',        weight: 1 },
                     { type: 'tank',     subType: 'flak',         weight: 1 },
@@ -367,6 +397,7 @@ export class GameManager {
                     { type: 'aircraft', subType: 'drone',        weight: 2 },
                     { type: 'aircraft', subType: 'interceptor',  weight: 2 },
                     { type: 'aircraft', subType: 'gunship',      weight: 1 },
+                    { type: 'aircraft', subType: 'tomahawk',     weight: 2 },
                 ],
             },
         ];
@@ -394,8 +425,14 @@ export class GameManager {
 
         // スポーン
         this.spawnTimer += dt;
-        const activeEnemies = this.enemies.filter(e => e.alive).length;
-        if (this.spawnTimer >= wave.spawnInterval && activeEnemies < wave.maxSimultaneous) {
+        let activeEnemies = 0;
+        for (const e of this.enemies) {
+            if (e.alive) activeEnemies++;
+        }
+        const perfCaps = this._getPerfCaps();
+        const effectiveSpawnInterval = wave.spawnInterval * perfCaps.spawnIntervalScale;
+        const maxActiveEnemies = Math.min(wave.maxSimultaneous, perfCaps.maxEnemies);
+        if (this.spawnTimer >= effectiveSpawnInterval && activeEnemies < maxActiveEnemies) {
             this.spawnTimer = 0;
             this._spawnFromPool(wave.pool, playerPos, scrollZ);
         }
@@ -410,6 +447,12 @@ export class GameManager {
         // ボス更新
         if (this.boss && this.boss.alive) {
             this.boss.update(dt, playerPos);
+        }
+        for (let i = this.defeatedBosses.length - 1; i >= 0; i--) {
+            const boss = this.defeatedBosses[i];
+            const timersDone = !boss._destroyTimers || boss._destroyTimers.length === 0;
+            const groupGone = !boss.group || !boss.group.parent;
+            if (timersDone && groupGone) this.defeatedBosses.splice(i, 1);
         }
 
         // ボススポーン（Wave 4/8/12/16/20）
@@ -478,7 +521,7 @@ export class GameManager {
         this.cleanupTimer += dt;
         if (this.cleanupTimer >= 0.5) {
             this.cleanupTimer = 0;
-            this._cleanup();
+            this._cleanup(player);
         }
     }
 
@@ -502,6 +545,7 @@ export class GameManager {
         this._handlePlayerProjectiles(player);
         this._handlePlayerProjectilesVsWorld(player);
         this._handleEnemyProjectiles(player);
+        this._handleTomahawkRams(player);
 
         if (player.isInvincible()) return;
 
@@ -691,6 +735,26 @@ export class GameManager {
         }
     }
 
+    _handleTomahawkRams(player) {
+        const playerPos = player.getPosition();
+        for (const enemy of this.enemies) {
+            if (!enemy.alive || enemy.type !== 'aircraft' || enemy.subType !== 'tomahawk') continue;
+            const impactDistance = 2.05;
+            if (enemy.getPosition().distanceTo(playerPos) > impactDistance) continue;
+
+            const impact = enemy.getPosition().clone();
+            impact.y = Math.max(impact.y, 0.6);
+            this._spawnExplosion(impact, 'large');
+            if (this.soundManager) this.soundManager.playExplosionLarge();
+            if (this.onScreenShake) this.onScreenShake(0.75);
+
+            enemy.takeDamage(9999);
+            if (!player.isInvincible()) {
+                this._damagePlayer(player, enemy.damage, impact);
+            }
+        }
+    }
+
     _findClosestHostileHit(projectile) {
         const { start, end } = this._getProjectileSegment(projectile);
         const projectileRadius = projectile.hitRadius || 0.2;
@@ -816,10 +880,11 @@ export class GameManager {
             }
             case 'aircraft': {
                 const baseRadius = enemy.subType === 'gunship' ? 2.1
+                    : (enemy.subType === 'tomahawk' ? 0.68
                     : (enemy.subType === 'bomber' ? 1.7
                     : (enemy.subType === 'attack_heli' ? 1.45
                     : (enemy.subType === 'interceptor' ? 1.35
-                    : (enemy.subType === 'drone' ? 0.85 : 1.2))));
+                    : (enemy.subType === 'drone' ? 0.85 : 1.2)))));
                 const arr = this._ensureSphereCache(enemy, 2);
                 arr[0].center.copy(pos); arr[0].radius = baseRadius;
                 this._setSphereCenter(arr[1], -1.5, 0, 0, q, pos); arr[1].radius = baseRadius * 0.55;
@@ -925,7 +990,9 @@ export class GameManager {
             if (this.onScreenShake) this.onScreenShake(1.5);
             if (this.soundManager) this.soundManager.playExplosionLarge();
             // effects に登録して update/cleanup の対象にする
-            this.boss.destroy(this.effects);
+            const defeatedBoss = this.boss;
+            defeatedBoss.destroy(this.effects);
+            this.defeatedBosses.push(defeatedBoss);
             this.boss = null;
             if (this.onBossDefeated) this.onBossDefeated();
         }
@@ -1184,12 +1251,12 @@ export class GameManager {
             const w = 0.15 + Math.random() * 0.35;
             const h = 0.08 + Math.random() * 0.2;
             const d = 0.15 + Math.random() * 0.3;
-            const geo = new THREE.BoxGeometry(w, h, d);
             const mat = new THREE.MeshLambertMaterial({
                 color: debrisColors[Math.floor(Math.random() * debrisColors.length)],
                 transparent: true, opacity: 1.0,
             });
-            const piece = new THREE.Mesh(geo, mat);
+            const piece = new THREE.Mesh(_sharedDebrisGeo, mat);
+            piece.scale.set(w, h, d);
             debrisGroup.add(piece);
 
             const angle = Math.random() * Math.PI * 2;
@@ -1244,7 +1311,7 @@ export class GameManager {
             scene.remove(debrisGroup);
             debrisGroup.traverse(child => {
                 if (child.isMesh) {
-                    if (child.geometry) child.geometry.dispose();
+                    if (child.geometry && !(child.geometry.userData && child.geometry.userData.shared)) child.geometry.dispose();
                     if (child.material) child.material.dispose();
                 }
             });
@@ -1263,7 +1330,7 @@ export class GameManager {
         const smokeTrail = [];
         const scene = this.scene;
 
-        const MAX_TRAIL = 32; // 一機あたりの煙トレイル上限
+        const MAX_TRAIL = 16; // 一機あたりの煙トレイル上限
         let crashDisposed = false;
         const crashEffect = {
             alive: true, age: 0, maxAge,
@@ -1272,14 +1339,14 @@ export class GameManager {
                 if (this.age >= this.maxAge) { this.alive = false; return; }
 
                 // 煙のトレイルを追加（フレームごと、ただし上限あり）
-                if (this.age < 1.5 && Math.random() < 0.7 && smokeTrail.length < MAX_TRAIL) {
+                if (this.age < 1.5 && Math.random() < 0.45 && smokeTrail.length < MAX_TRAIL) {
                     const t = this.age;
-                    const smokeGeo = new THREE.SphereGeometry(0.3 + Math.random() * 0.4, 5, 4);
                     const smokeMat = new THREE.MeshBasicMaterial({
                         color: Math.random() < 0.3 ? 0xFF4400 : 0x333333,
                         transparent: true, opacity: 0.7,
                     });
-                    const smoke = new THREE.Mesh(smokeGeo, smokeMat);
+                    const smoke = new THREE.Mesh(_sharedCrashSmokeGeo, smokeMat);
+                    smoke.scale.setScalar(0.3 + Math.random() * 0.4);
                     // 螺旋軌道
                     smoke.position.set(
                         startPos.x + Math.cos(t * 5) * (2 + t * 1.5),
@@ -1299,7 +1366,7 @@ export class GameManager {
                     s.mesh.scale.addScalar(dt * 1.5);
                     if (op <= 0.001) {
                         scene.remove(s.mesh);
-                        if (s.mesh.geometry) s.mesh.geometry.dispose();
+                        if (s.mesh.geometry && !(s.mesh.geometry.userData && s.mesh.geometry.userData.shared)) s.mesh.geometry.dispose();
                         if (s.mesh.material) s.mesh.material.dispose();
                         smokeTrail.splice(i, 1);
                     }
@@ -1311,7 +1378,7 @@ export class GameManager {
                 crashDisposed = true;
                 smokeTrail.forEach(s => {
                     scene.remove(s.mesh);
-                    if (s.mesh.geometry) s.mesh.geometry.dispose();
+                    if (s.mesh.geometry && !(s.mesh.geometry.userData && s.mesh.geometry.userData.shared)) s.mesh.geometry.dispose();
                     if (s.mesh.material) s.mesh.material.dispose();
                 });
                 smokeTrail.length = 0;
@@ -1337,12 +1404,12 @@ export class GameManager {
         const colors = [0xFFFF00, 0xFFAA00, 0xFFFFFF];
         for (let i = 0; i < 5; i++) {
             const size = 0.04 + Math.random() * 0.06;
-            const geo = new THREE.BoxGeometry(size, size, size);
             const mat = new THREE.MeshBasicMaterial({
                 color: colors[Math.floor(Math.random() * colors.length)],
                 transparent: true, opacity: 1.0,
             });
-            const spark = new THREE.Mesh(geo, mat);
+            const spark = new THREE.Mesh(_sharedSparkGeo, mat);
+            spark.scale.setScalar(size);
             sparkGroup.add(spark);
             particles.push({
                 mesh: spark,
@@ -1382,7 +1449,7 @@ export class GameManager {
             scene.remove(sparkGroup);
             sparkGroup.traverse(child => {
                 if (child.isMesh) {
-                    if (child.geometry) child.geometry.dispose();
+                    if (child.geometry && !(child.geometry.userData && child.geometry.userData.shared)) child.geometry.dispose();
                     if (child.material) child.material.dispose();
                 }
             });
@@ -1445,6 +1512,11 @@ export class GameManager {
             }
             this.boss = null;
         }
+        this.defeatedBosses.forEach(boss => {
+            if (boss && boss.destroyImmediate) boss.destroyImmediate();
+            else if (boss && boss.cancelDestroyTimers) boss.cancelDestroyTimers();
+        });
+        this.defeatedBosses = [];
         this.bossSpawnedWaves.clear();
         // クリーンアップタイマーも 0 に戻す。残ったまま新ゲームに入ると、
         // 開始直後に大規模 cleanup が走って表示中エフェクトが shift される。
@@ -1479,7 +1551,7 @@ export class GameManager {
             }
         }
 
-        const spawnPos = perchedPos || this._getSpawnPosition(playerPos, selected.type, scrollZ);
+        const spawnPos = perchedPos || this._getSpawnPosition(playerPos, selected.type, scrollZ, selected.subType);
 
         let enemy;
         switch (selected.type) {
@@ -1544,12 +1616,22 @@ export class GameManager {
      * - 地上敵: 画面前方（+Z 方向）からスポーン、たまに後方からも
      * - 航空機: 画面上空の前方からスポーン
      */
-    _getSpawnPosition(playerPos, type, scrollZ) {
+    _getSpawnPosition(playerPos, type, scrollZ, subType = null) {
         // 主に前方（進行方向 +Z）からスポーン、20%の確率で後方から
         const fromFront = Math.random() > 0.2;
         let x, y, z;
 
         if (type === 'aircraft') {
+            if (subType === 'tomahawk') {
+                // 画面外左右から突入する巡航ミサイル
+                const side = Math.random() < 0.5 ? -1 : 1;
+                x = side * (18 + Math.random() * 8);
+                z = fromFront
+                    ? scrollZ + 22 + Math.random() * 30
+                    : scrollZ - 14 - Math.random() * 16;
+                y = 3.2 + Math.random() * 1.4;
+                return new THREE.Vector3(x, y, z);
+            }
             // 航空機は画面外の低空から（砲身仰角で届く高度）
             z = fromFront ? scrollZ + 40 + Math.random() * 10 : scrollZ - 20 - Math.random() * 10;
             y = 5 + Math.random() * 2.5; // 5〜7.5m
@@ -1564,13 +1646,90 @@ export class GameManager {
         return new THREE.Vector3(x, y, z);
     }
 
-    _cleanup() {
-        const scrollZ = this.getScrollZ();
+    _getPerfCaps() {
+        const waveNum = this.waveIndex + 1;
+        if (waveNum >= 18) {
+            return {
+                maxEnemies: 17,
+                spawnIntervalScale: 1.25,
+                enemyProjectiles: 12,
+                bossProjectiles: 24,
+                effects: 34,
+                items: 14,
+            };
+        }
+        if (waveNum >= 12) {
+            return {
+                maxEnemies: 18,
+                spawnIntervalScale: 1.12,
+                enemyProjectiles: 14,
+                bossProjectiles: 28,
+                effects: 38,
+                items: 16,
+            };
+        }
+        return {
+            maxEnemies: Infinity,
+            spawnIntervalScale: 1.0,
+            enemyProjectiles: 18,
+            bossProjectiles: 36,
+            effects: 48,
+            items: 20,
+        };
+    }
 
-        // 死亡した敵の破棄
-        const deadEnemies = this.enemies.filter(e => !e.alive);
-        deadEnemies.forEach(e => e.destroy());
-        this.enemies = this.enemies.filter(e => e.alive);
+    _cleanup(activeEntity) {
+        const scrollZ = this.getScrollZ();
+        const perfCaps = this._getPerfCaps();
+
+        // プレイヤー / Marco の弾とエフェクトのセーフティネット。
+        // main.js の毎フレーム掃除に加え、ヒットストップ中や FPS が低下した
+        // フレームで掃除が間引かれた場合にここで強制的に詰む。
+        if (activeEntity) {
+            if (Array.isArray(activeEntity.projectiles)) {
+                const arr = activeEntity.projectiles;
+                for (let i = arr.length - 1; i >= 0; i--) {
+                    const p = arr[i];
+                    if (!p.alive && !p.impactPending) {
+                        if (p.destroy) p.destroy();
+                        arr.splice(i, 1);
+                        continue;
+                    }
+                    if (p.alive) {
+                        const pPos = p.getPosition ? p.getPosition()
+                                   : (p.group ? p.group.position : (p.mesh ? p.mesh.position : null));
+                        if (pPos && (pPos.z < scrollZ - 60 || pPos.z > scrollZ + 130)) {
+                            if (p.destroy) p.destroy();
+                            arr.splice(i, 1);
+                        }
+                    }
+                }
+            }
+            // プレイヤー側エフェクトの上限超過を強制刈り込み（後半 Wave 累積対策）
+            if (Array.isArray(activeEntity.effects)) {
+                const arr = activeEntity.effects;
+                for (let i = arr.length - 1; i >= 0; i--) {
+                    const e = arr[i];
+                    if (!e.alive) {
+                        if (e.destroy) e.destroy();
+                        arr.splice(i, 1);
+                    }
+                }
+                const limit = perfCaps.effects;
+                while (arr.length > limit) {
+                    const old = arr.shift();
+                    this._forceDestroyEffect(old);
+                }
+            }
+        }
+
+        // 死亡した敵の破棄（filter で毎回配列を作らない）
+        for (let i = this.enemies.length - 1; i >= 0; i--) {
+            if (!this.enemies[i].alive) {
+                this.enemies[i].destroy();
+                this.enemies.splice(i, 1);
+            }
+        }
 
         // 画面外の敵を強制除去（スクロール位置より 80 ユニット以上後ろ）
         for (let i = this.enemies.length - 1; i >= 0; i--) {
@@ -1584,7 +1743,7 @@ export class GameManager {
         // 敵の弾丸: 画面外のものを削除
         this.enemies.forEach(enemy => {
             // 敵ごとの弾数上限（暴走対策）
-            const MAX_ENEMY_PROJECTILES = 18;
+            const MAX_ENEMY_PROJECTILES = perfCaps.enemyProjectiles;
             while (enemy.projectiles.length > MAX_ENEMY_PROJECTILES) {
                 const old = enemy.projectiles.shift();
                 if (old && old.destroy) old.destroy();
@@ -1606,7 +1765,7 @@ export class GameManager {
 
         // ボス弾のクリーンアップ
         if (this.boss && this.boss.projectiles) {
-            const MAX_BOSS_PROJECTILES = 36;
+            const MAX_BOSS_PROJECTILES = perfCaps.bossProjectiles;
             while (this.boss.projectiles.length > MAX_BOSS_PROJECTILES) {
                 const old = this.boss.projectiles.shift();
                 if (old && old.destroy) old.destroy();
@@ -1626,23 +1785,25 @@ export class GameManager {
             }
         }
 
-        // エフェクトの破棄
-        const deadEffects = this.effects.filter(e => !e.alive);
-        deadEffects.forEach(e => { if (e.destroy) e.destroy(); });
-        this.effects = this.effects.filter(e => e.alive);
+        // エフェクトの破棄（filter で毎回配列を作らない）
+        for (let i = this.effects.length - 1; i >= 0; i--) {
+            if (!this.effects[i].alive) {
+                if (this.effects[i].destroy) this.effects[i].destroy();
+                this.effects.splice(i, 1);
+            }
+        }
 
         // エフェクト数の上限（後半シーンでの累積を抑制）
         // shift で配列から外しただけでは scene 上の Mesh は残るので、必ず destroy
         // （それが無ければ group を traverse して dispose）して確実に解放する。
-        // 28→48 に緩和: 表示中の煙トレイル・炎・爆発が強制破壊で消える症状を抑制
-        const MAX_EFFECTS = 48;
+        const MAX_EFFECTS = perfCaps.effects;
         while (this.effects.length > MAX_EFFECTS) {
             const oldest = this.effects.shift();
             this._forceDestroyEffect(oldest);
         }
 
-        // アイテムの上限（20を超えた場合、古いものを削除）
-        const MAX_ITEMS = 20;
+        // アイテムの上限（後半はライト代替メッシュも含めて保持数を抑える）
+        const MAX_ITEMS = perfCaps.items;
         while (this.items.length > MAX_ITEMS) {
             const oldest = this.items.shift();
             if (oldest.destroy) oldest.destroy();
