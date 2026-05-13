@@ -6953,20 +6953,34 @@ export class World {
             // 道路中央寄り (旧: ±1.75) だと block 半径 (≈6.1〜8.5) が
             // プレイヤー横移動範囲 ±8 を超えて道を完全に塞ぐため、必ず片側に寄せ
             // phase に応じて反対側に通行帯を確保する。
+            // Wave 15 後半 (endgamePhase>=2) からは一部を「縦置き」(long axis を
+            // 道路方向に揃える) にして、同じアーチが横断連続する閉塞感を緩和する。
             if (endgamePhase >= 1 && Math.random() < Math.min(0.9, 0.6 + endgamePhase * 0.06)) {
                 const overpass = this._buildBrokenOverpass(new THREE.Group(), endgamePhase);
                 const overpassSide = Math.random() > 0.5 ? 1 : -1;
-                const overpassOffset = 2.6 + Math.random() * 1.4 + endgamePhase * 0.18;
+                const alignAlongRoad = endgamePhase >= 2 && Math.random() < 0.4;
+                const overpassOffset = alignAlongRoad
+                    ? 5.0 + Math.random() * 1.4 + endgamePhase * 0.1
+                    : 2.6 + Math.random() * 1.4 + endgamePhase * 0.18;
                 overpass.position.set(
                     overpassSide * overpassOffset,
                     0,
                     startZ + Math.random() * this.chunkSize
                 );
-                overpass.rotation.y = (Math.random() - 0.5) * 0.35;
+                if (alignAlongRoad) {
+                    overpass.rotation.y = (overpassSide > 0 ? -Math.PI / 2 : Math.PI / 2)
+                        + (Math.random() - 0.5) * 0.25;
+                } else {
+                    overpass.rotation.y = (Math.random() - 0.5) * 0.35;
+                }
                 overpass.scale.setScalar(1.35 + Math.random() * 0.3);
                 this.scene.add(overpass);
                 chunk.objects.push(overpass);
-                tag(overpass, 'block', 5.8 + endgamePhase * 0.3);
+                // 縦置きはデッキ幅 (~2.2m) のみが横断方向に出るため block 半径を縮小
+                const overpassRadius = alignAlongRoad
+                    ? 2.6 + endgamePhase * 0.1
+                    : 5.8 + endgamePhase * 0.3;
+                tag(overpass, 'block', overpassRadius);
             }
 
             // 警報サイレン塔（Wave 15+）
@@ -7227,16 +7241,22 @@ export class World {
                 if (Math.random() < 0.6) {
                     const overpass = this._buildBrokenOverpass(new THREE.Group(), 7);
                     const side = Math.random() > 0.5 ? 1 : -1;
+                    const alignAlongRoad = Math.random() < 0.4;
                     overpass.position.set(
-                        side * (3.2 + Math.random() * 1.0),
+                        side * (alignAlongRoad ? 5.4 + Math.random() * 1.2 : 3.2 + Math.random() * 1.0),
                         0,
                         startZ + Math.random() * this.chunkSize
                     );
-                    overpass.rotation.y = (Math.random() - 0.5) * 0.3;
+                    if (alignAlongRoad) {
+                        overpass.rotation.y = (side > 0 ? -Math.PI / 2 : Math.PI / 2)
+                            + (Math.random() - 0.5) * 0.25;
+                    } else {
+                        overpass.rotation.y = (Math.random() - 0.5) * 0.3;
+                    }
                     overpass.scale.setScalar(1.5 + Math.random() * 0.3);
                     this.scene.add(overpass);
                     chunk.objects.push(overpass);
-                    tag(overpass, 'block', 6.3);
+                    tag(overpass, 'block', alignAlongRoad ? 2.9 : 6.3);
                 }
                 if (Math.random() < 0.65) {
                     const aa = placeDynamic(this._buildAntiAirGun, 0, {
