@@ -3,7 +3,7 @@ import * as THREE from 'three';
 /**
  * 弾丸クラス
  * owner: 'player' or 'enemy'
- * type: 'bullet' | 'cannon' | 'rocket' | 'bomb'
+ * type: 'bullet' | 'cannon' | 'rocket' | 'bomb' | 'flame'
  */
 
 // 弾丸用の共有ジオメトリ・マテリアル（毎フレーム生成→GC負荷を解消）
@@ -18,10 +18,28 @@ const _cannonMat  = new THREE.MeshBasicMaterial({ color: 0xFFAA44 });
 const _cannonTrailGeo = new THREE.SphereGeometry(0.18, 6, 4);
 const _cannonTrailMat = new THREE.MeshBasicMaterial({ color: 0x999999, transparent: true, opacity: 0.35, depthWrite: false });
 
-const _rocketBodyGeo = new THREE.CylinderGeometry(0.06, 0.09, 0.65, 6);
-const _rocketBodyMat = new THREE.MeshBasicMaterial({ color: 0x607030 });
-const _rocketFlameGeo = new THREE.ConeGeometry(0.07, 0.35, 6);
-const _rocketFlameMat = new THREE.MeshBasicMaterial({ color: 0xFF5500, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false });
+// ロケット弾: 弾頭・本体・尾翼・噴射炎を組み合わせて軍用ミサイル風に。
+const _rocketBodyGeo = new THREE.CylinderGeometry(0.075, 0.075, 0.55, 10);
+const _rocketBodyMat = new THREE.MeshBasicMaterial({ color: 0x5A6A35 });
+const _rocketNoseGeo = new THREE.ConeGeometry(0.075, 0.22, 10);
+const _rocketNoseMat = new THREE.MeshBasicMaterial({ color: 0x9A9A8A });
+const _rocketBandGeo = new THREE.CylinderGeometry(0.078, 0.078, 0.04, 10);
+const _rocketBandMat = new THREE.MeshBasicMaterial({ color: 0x2C2C20 });
+// fin: 厚さ X / 半径方向 Y / ロケット軸方向(Z) の順
+const _rocketFinGeo = new THREE.BoxGeometry(0.02, 0.10, 0.16);
+const _rocketFinMat = new THREE.MeshBasicMaterial({ color: 0x3A3A2A });
+const _rocketExhaustOuterGeo = new THREE.ConeGeometry(0.11, 0.45, 8);
+const _rocketExhaustOuterMat = new THREE.MeshBasicMaterial({ color: 0xFF6622, transparent: true, opacity: 0.75, blending: THREE.AdditiveBlending, depthWrite: false });
+const _rocketExhaustCoreGeo = new THREE.ConeGeometry(0.055, 0.22, 6);
+const _rocketExhaustCoreMat = new THREE.MeshBasicMaterial({ color: 0xFFFFCC, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
+const _rocketSmokePuffGeo = new THREE.SphereGeometry(0.10, 6, 4);
+const _rocketSmokePuffMat = new THREE.MeshBasicMaterial({ color: 0x666660, transparent: true, opacity: 0.35, depthWrite: false });
+
+// 火炎放射弾: 多層の球で火球を表現。マテリアルは個別フェード用に都度生成。
+const _flameCoreGeo  = new THREE.SphereGeometry(0.16, 8, 6);
+const _flameMidGeo   = new THREE.SphereGeometry(0.26, 8, 6);
+const _flameOuterGeo = new THREE.SphereGeometry(0.38, 8, 6);
+const _flameSmokeGeo = new THREE.SphereGeometry(0.32, 6, 4);
 
 const _bombGeo = new THREE.SphereGeometry(0.2, 8, 6);
 const _bombMat = new THREE.MeshBasicMaterial({ color: 0x333333 });
@@ -30,11 +48,16 @@ const _bombFinMat = new THREE.MeshBasicMaterial({ color: 0x444444 });
 
 const _SHARED_GEOMS = new Set([
     _bulletGeo, _trailBulletGeo, _cannonGeo, _cannonTrailGeo,
-    _rocketBodyGeo, _rocketFlameGeo, _bombGeo, _bombFinGeo,
+    _rocketBodyGeo, _rocketNoseGeo, _rocketBandGeo, _rocketFinGeo,
+    _rocketExhaustOuterGeo, _rocketExhaustCoreGeo, _rocketSmokePuffGeo,
+    _flameCoreGeo, _flameMidGeo, _flameOuterGeo, _flameSmokeGeo,
+    _bombGeo, _bombFinGeo,
 ]);
 const _SHARED_MATS = new Set([
     _bulletMat, _trailBulletMat, _cannonMat, _cannonTrailMat,
-    _rocketBodyMat, _rocketFlameMat, _bombMat, _bombFinMat,
+    _rocketBodyMat, _rocketNoseMat, _rocketBandMat, _rocketFinMat,
+    _rocketExhaustOuterMat, _rocketExhaustCoreMat, _rocketSmokePuffMat,
+    _bombMat, _bombFinMat,
 ]);
 
 export class Projectile {
@@ -87,6 +110,8 @@ export class Projectile {
                 return { hitRadius: 0.32, blastRadius: 2.8, explosionVisual: 'large' };
             case 'bomb':
                 return { hitRadius: 0.34, blastRadius: 3.5, explosionVisual: 'large' };
+            case 'flame':
+                return { hitRadius: 0.35, blastRadius: 0, explosionVisual: 'small' };
             default:
                 return { hitRadius: 0.18, blastRadius: 0, explosionVisual: 'small' };
         }
@@ -102,6 +127,9 @@ export class Projectile {
                 break;
             case 'bomb':
                 this._buildBomb();
+                break;
+            case 'flame':
+                this._buildFlame();
                 break;
             default:
                 this._buildBullet();
@@ -138,16 +166,106 @@ export class Projectile {
 
     /**
      * ロケット弾
+     * 円筒本体 + 円錐弾頭 + 4枚尾翼 + 多層噴射炎。
+     * Object3D.lookAt の規約に従い、local +Z を進行方向とする
+     * （弾頭が飛翔方向を向く）。
      */
     _buildRocket() {
+        // 本体（円筒の軸を Z に揃える）
         const body = new THREE.Mesh(_rocketBodyGeo, _rocketBodyMat);
-        body.rotation.z = Math.PI / 2;
+        body.rotation.x = Math.PI / 2;
         this.group.add(body);
 
-        this.trail = new THREE.Mesh(_rocketFlameGeo, _rocketFlameMat);
-        this.trail.rotation.z = -Math.PI / 2;
-        this.trail.position.x = -0.45;
-        this.group.add(this.trail);
+        // 弾頭（先端を +Z（進行方向）に向ける）
+        const nose = new THREE.Mesh(_rocketNoseGeo, _rocketNoseMat);
+        nose.rotation.x = Math.PI / 2;
+        nose.position.z = 0.275 + 0.11; // 本体先端 + 円錐半長
+        this.group.add(nose);
+
+        // 装飾バンド（前後2本）
+        const bandFront = new THREE.Mesh(_rocketBandGeo, _rocketBandMat);
+        bandFront.rotation.x = Math.PI / 2;
+        bandFront.position.z = 0.16;
+        this.group.add(bandFront);
+        const bandRear = new THREE.Mesh(_rocketBandGeo, _rocketBandMat);
+        bandRear.rotation.x = Math.PI / 2;
+        bandRear.position.z = -0.18;
+        this.group.add(bandRear);
+
+        // 尾翼 4枚（後部に放射状、Z軸まわりに 90°ずつ）
+        for (let i = 0; i < 4; i++) {
+            const angle = (Math.PI / 2) * i;
+            const fin = new THREE.Mesh(_rocketFinGeo, _rocketFinMat);
+            fin.rotation.z = angle;
+            fin.position.x = -Math.sin(angle) * 0.10;
+            fin.position.y = Math.cos(angle) * 0.10;
+            fin.position.z = -0.22;
+            this.group.add(fin);
+        }
+
+        // 噴射炎（外側オレンジ、先端を -Z（後方）へ）
+        const exhaustOuter = new THREE.Mesh(_rocketExhaustOuterGeo, _rocketExhaustOuterMat);
+        exhaustOuter.rotation.x = -Math.PI / 2;
+        exhaustOuter.position.z = -0.50;
+        this.group.add(exhaustOuter);
+
+        // 噴射炎（内側白熱コア）
+        const exhaustCore = new THREE.Mesh(_rocketExhaustCoreGeo, _rocketExhaustCoreMat);
+        exhaustCore.rotation.x = -Math.PI / 2;
+        exhaustCore.position.z = -0.42;
+        this.group.add(exhaustCore);
+
+        // 後方に薄煙
+        const smoke = new THREE.Mesh(_rocketSmokePuffGeo, _rocketSmokePuffMat);
+        smoke.position.z = -0.62;
+        this.group.add(smoke);
+
+        // 既存トレイルフリッカー処理が利くように
+        this.trail = exhaustOuter;
+        this.exhaustCore = exhaustCore;
+        this.smokePuff = smoke;
+    }
+
+    /**
+     * 火炎放射弾
+     * 白熱核 + オレンジ中層 + 深紅外層 + 黒煙を加算合成で重ねた火球。
+     * 個別にゆらめく/拡大/減衰させるため material は per-instance で生成。
+     */
+    _buildFlame() {
+        this.flameLayers = [];
+
+        const coreMat = new THREE.MeshBasicMaterial({
+            color: 0xFFFFE0, transparent: true, opacity: 0.95,
+            blending: THREE.AdditiveBlending, depthWrite: false,
+        });
+        const core = new THREE.Mesh(_flameCoreGeo, coreMat);
+        this.group.add(core);
+        this.flameLayers.push({ mesh: core, baseOpacity: 0.95 });
+
+        const midMat = new THREE.MeshBasicMaterial({
+            color: 0xFFB033, transparent: true, opacity: 0.75,
+            blending: THREE.AdditiveBlending, depthWrite: false,
+        });
+        const mid = new THREE.Mesh(_flameMidGeo, midMat);
+        this.group.add(mid);
+        this.flameLayers.push({ mesh: mid, baseOpacity: 0.75 });
+
+        const outerMat = new THREE.MeshBasicMaterial({
+            color: 0xFF3A00, transparent: true, opacity: 0.50,
+            blending: THREE.AdditiveBlending, depthWrite: false,
+        });
+        const outer = new THREE.Mesh(_flameOuterGeo, outerMat);
+        this.group.add(outer);
+        this.flameLayers.push({ mesh: outer, baseOpacity: 0.50 });
+
+        // 後方の薄煙
+        const smokeMat = new THREE.MeshBasicMaterial({
+            color: 0x222018, transparent: true, opacity: 0.22, depthWrite: false,
+        });
+        const smoke = new THREE.Mesh(_flameSmokeGeo, smokeMat);
+        smoke.position.x = -0.30;
+        this.group.add(smoke);
+        this.flameLayers.push({ mesh: smoke, baseOpacity: 0.22, isSmoke: true });
     }
 
     /**
@@ -193,6 +311,39 @@ export class Projectile {
         // トレイルのフリッカー
         if (this.trail) {
             this.trail.scale.setScalar(0.8 + Math.random() * 0.4);
+        }
+
+        // ロケットの噴射コア・煙パフ追従揺らぎ
+        if (this.type === 'rocket') {
+            if (this.exhaustCore) {
+                this.exhaustCore.scale.setScalar(0.85 + Math.random() * 0.35);
+            }
+            if (this.smokePuff) {
+                const s = 0.9 + Math.random() * 0.6;
+                this.smokePuff.scale.setScalar(s);
+                this.smokePuff.material.opacity = 0.20 + Math.random() * 0.20;
+            }
+        }
+
+        // 火炎放射: 各層を成長＋ゆらぎ＋減衰
+        if (this.type === 'flame' && this.flameLayers) {
+            const t = Math.min(1, this.distanceTraveled / Math.max(1, this.maxDistance));
+            const grow = 0.7 + t * 1.4; // 0.7 → 2.1
+            for (const layer of this.flameLayers) {
+                if (layer.isSmoke) {
+                    const sg = 0.6 + t * 2.0;
+                    layer.mesh.scale.setScalar(sg);
+                    layer.mesh.material.opacity = layer.baseOpacity * Math.max(0, 1 - t * 0.5);
+                } else {
+                    const flicker = 0.85 + Math.random() * 0.35;
+                    layer.mesh.scale.setScalar(grow * flicker);
+                    const fade = Math.pow(1 - t, 1.1);
+                    layer.mesh.material.opacity = layer.baseOpacity * Math.max(0.1, fade);
+                    // 球の中心をわずかにジッターさせて揺らぎを出す
+                    layer.mesh.position.y = (Math.random() - 0.5) * 0.08;
+                    layer.mesh.position.z = (Math.random() - 0.5) * 0.08;
+                }
+            }
         }
 
         // 消滅条件

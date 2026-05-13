@@ -2086,9 +2086,11 @@ export class Player {
                 fireDir.normalize();
                 const rocket = new Projectile(this.scene, {
                     position: muzzleWorldPos, direction: fireDir,
-                    speed: 32, damage: 80, owner: 'player', type: 'cannon',
-                    maxDistance: 120, blastRadius: 5.0,
+                    speed: 32, damage: 80, owner: 'player', type: 'rocket',
+                    maxDistance: 120, blastRadius: 5.0, hitRadius: 0.45,
                 });
+                // 視認性のため少し大きめに
+                rocket.group.scale.set(1.3, 1.3, 1.3);
                 this.projectiles.push(rocket);
                 const flash = new Explosion(this.scene, muzzleWorldPos, { type: 'muzzle', color: 0xFF4400 });
                 this.effects.push(flash);
@@ -2115,8 +2117,10 @@ export class Player {
                     d.normalize();
                     const flame = new Projectile(this.scene, {
                         position: muzzleWorldPos.clone(), direction: d,
-                        speed: 24, damage: 14, owner: 'player', type: 'bullet', maxDistance: 20,
+                        speed: 24, damage: 14, owner: 'player', type: 'flame', maxDistance: 20,
                     });
+                    const s = 0.95 + Math.random() * 0.35;
+                    flame.group.scale.set(s, s, s);
                     this.projectiles.push(flame);
                 }
                 const flash = new Explosion(this.scene, muzzleWorldPos, { type: 'muzzle', color: 0xFF6600 });
@@ -2247,8 +2251,8 @@ export class Player {
                 break;
             }
             case 'FLAME': {
-                // 火炎放射: 短射程・連続噴射・高頻度の小炎弾。
-                // 1発につき 2-3 個ばら撒くと「炎の帯」に見える。
+                // 火炎放射: 短射程・連続噴射・多層火球の小炎弾。
+                // 1発につき 3個ばら撒いて「炎の帯」に見える。
                 for (let i = 0; i < 3; i++) {
                     const d = baseDir.clone();
                     d.x += (Math.random() - 0.5) * 0.18;
@@ -2257,20 +2261,10 @@ export class Player {
                     d.normalize();
                     const flame = new Projectile(this.scene, {
                         position: muzzleWorldPos.clone(), direction: d,
-                        speed: 22, damage: 9, owner: 'player', type: 'bullet', maxDistance: 14,
+                        speed: 22, damage: 9, owner: 'player', type: 'flame', maxDistance: 14,
                     });
-                    flame.group.scale.set(2.0, 2.0, 2.2);
-                    // 弾を炎色に
-                    flame.group.traverse(c => {
-                        if (c.isMesh && c.material && c.material.color) {
-                            const hot = i === 0 ? 0xFFEE66 : (i === 1 ? 0xFF8822 : 0xFF3300);
-                            c.material.color.setHex(hot);
-                            if (c.material.transparent !== undefined) {
-                                c.material.transparent = true;
-                                c.material.opacity = 0.9;
-                            }
-                        }
-                    });
+                    const s = 1.0 + Math.random() * 0.4;
+                    flame.group.scale.set(s, s, s);
                     this.projectiles.push(flame);
                 }
                 const flash = new Explosion(this.scene, muzzleWorldPos, { type: 'muzzle', color: 0xFF7711 });

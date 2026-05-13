@@ -113,43 +113,47 @@ export class Aircraft extends Enemy {
             blending: THREE.AdditiveBlending, depthWrite: false,
         });
 
+        // Object3D.lookAt の規約に従い local +Z を進行方向にレイアウト
+        // （弾頭が常に飛翔方向を向く）。
         const body = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.15, 2.6, 10), bodyMat);
-        body.rotation.z = Math.PI / 2;
+        body.rotation.x = Math.PI / 2;
         this.group.add(body);
 
         const nose = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.52, 10), noseMat);
-        nose.rotation.z = -Math.PI / 2;
-        nose.position.x = 1.55;
+        nose.rotation.x = Math.PI / 2;
+        nose.position.z = 1.55;
         this.group.add(nose);
 
         const intake = new THREE.Mesh(new THREE.CylinderGeometry(0.095, 0.095, 0.12, 10), stripeMat);
-        intake.rotation.z = Math.PI / 2;
-        intake.position.x = 0.72;
+        intake.rotation.x = Math.PI / 2;
+        intake.position.z = 0.72;
         this.group.add(intake);
 
         const rear = new THREE.Mesh(new THREE.CylinderGeometry(0.135, 0.135, 0.18, 10), stripeMat);
-        rear.rotation.z = Math.PI / 2;
-        rear.position.x = -1.36;
+        rear.rotation.x = Math.PI / 2;
+        rear.position.z = -1.36;
         this.group.add(rear);
 
-        for (const z of [-0.16, 0.16]) {
-            const fin = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.03, 0.2), finMat);
-            fin.position.set(-0.88, 0, z);
+        // 水平尾翼（左右に張り出す）
+        for (const x of [-0.16, 0.16]) {
+            const fin = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.03, 0.42), finMat);
+            fin.position.set(x, 0, -0.88);
             this.group.add(fin);
         }
+        // 垂直尾翼（上下）
         for (const y of [-0.12, 0.12]) {
-            const fin = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.2, 0.03), finMat);
-            fin.position.set(-0.88, y, 0);
+            const fin = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.2, 0.42), finMat);
+            fin.position.set(0, y, -0.88);
             this.group.add(fin);
         }
 
-        const stripe = new THREE.Mesh(new THREE.BoxGeometry(1.35, 0.02, 0.34), stripeMat);
-        stripe.position.set(0.3, 0.13, 0);
+        const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.02, 1.35), stripeMat);
+        stripe.position.set(0, 0.13, 0.3);
         this.group.add(stripe);
 
         this.jetCore = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.42, 8), flameMat);
-        this.jetCore.rotation.z = Math.PI / 2;
-        this.jetCore.position.x = -1.58;
+        this.jetCore.rotation.x = -Math.PI / 2; // 先端を -Z（後方）へ
+        this.jetCore.position.z = -1.58;
         this.group.add(this.jetCore);
     }
 
