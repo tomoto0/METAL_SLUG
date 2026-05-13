@@ -80,9 +80,11 @@ export class GameManager {
         // getAllEnemyProjectiles() の戻り値配列を再利用（毎フレーム新規配列＋spread の GC 負荷を回避）
         this._allEnemyProjectilesBuf = [];
 
-        // ウェーブ定義（23ステージ）
-        // 構成: 1〜3 序盤 / 4 中ボス / 5〜7 中盤 / 8 中盤ボス / 9〜12 後半 /
-        // 13〜17 終盤拡張 / 18〜22 深部要塞 / 23 無限
+        // ウェーブ定義（29ステージ）
+        // 構成: 1〜3 序盤 / 4 中ボス Di-Cokka / 5〜7 中盤 / 8 中盤ボス Tani-Oh /
+        // 9〜11 後半 / 12 強化ボス Tani-Oh / 13〜15 終盤 / 16 超強化ボス Tani-Oh /
+        // 17〜19 深部要塞 / 20 究極ボス Tani-Oh / 21〜23 焦土戦線 /
+        // 24 大型攻撃ヘリ Hi-Do / 25〜27 最終決戦前 / 28 最終ボス Hi-Do 改 / 29 無限
         this.waves = [
             // --- Wave 1: 序章（ライフル兵の襲来）---
             {
@@ -375,7 +377,103 @@ export class GameManager {
                     { type: 'aircraft', subType: 'tomahawk',       weight: 2 },
                 ],
             },
-            // --- Wave 23: 無限地獄（全敵種ランダム）---
+            // --- Wave 23: 焦土戦線（Hi-Do 来襲前夜の重圧）---
+            {
+                duration: 50, spawnInterval: 0.66, maxSimultaneous: 25,
+                pool: [
+                    { type: 'infantry', subType: 'commando',       weight: 3 },
+                    { type: 'infantry', subType: 'demolition',     weight: 3 },
+                    { type: 'infantry', subType: 'juggernaut',     weight: 3 },
+                    { type: 'infantry', subType: 'flamethrower',   weight: 2 },
+                    { type: 'infantry', subType: 'machinegun',     weight: 2 },
+                    { type: 'infantry', subType: 'perched_sniper', weight: 2 },
+                    { type: 'tank',     subType: 'heavy',          weight: 2 },
+                    { type: 'tank',     subType: 'siege',          weight: 1 },
+                    { type: 'aircraft', subType: 'gunship',        weight: 1 },
+                    { type: 'aircraft', subType: 'tomahawk',       weight: 2 },
+                ],
+            },
+            // --- Wave 24: 巨大攻撃ヘリ Hi-Do 来襲（最終ボス前哨戦）---
+            {
+                duration: 60, spawnInterval: 0.85, maxSimultaneous: 18,
+                pool: [
+                    { type: 'infantry', subType: 'demolition',     weight: 2 },
+                    { type: 'infantry', subType: 'juggernaut',     weight: 2 },
+                    { type: 'infantry', subType: 'rocket',         weight: 2 },
+                    { type: 'infantry', subType: 'machinegun',     weight: 2 },
+                    { type: 'infantry', subType: 'jetpack_raider', weight: 1 },
+                    { type: 'tank',     subType: 'flak',           weight: 2 },
+                    { type: 'aircraft', subType: 'drone',          weight: 2 },
+                    { type: 'aircraft', subType: 'tomahawk',       weight: 1 },
+                ],
+            },
+            // --- Wave 25: 落下兵団（撃墜後の残存ユニット殲滅）---
+            {
+                duration: 44, spawnInterval: 0.72, maxSimultaneous: 23,
+                pool: [
+                    { type: 'infantry', subType: 'commando',       weight: 3 },
+                    { type: 'infantry', subType: 'jetpack_raider', weight: 3 },
+                    { type: 'infantry', subType: 'demolition',     weight: 2 },
+                    { type: 'infantry', subType: 'ninja',          weight: 2 },
+                    { type: 'infantry', subType: 'juggernaut',     weight: 2 },
+                    { type: 'infantry', subType: 'perched_sniper', weight: 2 },
+                    { type: 'tank',     subType: 'flak',           weight: 1 },
+                    { type: 'aircraft', subType: 'gunship',        weight: 2 },
+                    { type: 'aircraft', subType: 'interceptor',    weight: 1 },
+                    { type: 'aircraft', subType: 'tomahawk',       weight: 1 },
+                ],
+            },
+            // --- Wave 26: 総攻撃（地・空 全戦力同時投入）---
+            {
+                duration: 48, spawnInterval: 0.7, maxSimultaneous: 25,
+                pool: [
+                    { type: 'infantry', subType: 'commando',       weight: 2 },
+                    { type: 'infantry', subType: 'demolition',     weight: 2 },
+                    { type: 'infantry', subType: 'juggernaut',     weight: 3 },
+                    { type: 'infantry', subType: 'shield',         weight: 2 },
+                    { type: 'infantry', subType: 'flamethrower',   weight: 2 },
+                    { type: 'infantry', subType: 'officer',        weight: 1 },
+                    { type: 'tank',     subType: 'heavy',          weight: 2 },
+                    { type: 'tank',     subType: 'flak',           weight: 2 },
+                    { type: 'tank',     subType: 'siege',          weight: 2 },
+                    { type: 'aircraft', subType: 'gunship',        weight: 2 },
+                    { type: 'aircraft', subType: 'bomber',         weight: 1 },
+                    { type: 'aircraft', subType: 'tomahawk',       weight: 2 },
+                ],
+            },
+            // --- Wave 27: 決戦前夜（精鋭混成・装甲師団の最終示威）---
+            {
+                duration: 52, spawnInterval: 0.66, maxSimultaneous: 26,
+                pool: [
+                    { type: 'infantry', subType: 'commando',       weight: 3 },
+                    { type: 'infantry', subType: 'demolition',     weight: 3 },
+                    { type: 'infantry', subType: 'juggernaut',     weight: 3 },
+                    { type: 'infantry', subType: 'ninja',          weight: 2 },
+                    { type: 'infantry', subType: 'perched_sniper', weight: 2 },
+                    { type: 'infantry', subType: 'jetpack_raider', weight: 2 },
+                    { type: 'tank',     subType: 'heavy',          weight: 2 },
+                    { type: 'tank',     subType: 'flak',           weight: 2 },
+                    { type: 'tank',     subType: 'siege',          weight: 2 },
+                    { type: 'aircraft', subType: 'gunship',        weight: 2 },
+                    { type: 'aircraft', subType: 'interceptor',    weight: 2 },
+                    { type: 'aircraft', subType: 'drone',          weight: 2 },
+                    { type: 'aircraft', subType: 'tomahawk',       weight: 2 },
+                ],
+            },
+            // --- Wave 28: 最終決戦 — Hi-Do 改（超強化最終ボス）---
+            {
+                duration: 75, spawnInterval: 0.92, maxSimultaneous: 16,
+                pool: [
+                    { type: 'infantry', subType: 'demolition',     weight: 2 },
+                    { type: 'infantry', subType: 'commando',       weight: 2 },
+                    { type: 'infantry', subType: 'juggernaut',     weight: 2 },
+                    { type: 'infantry', subType: 'jetpack_raider', weight: 2 },
+                    { type: 'tank',     subType: 'flak',           weight: 1 },
+                    { type: 'aircraft', subType: 'drone',          weight: 2 },
+                    { type: 'aircraft', subType: 'tomahawk',       weight: 1 },
+                ],
+            },
+            // --- Wave 29: 無限地獄（全敵種ランダム）---
             {
                 duration: 999, spawnInterval: 0.6, maxSimultaneous: 26,
                 pool: [
@@ -489,9 +587,9 @@ export class GameManager {
             if (timersDone && groupGone) this.defeatedBosses.splice(i, 1);
         }
 
-        // ボススポーン（Wave 4/8/12/16/20）
+        // ボススポーン（Wave 4/8/12/16/20/24/28）
         const waveNum = this.waveIndex + 1;
-        if ((waveNum === 4 || waveNum === 8 || waveNum === 12 || waveNum === 16 || waveNum === 20) && !this.bossSpawnedWaves.has(waveNum)) {
+        if ((waveNum === 4 || waveNum === 8 || waveNum === 12 || waveNum === 16 || waveNum === 20 || waveNum === 24 || waveNum === 28) && !this.bossSpawnedWaves.has(waveNum)) {
             if (this.waveElapsed > 5 && !this.boss) {
                 this._spawnBoss(waveNum, scrollZ);
                 this.bossSpawnedWaves.add(waveNum);
@@ -973,6 +1071,28 @@ export class GameManager {
             this._setSphereCenter(arr[0], 0, 0.2, 0, q, pos);    arr[0].radius = 4.8;
             this._setSphereCenter(arr[1], 2.2, 1.2, 0, q, pos);  arr[1].radius = 2.2;
             this._setSphereCenter(arr[2], -2.6, -0.4, 0, q, pos);arr[2].radius = 2.4;
+            return arr;
+        }
+
+        if (boss.subType === 'hi_do') {
+            // Hi-Do: 巨大筐体（機体長 約 20m）に応じて多くの被弾球を配置
+            const hasTurret = !!boss.turretGroup;
+            const arr = this._ensureSphereCache(boss, hasTurret ? 7 : 6);
+            // メインハル
+            this._setSphereCenter(arr[0], -1.5, 0.5, 0, q, pos);    arr[0].radius = 3.8;
+            // 機首
+            this._setSphereCenter(arr[1], 4.0, 0.5, 0, q, pos);     arr[1].radius = 2.4;
+            // テイルブーム
+            this._setSphereCenter(arr[2], -9.5, 1.5, 0, q, pos);    arr[2].radius = 1.9;
+            // テイル末端（垂直/水平安定板付近）
+            this._setSphereCenter(arr[3], -12.6, 2.0, 0, q, pos);   arr[3].radius = 1.6;
+            // 左右翼端ミサイルポッド
+            this._setSphereCenter(arr[4], 0.0, -0.4, 4.2, q, pos);  arr[4].radius = 1.9;
+            this._setSphereCenter(arr[5], 0.0, -0.4, -4.2, q, pos); arr[5].radius = 1.9;
+            if (hasTurret) {
+                boss.turretGroup.getWorldPosition(arr[6].center);
+                arr[6].radius = 1.5;
+            }
             return arr;
         }
 
@@ -1961,7 +2081,13 @@ export class GameManager {
     // ============================================
     _spawnBoss(waveNum, scrollZ) {
         let hp, subType;
-        if (waveNum === 20) {
+        if (waveNum === 28) {
+            hp = 2800;
+            subType = 'hi_do';   // 最終決戦: 巨大攻撃ヘリ Hi-Do 改
+        } else if (waveNum === 24) {
+            hp = 2000;
+            subType = 'hi_do';   // 大型攻撃ヘリ Hi-Do 来襲
+        } else if (waveNum === 20) {
             hp = 1800;
             subType = 'tani_oh';  // 深部要塞ボス: 超強化飛行メカ
         } else if (waveNum === 16) {
@@ -1969,7 +2095,7 @@ export class GameManager {
             subType = 'tani_oh';  // 終盤ボス: 超強化飛行メカ
         } else if (waveNum === 12) {
             hp = 1200;
-            subType = 'tani_oh';  // 最終ボス: 大型飛行メカ（強化版）
+            subType = 'tani_oh';  // 中盤強化ボス: 大型飛行メカ（強化版）
         } else if (waveNum === 8) {
             hp = 800;
             subType = 'tani_oh';  // 中盤ボス: 飛行メカ

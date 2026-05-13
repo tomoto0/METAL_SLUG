@@ -92,6 +92,12 @@ export class UIManager {
             'GUNSHIP MAELSTROM',
             'SIEGE ENCIRCLEMENT',
             'LAST DEFENSE GRID',
+            'SCORCHED OVERTURE',
+            'HI-DO INCURSION',
+            'FALLEN LEGION',
+            'TOTAL OFFENSIVE',
+            'EVE OF FINALE',
+            'HI-DO FINALE',
             'ETERNAL ONSLAUGHT',
         ];
 
@@ -118,6 +124,12 @@ export class UIManager {
             'SKY CITADEL',
             'TITAN APPROACH',
             'OBSIDIAN GRID',
+            'BURNING SANDS',
+            'HANGAR ZERO',
+            'CRATER FIELD',
+            'IRONWORKS',
+            'ASHEN HORIZON',
+            'CITADEL OF SHADOWS',
             'ENDLESS FRONT',
         ];
 

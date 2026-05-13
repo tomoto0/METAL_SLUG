@@ -4445,6 +4445,22 @@ export class World {
         return -1;
     }
 
+    // 最終幕 Wave 23〜29 をスクロール距離で近似判定。
+    // Wave 22 終端 ≈ 4150 を起点に、duration から境界を推定。
+    // 23 焦土戦線(50): 4150+ / 24 Hi-Do来襲(60): 4400+ / 25 落下兵団(44): 4700+
+    // 26 総攻撃(48): 4920+ / 27 決戦前夜(52): 5160+ / 28 Hi-Do改最終決戦(75): 5420+
+    // 29 無限地獄: 5795+
+    _getFinalActPhase(z) {
+        if (z > 5795) return 6; // Wave 29 無限地獄
+        if (z > 5420) return 5; // Wave 28 Hi-Do改最終決戦
+        if (z > 5160) return 4; // Wave 27 決戦前夜
+        if (z > 4920) return 3; // Wave 26 総攻撃
+        if (z > 4700) return 2; // Wave 25 落下兵団
+        if (z > 4400) return 1; // Wave 24 Hi-Do来襲
+        if (z > 4150) return 0; // Wave 23 焦土戦線
+        return -1;
+    }
+
     /* ========================================================
      *  DIORAMA VILLAGE - コンセプト画像 06_metal_slug_diorama.jpg 準拠
      *  フラット屋根アドベ＋ヴィガ（突き出し梁）、洗濯物の物干、
@@ -7048,6 +7064,317 @@ export class World {
             }
         }
 
+        // === Final Act stage（Wave 23〜29）: 焦土・Hi-Do 来襲〜決戦・地獄 ===
+        // 各 phase ごとに支配的なテーマプロップを切り替えて、ステージ進行に合わせて
+        // 建物の雰囲気が明確に変化するように構成する。endgame ブロックと併存させ、
+        // 互いに密度を抑えつつ重ねることで境界部の連続性を保つ。
+        const finalActPhase = this._getFinalActPhase(startZ);
+        if (finalActPhase >= 0) {
+            // Wave 23 焦土戦線: 黒焦げの戦没碑・燃え盛る石油櫓・対空残骸を主体に
+            if (finalActPhase === 0) {
+                if (Math.random() < 0.85) {
+                    const totem = this._buildScorchedTotem(new THREE.Group());
+                    const side = Math.random() > 0.5 ? 1 : -1;
+                    totem.position.set(
+                        side * (5.4 + Math.random() * 2.2),
+                        0,
+                        startZ + Math.random() * this.chunkSize
+                    );
+                    totem.rotation.y = (Math.random() - 0.5) * 0.6;
+                    totem.scale.setScalar(1.0 + Math.random() * 0.3);
+                    this.scene.add(totem);
+                    chunk.objects.push(totem);
+                    tag(totem, 'destructible', 1.2, 12, {
+                        explosionVisual: 'small', dropChance: 0.35, dropTable: dropMilitary, score: 400,
+                    });
+                }
+                if (Math.random() < 0.7) {
+                    const derrick = placeDynamic(this._buildBurningDerrick, 0, {
+                        dist: 12 + Math.random() * 3, faceRoad: false,
+                        scale: 1.6 + Math.random() * 0.45,
+                    });
+                    tag(derrick, 'block', 3.4);
+                }
+                if (Math.random() < 0.55) {
+                    const wk = placeDynamic(this._buildWreckedTank, 0, {
+                        dist: 4.8 + Math.random() * 1.6,
+                        scale: 1.3 + Math.random() * 0.3,
+                    });
+                    tag(wk, 'destructible', 2.4, 14, {
+                        explosionVisual: 'large', dropChance: 0.55, dropTable: dropMilitary, score: 800,
+                    });
+                }
+            }
+
+            // Wave 24 Hi-Do 来襲: 墜落ヘリ + 燃料タンク + サーチライト + 対空砲
+            if (finalActPhase === 1) {
+                if (Math.random() < 0.9) {
+                    const chopper = this._buildCrashedHelicopter(new THREE.Group());
+                    const side = Math.random() > 0.5 ? 1 : -1;
+                    chopper.position.set(
+                        side * (5.5 + Math.random() * 2.0),
+                        0,
+                        startZ + Math.random() * this.chunkSize
+                    );
+                    chopper.rotation.y = side > 0 ? -Math.PI / 2 + (Math.random() - 0.5) * 0.5 : Math.PI / 2 + (Math.random() - 0.5) * 0.5;
+                    chopper.scale.setScalar(1.1 + Math.random() * 0.25);
+                    this.scene.add(chopper);
+                    chunk.objects.push(chopper);
+                    chopper.userData.dynamicRef = this.dynamicProps[this.dynamicProps.length - 1];
+                    if (chopper.userData.dynamicRef) chopper.userData.dynamicRef.host = chopper;
+                    tag(chopper, 'destructible', 2.6, 25, {
+                        explosionVisual: 'large', explosive: true, blastRadius: 3.5,
+                        dropChance: 0.65, dropTable: dropExplosive, score: 1100,
+                    });
+                }
+                if (Math.random() < 0.78) {
+                    const farm = this._buildFuelTankFarm(new THREE.Group());
+                    const side = Math.random() > 0.5 ? 1 : -1;
+                    farm.position.set(
+                        side * (11 + Math.random() * 2.5),
+                        0,
+                        startZ + Math.random() * this.chunkSize
+                    );
+                    farm.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2;
+                    this.scene.add(farm);
+                    chunk.objects.push(farm);
+                    tag(farm, 'destructible', 3.2, 38, {
+                        explosionVisual: 'mega', explosive: true, blastRadius: 5.0,
+                        dropChance: 0.7, dropTable: dropExplosive, score: 1400,
+                    });
+                }
+                if (Math.random() < 0.7) {
+                    const light = placeDynamic(this._buildSearchlightTower, 0, {
+                        dist: 9 + Math.random() * 2.5, faceRoad: false,
+                        scale: 1.2 + Math.random() * 0.25,
+                    });
+                    tag(light, 'destructible', 1.8, 24, {
+                        explosionVisual: 'large', dropChance: 0.55, dropTable: dropTower, score: 900,
+                    });
+                }
+                if (Math.random() < 0.55) {
+                    const aa = placeDynamic(this._buildAntiAirGun, 0, {
+                        dist: 7 + Math.random() * 2, faceRoad: true,
+                        scale: 1.4 + Math.random() * 0.3,
+                    });
+                    tag(aa, 'destructible', 2.6, 36, {
+                        explosionVisual: 'large', explosive: true, blastRadius: 3.0,
+                        dropChance: 0.6, dropTable: dropExplosive, score: 1000,
+                    });
+                }
+            }
+
+            // Wave 25 落下兵団: パラシュート瓦礫・クレーター帯・有刺鉄線
+            if (finalActPhase === 2) {
+                // 落下した分隊（複数同時に散らす）
+                const drops = 1 + Math.floor(Math.random() * 3);
+                for (let i = 0; i < drops; i++) {
+                    if (Math.random() > 0.25) {
+                        const para = this._buildParachuteDebris(new THREE.Group());
+                        const side = Math.random() > 0.5 ? 1 : -1;
+                        para.position.set(
+                            side * (5.2 + Math.random() * 3.5),
+                            0,
+                            startZ + Math.random() * this.chunkSize
+                        );
+                        para.rotation.y = Math.random() * Math.PI * 2;
+                        para.scale.setScalar(0.95 + Math.random() * 0.3);
+                        this.scene.add(para);
+                        chunk.objects.push(para);
+                        tag(para, 'destructible', 1.6, 8, {
+                            explosionVisual: 'small', dropChance: 0.55, dropTable: dropMilitary, score: 350,
+                        });
+                    }
+                }
+                if (Math.random() < 0.85) {
+                    const crater = this._buildCraterBelt(new THREE.Group(), 3 + Math.floor(Math.random() * 2));
+                    place(crater, 7);
+                    tag(crater, 'block', 2.6);
+                }
+                if (Math.random() < 0.6) {
+                    const trench = this._buildTrenchBarricade(new THREE.Group(), 3);
+                    const side = Math.random() > 0.5 ? 1 : -1;
+                    trench.position.set(
+                        side * (6.5 + Math.random() * 2),
+                        0,
+                        startZ + Math.random() * this.chunkSize
+                    );
+                    trench.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2;
+                    this.scene.add(trench);
+                    chunk.objects.push(trench);
+                    tag(trench, 'block', 3.2);
+                }
+            }
+
+            // Wave 26 総攻撃: 巨大旗・要塞ゲート・対空砲・崩落高架の連打
+            if (finalActPhase === 3) {
+                if (Math.random() < 0.85) {
+                    const bn = placeDynamic(this._buildRebelBanner, 0, {
+                        dist: 7 + Math.random() * 2.5, faceRoad: false,
+                    });
+                    bn.scale.setScalar(1.25 + Math.random() * 0.3);
+                    tag(bn, 'destructible', 1.2, 8, {
+                        dropChance: 0.5, dropTable: dropMilitary, score: 600,
+                    });
+                }
+                if (Math.random() < 0.75) {
+                    const gate = placeDynamic(this._buildFortressGate, 0, {
+                        dist: 9.5 + Math.random() * 1.5, faceRoad: true,
+                        scale: 1.15 + Math.random() * 0.25,
+                    });
+                    tag(gate, 'block', 5.5);
+                }
+                if (Math.random() < 0.6) {
+                    const overpass = this._buildBrokenOverpass(new THREE.Group(), 7);
+                    const side = Math.random() > 0.5 ? 1 : -1;
+                    overpass.position.set(
+                        side * (3.2 + Math.random() * 1.0),
+                        0,
+                        startZ + Math.random() * this.chunkSize
+                    );
+                    overpass.rotation.y = (Math.random() - 0.5) * 0.3;
+                    overpass.scale.setScalar(1.5 + Math.random() * 0.3);
+                    this.scene.add(overpass);
+                    chunk.objects.push(overpass);
+                    tag(overpass, 'block', 6.3);
+                }
+                if (Math.random() < 0.65) {
+                    const aa = placeDynamic(this._buildAntiAirGun, 0, {
+                        dist: 6.5 + Math.random() * 1.5, faceRoad: true,
+                        scale: 1.45 + Math.random() * 0.3,
+                    });
+                    tag(aa, 'destructible', 2.8, 40, {
+                        explosionVisual: 'large', explosive: true, blastRadius: 3.2,
+                        dropChance: 0.65, dropTable: dropExplosive, score: 1100,
+                    });
+                }
+            }
+
+            // Wave 27 決戦前夜: 反乱軍記念碑・サーチライト多重・要塞壁
+            if (finalActPhase === 4) {
+                if (Math.random() < 0.85) {
+                    const monu = this._buildRebelMonument(new THREE.Group());
+                    const side = Math.random() > 0.5 ? 1 : -1;
+                    monu.position.set(
+                        side * (8 + Math.random() * 2.5),
+                        0,
+                        startZ + Math.random() * this.chunkSize
+                    );
+                    monu.rotation.y = side > 0 ? -Math.PI / 2 + (Math.random() - 0.5) * 0.25 : Math.PI / 2 + (Math.random() - 0.5) * 0.25;
+                    monu.scale.setScalar(1.05 + Math.random() * 0.25);
+                    this.scene.add(monu);
+                    chunk.objects.push(monu);
+                    monu.userData.dynamicRef = this.dynamicProps[this.dynamicProps.length - 1];
+                    if (monu.userData.dynamicRef) monu.userData.dynamicRef.host = monu;
+                    tag(monu, 'block', 3.6);
+                }
+                // 2 基同時のサーチライト（夜戦感）
+                for (let i = 0; i < 2; i++) {
+                    if (Math.random() < 0.7) {
+                        const light = placeDynamic(this._buildSearchlightTower, 0, {
+                            dist: 10 + Math.random() * 3, faceRoad: false,
+                            scale: 1.25 + Math.random() * 0.3,
+                        });
+                        tag(light, 'destructible', 1.8, 25, {
+                            explosionVisual: 'large', dropChance: 0.5, dropTable: dropTower, score: 900,
+                        });
+                    }
+                }
+                if (Math.random() < 0.7) {
+                    const fort = this._buildFortressWall(new THREE.Group());
+                    const side = Math.random() > 0.5 ? 1 : -1;
+                    fort.position.set(
+                        side * (12 + Math.random() * 2.5),
+                        0,
+                        startZ + Math.random() * this.chunkSize
+                    );
+                    fort.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2;
+                    fort.scale.setScalar(1.85 + Math.random() * 0.3);
+                    this.scene.add(fort);
+                    chunk.objects.push(fort);
+                    tag(fort, 'block', 6.8);
+                }
+            }
+
+            // Wave 28 Hi-Do 改 最終決戦: 巨大格納庫ゲート + 発着場 + ミサイルサイロ
+            if (finalActPhase === 5) {
+                if (Math.random() < 0.85) {
+                    const hangar = placeDynamic(this._buildHangarGate, 0, {
+                        dist: 11 + Math.random() * 2, faceRoad: true,
+                        scale: 1.1 + Math.random() * 0.2,
+                    });
+                    tag(hangar, 'block', 7.5);
+                }
+                if (Math.random() < 0.7) {
+                    const pad = placeDynamic(this._buildHiDoLandingPad, 0, {
+                        dist: 9 + Math.random() * 1.5, faceRoad: false,
+                        scale: 1.0 + Math.random() * 0.15,
+                    });
+                    tag(pad, 'block', 4.2);
+                }
+                if (Math.random() < 0.6) {
+                    const silo = placeDynamic(this._buildMissileSiloCluster, 0, {
+                        dist: 13 + Math.random() * 2.5, faceRoad: false,
+                        scale: 1.15 + Math.random() * 0.25,
+                    });
+                    tag(silo, 'destructible', 3.0, 52, {
+                        explosive: true, explosionVisual: 'mega',
+                        blastRadius: 4.4, dropChance: 0.7, dropTable: dropExplosive, score: 1800,
+                    });
+                }
+                if (Math.random() < 0.55) {
+                    const cannon = placeDynamic(this._buildMegaCannonEmplacement, 0, {
+                        dist: 10 + Math.random() * 2.5, faceRoad: true,
+                    });
+                    tag(cannon, 'destructible', 2.8, 60, {
+                        explosive: true, explosionVisual: 'mega',
+                        blastRadius: 4.5, dropChance: 0.7, dropTable: dropExplosive, score: 1700,
+                    });
+                }
+            }
+
+            // Wave 29 無限地獄: 漆黒の地獄門 + 燃え盛る焦土 + シールド発生機
+            if (finalActPhase === 6) {
+                if (Math.random() < 0.8) {
+                    const gate = this._buildHellGate(new THREE.Group());
+                    const side = Math.random() > 0.5 ? 1 : -1;
+                    gate.position.set(
+                        side * (10 + Math.random() * 2.5),
+                        0,
+                        startZ + Math.random() * this.chunkSize
+                    );
+                    gate.rotation.y = side > 0 ? -Math.PI / 2 + (Math.random() - 0.5) * 0.15 : Math.PI / 2 + (Math.random() - 0.5) * 0.15;
+                    gate.scale.setScalar(1.1 + Math.random() * 0.2);
+                    this.scene.add(gate);
+                    chunk.objects.push(gate);
+                    gate.userData.dynamicRef = this.dynamicProps[this.dynamicProps.length - 1];
+                    if (gate.userData.dynamicRef) gate.userData.dynamicRef.host = gate;
+                    tag(gate, 'block', 5.8);
+                }
+                if (Math.random() < 0.85) {
+                    const derrick = placeDynamic(this._buildBurningDerrick, 0, {
+                        dist: 13 + Math.random() * 3, faceRoad: false,
+                        scale: 1.7 + Math.random() * 0.5,
+                    });
+                    tag(derrick, 'block', 3.6);
+                }
+                if (Math.random() < 0.7) {
+                    const crater = this._buildCraterBelt(new THREE.Group(), 4 + Math.floor(Math.random() * 3));
+                    place(crater, 8);
+                    tag(crater, 'block', 3.0);
+                }
+                if (Math.random() < 0.6) {
+                    const gen = placeDynamic(this._buildShieldGenerator, 0, {
+                        dist: 12 + Math.random() * 3, faceRoad: false,
+                    });
+                    tag(gen, 'destructible', 2.4, 50, {
+                        explosionVisual: 'large',
+                        dropChance: 0.7, dropTable: dropTower, score: 1500,
+                    });
+                }
+            }
+        }
+
         this._applyChunkPerformanceHints(chunk, startZ);
         this._trimChunkForPerformance(chunk, startZ);
 
@@ -7057,10 +7384,13 @@ export class World {
     }
 
     _isPerformanceChunk(z) {
-        return this._isFinalStage(z) || this._getEndgamePhase(z) >= 0;
+        return this._isFinalStage(z) || this._getEndgamePhase(z) >= 0 || this._getFinalActPhase(z) >= 0;
     }
 
     _getChunkObjectBudget(z) {
+        const finalAct = this._getFinalActPhase(z);
+        if (finalAct >= 5) return 17;  // Wave 28+ 巨大ハンガー/地獄門で 1 個あたりが大きい
+        if (finalAct >= 0) return 19;  // Wave 23〜27
         const phase = this._getEndgamePhase(z);
         if (phase >= 5) return 20;
         if (phase >= 0) return 23;
@@ -9050,6 +9380,660 @@ export class World {
     }
 
     /* ========================================================
+     *  FINAL ACT PROPS (Wave 23〜29)
+     *  Hi-Do 来襲〜決戦の世界観: 焦土・空挺・要塞・最終決戦ハンガー
+     * ======================================================== */
+
+    // 焦土の戦没トーテム（Wave 23 焦土戦線）
+    // 炭化した木杭にドクロ・破れ旗・有刺鉄線を絡めた敵側の戦没碑。
+    _buildScorchedTotem(g) {
+        const charredMat = _sharedMat('totem_charred', () => new THREE.MeshStandardMaterial({ color: 0x231510, roughness: 0.98 }));
+        const ashMat = _sharedMat('totem_ash', () => new THREE.MeshStandardMaterial({ color: 0x4A3A30, roughness: 0.96 }));
+        const boneMat = _sharedMat('totem_bone', () => new THREE.MeshStandardMaterial({ color: 0xE6DCC0, roughness: 0.88 }));
+        const ragMat = _sharedMat('totem_rag', () => new THREE.MeshStandardMaterial({
+            color: 0x6B1A14, roughness: 0.92, side: THREE.DoubleSide,
+        }));
+        const wireMat = _sharedMat('totem_wire', () => new THREE.MeshStandardMaterial({ color: 0x2A2620, roughness: 0.78, metalness: 0.45 }));
+
+        // 焦げた台座
+        const baseStone = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.45, 1.8), ashMat);
+        baseStone.position.y = 0.22;
+        g.add(baseStone);
+
+        // 主柱（炭化）
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.22, 4.6, 8), charredMat);
+        post.position.y = 2.7;
+        g.add(post);
+
+        // 横木（十字）
+        const cross = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.18, 0.18), charredMat);
+        cross.position.y = 4.1;
+        cross.rotation.z = (Math.random() - 0.5) * 0.12;
+        g.add(cross);
+
+        // ドクロ
+        const skull = new THREE.Mesh(new THREE.SphereGeometry(0.35, 10, 8), boneMat);
+        skull.position.set((Math.random() - 0.5) * 0.4, 4.9, 0);
+        skull.scale.set(1.0, 1.15, 0.95);
+        g.add(skull);
+        // 眼窩
+        const eyeMat = _sharedMat('totem_eye', () => new THREE.MeshBasicMaterial({ color: 0x0a0604 }));
+        for (const ex of [-0.12, 0.12]) {
+            const eye = new THREE.Mesh(new THREE.SphereGeometry(0.07, 6, 5), eyeMat);
+            eye.position.set(skull.position.x + ex, skull.position.y + 0.05, 0.32);
+            g.add(eye);
+        }
+
+        // 破れ旗（垂れ下がる）
+        for (let i = 0; i < 3; i++) {
+            const rag = new THREE.Mesh(
+                new THREE.PlaneGeometry(0.55 + Math.random() * 0.35, 1.0 + Math.random() * 0.6),
+                ragMat,
+            );
+            rag.position.set(-0.9 + i * 0.9, 3.5 - Math.random() * 0.5, 0.05);
+            rag.rotation.z = (Math.random() - 0.5) * 0.35;
+            rag.rotation.y = (Math.random() - 0.5) * 0.25;
+            g.add(rag);
+        }
+
+        // 巻き付く有刺鉄線
+        for (let i = 0; i < 4; i++) {
+            const wire = new THREE.Mesh(
+                new THREE.TorusGeometry(0.32 + i * 0.04, 0.025, 4, 10),
+                wireMat,
+            );
+            wire.position.y = 1.0 + i * 0.7;
+            wire.rotation.x = Math.PI / 2 + (Math.random() - 0.5) * 0.4;
+            wire.rotation.z = (Math.random() - 0.5) * 0.6;
+            g.add(wire);
+        }
+
+        // 散らばる骨片
+        for (let i = 0; i < 3; i++) {
+            const bone = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.55, 6), boneMat);
+            const a = Math.random() * Math.PI * 2;
+            bone.position.set(Math.cos(a) * (0.7 + Math.random() * 0.4), 0.07, Math.sin(a) * (0.7 + Math.random() * 0.4));
+            bone.rotation.z = Math.PI / 2;
+            bone.rotation.y = Math.random() * Math.PI;
+            g.add(bone);
+        }
+
+        return g;
+    }
+
+    // 墜落ヘリ残骸（Wave 24 Hi-Do 来襲）
+    // ローター折損、半焦げ胴体、立ち上る煙・残り火。
+    _buildCrashedHelicopter(g) {
+        const hullMat = _sharedMat('chopper_hull', () => new THREE.MeshStandardMaterial({ color: 0x4D5B3C, roughness: 0.78, metalness: 0.25 }));
+        const burntMat = _sharedMat('chopper_burnt', () => new THREE.MeshStandardMaterial({ color: 0x252018, roughness: 0.95 }));
+        const steelMat = _sharedMat('chopper_steel', () => new THREE.MeshStandardMaterial({ color: 0x3A3D42, roughness: 0.55, metalness: 0.55 }));
+        const glassMat = _sharedMat('chopper_glass', () => new THREE.MeshStandardMaterial({
+            color: 0x1A2A2E, roughness: 0.4, metalness: 0.3, transparent: true, opacity: 0.78,
+        }));
+        const rotorMat = _sharedMat('chopper_rotor', () => new THREE.MeshStandardMaterial({ color: 0x2A2A2A, roughness: 0.55, metalness: 0.45 }));
+
+        // 機体傾斜
+        const tiltY = (Math.random() - 0.5) * 0.6;
+        const tiltZ = -0.25 - Math.random() * 0.15;
+
+        // 胴体
+        const body = new THREE.Mesh(new THREE.BoxGeometry(3.4, 1.3, 1.6), hullMat);
+        body.position.set(0, 0.8, 0);
+        body.rotation.z = tiltZ;
+        body.rotation.y = tiltY;
+        g.add(body);
+
+        // コクピットガラス（割れた風: 半透）
+        const canopy = new THREE.Mesh(new THREE.SphereGeometry(0.9, 10, 8, 0, Math.PI * 2, 0, Math.PI / 2), glassMat);
+        canopy.position.set(1.4, 1.25, 0);
+        canopy.rotation.z = tiltZ;
+        canopy.rotation.y = tiltY;
+        g.add(canopy);
+
+        // 焦げた腹側
+        const burn = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.35, 1.65), burntMat);
+        burn.position.set(-0.1, 0.4 + tiltZ * 0.6, 0);
+        burn.rotation.z = tiltZ;
+        burn.rotation.y = tiltY;
+        g.add(burn);
+
+        // テールブーム（折れ気味）
+        const tail = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.45, 0.5), hullMat);
+        tail.position.set(-2.2 + Math.cos(tiltZ) * 0.2, 0.9 + Math.sin(tiltZ) * 1.6, 0);
+        tail.rotation.z = tiltZ + 0.35;
+        tail.rotation.y = tiltY + 0.18;
+        g.add(tail);
+
+        // テールローター（半壊）
+        const tailRotor = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.0, 0.08), rotorMat);
+        tailRotor.position.copy(tail.position).add(new THREE.Vector3(-1.1, -0.05, 0.15));
+        tailRotor.rotation.z = 0.6;
+        g.add(tailRotor);
+
+        // メインローター折損（地面に転がる）
+        for (let i = 0; i < 2; i++) {
+            const blade = new THREE.Mesh(new THREE.BoxGeometry(3.6 - i * 0.6, 0.06, 0.22), rotorMat);
+            blade.position.set(-0.4 + i * 0.6, 0.08, 1.4 + i * 0.3);
+            blade.rotation.y = 0.4 + i * 0.7;
+            blade.rotation.z = -0.04;
+            g.add(blade);
+        }
+        // ローターハブ
+        const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.22, 0.3, 8), steelMat);
+        hub.position.set(0.2, 1.55 + tiltZ * 0.4, 0);
+        hub.rotation.z = tiltZ;
+        g.add(hub);
+
+        // 機体側面の赤星章
+        const starMat = _sharedMat('chopper_star', () => new THREE.MeshStandardMaterial({ color: 0xB8261C, roughness: 0.72 }));
+        const star = new THREE.Mesh(new THREE.CircleGeometry(0.32, 5), starMat);
+        star.position.set(0.2, 0.9, 0.82);
+        star.rotation.z = tiltZ;
+        g.add(star);
+
+        // ランディングスキッド残骸
+        for (const sx of [-0.6, 0.6]) {
+            const skid = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 1.6, 6), steelMat);
+            skid.position.set(sx, 0.18, 0);
+            skid.rotation.z = Math.PI / 2;
+            g.add(skid);
+        }
+
+        // 燃え残り（オレンジ点滅）
+        const emberMat = new THREE.MeshBasicMaterial({ color: 0xFF6020, transparent: true, opacity: 0.85 });
+        const ember = new THREE.Mesh(new THREE.SphereGeometry(0.18, 6, 5), emberMat);
+        ember.position.set(0.5, 0.55, 0.4);
+        g.add(ember);
+
+        // 立ち上る煙
+        const smokeMat = new THREE.MeshBasicMaterial({ color: 0x202020, transparent: true, opacity: 0.55, depthWrite: false });
+        const smokePuffs = [];
+        for (let i = 0; i < 3; i++) {
+            const puff = new THREE.Mesh(new THREE.SphereGeometry(0.5 + i * 0.18, 8, 6), smokeMat);
+            puff.position.set(0.3 + (Math.random() - 0.5) * 0.4, 2.0 + i * 0.7, 0.2);
+            g.add(puff);
+            smokePuffs.push({ mesh: puff, phase: Math.random() * Math.PI * 2, baseY: puff.position.y });
+        }
+
+        this.dynamicProps.push({ type: 'wreck', smokePuffs, ember, time: Math.random() * 3 });
+        return g;
+    }
+
+    // 燃料タンク農場（Wave 24〜25）
+    // 円筒型燃料タンク 3 基 + 配管 + 警告灯。爆発物として大ダメージ。
+    _buildFuelTankFarm(g) {
+        const tankMat = _sharedMat('fuel_tank', () => new THREE.MeshStandardMaterial({ color: 0x8A8470, roughness: 0.75, metalness: 0.22 }));
+        const rustMat = _sharedMat('fuel_rust', () => new THREE.MeshStandardMaterial({ color: 0x5A3322, roughness: 0.92 }));
+        const pipeMat = _sharedMat('fuel_pipe', () => new THREE.MeshStandardMaterial({ color: 0x484848, roughness: 0.55, metalness: 0.6 }));
+        const stripeMat = _sharedMat('fuel_stripe', () => new THREE.MeshStandardMaterial({ color: 0xC92A1E, roughness: 0.78 }));
+        const concreteMat = _sharedMat('fuel_concrete', () => new THREE.MeshStandardMaterial({ color: 0x726F66, roughness: 0.94 }));
+
+        // ベース基礎
+        const pad = new THREE.Mesh(new THREE.BoxGeometry(5.4, 0.3, 2.2), concreteMat);
+        pad.position.y = 0.15;
+        g.add(pad);
+
+        for (let i = 0; i < 3; i++) {
+            const x = -1.7 + i * 1.7;
+            // 円筒タンク
+            const tank = new THREE.Mesh(new THREE.CylinderGeometry(0.78, 0.78, 2.4, 18), tankMat);
+            tank.position.set(x, 1.5, 0);
+            g.add(tank);
+            // 天蓋
+            const cap = new THREE.Mesh(new THREE.SphereGeometry(0.78, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2), tankMat);
+            cap.position.set(x, 2.7, 0);
+            g.add(cap);
+            // 赤帯
+            const stripe = new THREE.Mesh(new THREE.CylinderGeometry(0.79, 0.79, 0.22, 18), stripeMat);
+            stripe.position.set(x, 2.1, 0);
+            g.add(stripe);
+            // 錆び汚れ
+            if (Math.random() > 0.4) {
+                const rust = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.9), rustMat);
+                rust.position.set(x, 1.3, 0.79);
+                rust.rotation.y = (Math.random() - 0.5) * 0.4;
+                g.add(rust);
+            }
+            // 給油バルブ
+            const valve = new THREE.Mesh(new THREE.TorusGeometry(0.18, 0.04, 6, 12), pipeMat);
+            valve.position.set(x, 2.85, 0);
+            valve.rotation.x = Math.PI / 2;
+            g.add(valve);
+        }
+
+        // 連結配管（タンク同士をつなぐ）
+        const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 4.6, 8), pipeMat);
+        trunk.position.set(0, 0.5, -0.85);
+        trunk.rotation.z = Math.PI / 2;
+        g.add(trunk);
+        // 各タンクから縦に分岐するパイプ
+        for (let i = 0; i < 3; i++) {
+            const x = -1.7 + i * 1.7;
+            const branch = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 1.0, 6), pipeMat);
+            branch.position.set(x, 0.85, -0.85);
+            g.add(branch);
+            const elbow = new THREE.Mesh(new THREE.SphereGeometry(0.11, 6, 5), pipeMat);
+            elbow.position.set(x, 1.35, -0.85);
+            g.add(elbow);
+        }
+
+        // 警告灯
+        const beaconMat = new THREE.MeshBasicMaterial({ color: 0xFFC02A, transparent: true, opacity: 0.85 });
+        const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.16, 8, 6), beaconMat);
+        beacon.position.set(0, 3.15, 0.4);
+        g.add(beacon);
+        const beaconPost = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.8, 6), pipeMat);
+        beaconPost.position.set(0, 2.75, 0.4);
+        g.add(beaconPost);
+
+        return g;
+    }
+
+    // 落下兵団の残骸（Wave 25 落下兵団）
+    // 開いたパラシュート + 折れた骨組み + 落下物の木箱。
+    _buildParachuteDebris(g) {
+        const chuteMat = _sharedMat('chute_canopy', () => new THREE.MeshStandardMaterial({
+            color: 0xCDB48A, roughness: 0.95, side: THREE.DoubleSide,
+        }));
+        const ropeMat = _sharedMat('chute_rope', () => new THREE.MeshStandardMaterial({ color: 0x5A4A38, roughness: 0.92 }));
+        const crateMat = _sharedMat('chute_crate', () => new THREE.MeshStandardMaterial({ color: 0x7A5638, roughness: 0.92 }));
+        const stripeMat = _sharedMat('chute_stripe', () => new THREE.MeshStandardMaterial({ color: 0x3E2E1E, roughness: 0.92 }));
+
+        // パラシュート（半球状、地面に潰れた感じ）
+        const canopy = new THREE.Mesh(new THREE.SphereGeometry(1.6, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.55), chuteMat);
+        canopy.position.set(0, 0.18, 0);
+        canopy.scale.set(1.0, 0.45, 1.0);
+        canopy.rotation.x = (Math.random() - 0.5) * 0.25;
+        canopy.rotation.z = (Math.random() - 0.5) * 0.3;
+        g.add(canopy);
+
+        // パラシュート区画ライン
+        for (let i = 0; i < 6; i++) {
+            const seg = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.03, 1.5), stripeMat);
+            const a = (i / 6) * Math.PI * 2;
+            seg.position.set(Math.cos(a) * 0.8, 0.5, Math.sin(a) * 0.8);
+            seg.rotation.y = a;
+            seg.rotation.x = -0.55;
+            g.add(seg);
+        }
+
+        // 吊り紐 + 落下した木箱
+        const crate = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.7, 0.8), crateMat);
+        crate.position.set(0.6 + (Math.random() - 0.5) * 0.4, 0.35, 0.4 + (Math.random() - 0.5) * 0.3);
+        crate.rotation.y = Math.random() * Math.PI;
+        g.add(crate);
+        // 帯
+        const band = new THREE.Mesh(new THREE.BoxGeometry(0.82, 0.12, 0.82), stripeMat);
+        band.position.copy(crate.position);
+        band.position.y += 0.1;
+        band.rotation.y = crate.rotation.y;
+        g.add(band);
+
+        // 紐（パラシュートから木箱へ）
+        for (let i = 0; i < 4; i++) {
+            const a = i * Math.PI * 0.5;
+            const rope = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 1.3, 4), ropeMat);
+            const topX = Math.cos(a) * 0.7;
+            const topZ = Math.sin(a) * 0.7;
+            rope.position.set((crate.position.x + topX) * 0.5, 0.55, (crate.position.z + topZ) * 0.5);
+            rope.lookAt(new THREE.Vector3(topX, 0.95, topZ));
+            rope.rotateX(Math.PI / 2);
+            g.add(rope);
+        }
+
+        // 折れたヘルメット
+        const helmetMat = _sharedMat('chute_helmet', () => new THREE.MeshStandardMaterial({ color: 0x3E4438, roughness: 0.72, metalness: 0.32 }));
+        const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.32, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2), helmetMat);
+        helmet.position.set(-0.7 + (Math.random() - 0.5) * 0.4, 0.16, -0.5 + (Math.random() - 0.5) * 0.4);
+        helmet.rotation.x = Math.PI - 0.3;
+        helmet.rotation.z = (Math.random() - 0.5) * 0.5;
+        g.add(helmet);
+
+        return g;
+    }
+
+    // 反乱軍記念碑（Wave 26〜27）
+    // 巨大な指揮官像 + 台座 + 翻る垂れ幕。総攻撃〜決戦前夜の士気高揚プロップ。
+    _buildRebelMonument(g) {
+        const stoneMat = _sharedMat('monument_stone', () => new THREE.MeshStandardMaterial({ color: 0x6A645A, roughness: 0.95 }));
+        const stoneDarkMat = _sharedMat('monument_stone_dark', () => new THREE.MeshStandardMaterial({ color: 0x4C463E, roughness: 0.96 }));
+        const bronzeMat = _sharedMat('monument_bronze', () => new THREE.MeshStandardMaterial({ color: 0x6F4A22, roughness: 0.62, metalness: 0.52 }));
+        const bronzeDarkMat = _sharedMat('monument_bronze_dark', () => new THREE.MeshStandardMaterial({ color: 0x44291A, roughness: 0.75, metalness: 0.42 }));
+
+        // 台座（多段）
+        const tier1 = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.6, 2.2), stoneDarkMat);
+        tier1.position.y = 0.3;
+        g.add(tier1);
+        const tier2 = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.6, 1.6), stoneMat);
+        tier2.position.y = 0.9;
+        g.add(tier2);
+        const tier3 = new THREE.Mesh(new THREE.BoxGeometry(1.8, 1.6, 1.2), stoneMat);
+        tier3.position.y = 2.0;
+        g.add(tier3);
+
+        // 銘板
+        const plateMat = _sharedMat('monument_plate', () => new THREE.MeshStandardMaterial({ color: 0x2A1A12, roughness: 0.82, metalness: 0.3 }));
+        const plate = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.55, 0.04), plateMat);
+        plate.position.set(0, 2.0, 0.62);
+        g.add(plate);
+        // 星章
+        const star = new THREE.Mesh(new THREE.CircleGeometry(0.22, 5), bronzeMat);
+        star.position.set(0, 2.0, 0.66);
+        g.add(star);
+
+        // 指揮官像（簡略）
+        const torso = new THREE.Mesh(new THREE.BoxGeometry(0.95, 1.5, 0.7), bronzeMat);
+        torso.position.y = 3.55;
+        g.add(torso);
+        // 肩章
+        for (const sx of [-0.46, 0.46]) {
+            const epaulet = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.12, 0.74), bronzeDarkMat);
+            epaulet.position.set(sx, 4.18, 0);
+            g.add(epaulet);
+        }
+        // 頭
+        const head = new THREE.Mesh(new THREE.SphereGeometry(0.32, 12, 8), bronzeMat);
+        head.position.y = 4.55;
+        g.add(head);
+        // 軍帽
+        const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.36, 0.18, 12), bronzeDarkMat);
+        cap.position.y = 4.8;
+        g.add(cap);
+        const visor = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.06, 0.32), bronzeDarkMat);
+        visor.position.set(0, 4.74, 0.28);
+        g.add(visor);
+        // 右腕（敬礼）
+        const armR = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.85, 0.22), bronzeMat);
+        armR.position.set(0.55, 4.05, 0.15);
+        armR.rotation.z = -0.95;
+        g.add(armR);
+        // 左腕（剣を握る）
+        const armL = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.95, 0.22), bronzeMat);
+        armL.position.set(-0.5, 3.55, 0.05);
+        armL.rotation.z = 0.3;
+        g.add(armL);
+        const sabre = new THREE.Mesh(new THREE.BoxGeometry(0.05, 1.1, 0.12), bronzeDarkMat);
+        sabre.position.set(-0.75, 4.2, 0.05);
+        sabre.rotation.z = 0.5;
+        g.add(sabre);
+
+        // 垂れ幕（風に揺れる）
+        const flagGroup = new THREE.Group();
+        flagGroup.position.set(0, 1.8, 1.1);
+        g.add(flagGroup);
+        const flagMat = _sharedMat('monument_flag', () => new THREE.MeshStandardMaterial({
+            color: 0xA01818, roughness: 0.85, side: THREE.DoubleSide,
+        }));
+        const segs = [];
+        for (let i = 0; i < 4; i++) {
+            const seg = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 0.55), flagMat);
+            seg.position.set(0, -0.3 - i * 0.55, 0);
+            segs.push(seg);
+            flagGroup.add(seg);
+        }
+        // 星章（垂れ幕中央）
+        const flagStar = new THREE.Mesh(new THREE.CircleGeometry(0.28, 5), new THREE.MeshStandardMaterial({ color: 0xE2C24A, metalness: 0.6, roughness: 0.45 }));
+        flagStar.position.set(0, -0.85, 0.02);
+        flagGroup.add(flagStar);
+
+        this.dynamicProps.push({ type: 'banner', flagGroup, segs, time: Math.random() * 10 });
+        return g;
+    }
+
+    // Hi-Do 発着場（Wave 28 Hi-Do 改 最終決戦）
+    // 巨大円形ヘリパッド + 着陸誘導灯 + 給油ホース。
+    _buildHiDoLandingPad(g) {
+        const tarmacMat = _sharedMat('hidopad_tarmac', () => new THREE.MeshStandardMaterial({ color: 0x282826, roughness: 0.95 }));
+        const stripeMat = _sharedMat('hidopad_stripe', () => new THREE.MeshStandardMaterial({ color: 0xC8B82A, roughness: 0.78 }));
+        const crossMat = _sharedMat('hidopad_cross', () => new THREE.MeshStandardMaterial({ color: 0xC92A1E, roughness: 0.75 }));
+        const steelMat = _sharedMat('hidopad_steel', () => new THREE.MeshStandardMaterial({ color: 0x3A3F45, roughness: 0.55, metalness: 0.55 }));
+        const concreteMat = _sharedMat('hidopad_concrete', () => new THREE.MeshStandardMaterial({ color: 0x726F66, roughness: 0.94 }));
+
+        // 円形パッド本体（厚みあり）
+        const pad = new THREE.Mesh(new THREE.CylinderGeometry(3.4, 3.5, 0.4, 24), tarmacMat);
+        pad.position.y = 0.2;
+        g.add(pad);
+        // 縁石（黄色）
+        const rim = new THREE.Mesh(new THREE.TorusGeometry(3.35, 0.12, 8, 32), stripeMat);
+        rim.position.y = 0.4;
+        rim.rotation.x = Math.PI / 2;
+        g.add(rim);
+        // 中央 H マーカー
+        for (const dx of [-0.55, 0.55]) {
+            const leg = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.04, 1.6), stripeMat);
+            leg.position.set(dx, 0.42, 0);
+            g.add(leg);
+        }
+        const bar = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.04, 0.25), stripeMat);
+        bar.position.set(0, 0.42, 0);
+        g.add(bar);
+        // 反乱軍の赤十字章
+        for (let r = 0; r < 4; r++) {
+            const dash = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.04, 0.18), crossMat);
+            const ang = r * Math.PI / 2 + Math.PI / 4;
+            dash.position.set(Math.cos(ang) * 2.3, 0.42, Math.sin(ang) * 2.3);
+            dash.rotation.y = ang;
+            g.add(dash);
+        }
+
+        // 着陸誘導灯（円周上 8 個、点滅）
+        const lampMats = [];
+        for (let r = 0; r < 8; r++) {
+            const ang = (r / 8) * Math.PI * 2;
+            const lampMat = new THREE.MeshBasicMaterial({ color: r % 2 === 0 ? 0xFF3322 : 0xFFC222, transparent: true, opacity: 0.85 });
+            lampMats.push(lampMat);
+            const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.13, 6, 5), lampMat);
+            lamp.position.set(Math.cos(ang) * 3.1, 0.55, Math.sin(ang) * 3.1);
+            g.add(lamp);
+            const post = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.3, 5), steelMat);
+            post.position.set(Math.cos(ang) * 3.1, 0.55, Math.sin(ang) * 3.1);
+            g.add(post);
+        }
+
+        // 給油ハッチ + ホースリール
+        const hatch = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.45, 0.1, 12), steelMat);
+        hatch.position.set(2.4, 0.45, -1.5);
+        g.add(hatch);
+        const reel = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.45, 12), steelMat);
+        reel.position.set(2.4, 0.7, -1.5);
+        reel.rotation.z = Math.PI / 2;
+        g.add(reel);
+        const hose = new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.06, 6, 14, Math.PI), new THREE.MeshStandardMaterial({ color: 0x1A1A1A, roughness: 0.88 }));
+        hose.position.set(1.6, 0.45, -1.2);
+        hose.rotation.x = Math.PI / 2;
+        g.add(hose);
+
+        // 周囲のコンクリ縁（外周ガード）
+        for (let r = 0; r < 6; r++) {
+            const ang = (r / 6) * Math.PI * 2 + 0.2;
+            const block = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.5, 0.4), concreteMat);
+            block.position.set(Math.cos(ang) * 4.2, 0.25, Math.sin(ang) * 4.2);
+            block.rotation.y = -ang;
+            g.add(block);
+        }
+
+        this.dynamicProps.push({ type: 'landing_pad', lampMats, time: Math.random() * 10 });
+        return g;
+    }
+
+    // 巨大格納庫ゲート（Wave 28 Hi-Do 改 最終決戦）
+    // 巨大スライドゲート + 整備灯。fortress_gate アニメを流用。
+    _buildHangarGate(g) {
+        const steelMat = _sharedMat('hangar_steel', () => new THREE.MeshStandardMaterial({ color: 0x4A4E54, roughness: 0.62, metalness: 0.55 }));
+        const concreteMat = _sharedMat('hangar_concrete', () => new THREE.MeshStandardMaterial({ color: 0x5E5A52, roughness: 0.95 }));
+        const stripeMat = _sharedMat('hangar_stripe', () => new THREE.MeshStandardMaterial({ color: 0xC8B82A, roughness: 0.82 }));
+        const ribMat = _sharedMat('hangar_rib', () => new THREE.MeshStandardMaterial({ color: 0x32363C, roughness: 0.65, metalness: 0.6 }));
+
+        // 基礎
+        const base = new THREE.Mesh(new THREE.BoxGeometry(7.2, 0.6, 2.6), concreteMat);
+        base.position.y = 0.3;
+        g.add(base);
+        // 巨大柱
+        for (const px of [-3.0, 3.0]) {
+            const pillar = new THREE.Mesh(new THREE.BoxGeometry(1.4, 8.0, 1.6), concreteMat);
+            pillar.position.set(px, 4.0, 0);
+            g.add(pillar);
+            // 黄黒警告ストライプ
+            for (let i = 0; i < 4; i++) {
+                const stripe = new THREE.Mesh(new THREE.BoxGeometry(1.42, 0.35, 0.04), stripeMat);
+                stripe.position.set(px, 1.2 + i * 0.85, 0.82);
+                g.add(stripe);
+            }
+        }
+        // 上部梁
+        const lintel = new THREE.Mesh(new THREE.BoxGeometry(7.6, 1.4, 1.8), concreteMat);
+        lintel.position.y = 8.4;
+        g.add(lintel);
+        // 梁の補強リブ
+        for (let i = 0; i < 5; i++) {
+            const rib = new THREE.Mesh(new THREE.BoxGeometry(0.18, 1.42, 1.82), ribMat);
+            rib.position.set(-2.8 + i * 1.4, 8.4, 0);
+            g.add(rib);
+        }
+
+        // スライドゲート（重厚な左右扉、fortress_gate と同じ参照名）
+        const leftDoor = new THREE.Mesh(new THREE.BoxGeometry(2.7, 7.0, 0.32), steelMat);
+        leftDoor.position.set(-1.45, 3.9, 0);
+        g.add(leftDoor);
+        const rightDoor = new THREE.Mesh(new THREE.BoxGeometry(2.7, 7.0, 0.32), steelMat);
+        rightDoor.position.set(1.45, 3.9, 0);
+        g.add(rightDoor);
+
+        // 扉の補強パネル線
+        for (const dx of [-1.45, 1.45]) {
+            for (let i = 0; i < 4; i++) {
+                const panel = new THREE.Mesh(new THREE.BoxGeometry(2.7, 0.06, 0.34), ribMat);
+                panel.position.set(dx, 1.3 + i * 1.5, 0);
+                g.add(panel);
+            }
+            // 中央 X 補強
+            const cross1 = new THREE.Mesh(new THREE.BoxGeometry(0.12, 5.5, 0.34), ribMat);
+            cross1.position.set(dx, 3.9, 0);
+            cross1.rotation.z = 0.62;
+            g.add(cross1);
+            const cross2 = new THREE.Mesh(new THREE.BoxGeometry(0.12, 5.5, 0.34), ribMat);
+            cross2.position.set(dx, 3.9, 0);
+            cross2.rotation.z = -0.62;
+            g.add(cross2);
+        }
+
+        // 整備警告灯（赤・黄、交互点滅）
+        const lampMats = [];
+        for (const lx of [-3.4, 3.4]) {
+            const lampMat = new THREE.MeshBasicMaterial({ color: 0xFF3322, transparent: true, opacity: 0.9 });
+            lampMats.push(lampMat);
+            const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6), lampMat);
+            lamp.position.set(lx, 8.9, 0.55);
+            g.add(lamp);
+        }
+
+        // 屋根上のロゴ（Hi-Do の星章）
+        const star = new THREE.Mesh(
+            new THREE.CircleGeometry(0.7, 5),
+            new THREE.MeshStandardMaterial({ color: 0xC92A1E, roughness: 0.7 }),
+        );
+        star.position.set(0, 7.6, 0.92);
+        g.add(star);
+
+        // 'fortress_gate' タイプを再利用（leftDoor / rightDoor / lampMats を同じインタフェースで持つ）
+        this.dynamicProps.push({ type: 'fortress_gate', leftDoor, rightDoor, lampMats, time: Math.random() * 10 });
+        return g;
+    }
+
+    // 地獄門（Wave 29 無限地獄）
+    // 焦土に立つ巨大な漆黒の鳥居状ゲート + 燃え盛る篝火。
+    _buildHellGate(g) {
+        const obsidianMat = _sharedMat('hell_obsidian', () => new THREE.MeshStandardMaterial({ color: 0x1A1418, roughness: 0.55, metalness: 0.35 }));
+        const moltenMat = _sharedMat('hell_molten', () => new THREE.MeshBasicMaterial({ color: 0xFF4818, transparent: true, opacity: 0.92 }));
+        const ashMat = _sharedMat('hell_ash', () => new THREE.MeshStandardMaterial({ color: 0x2A2018, roughness: 0.97 }));
+
+        // 基礎台座
+        const base = new THREE.Mesh(new THREE.BoxGeometry(5.6, 0.5, 2.0), ashMat);
+        base.position.y = 0.25;
+        g.add(base);
+
+        // 巨大柱（左右、傾き気味）
+        for (const px of [-2.3, 2.3]) {
+            const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.95, 7.5, 1.1), obsidianMat);
+            pillar.position.set(px, 3.85, 0);
+            pillar.rotation.z = px > 0 ? -0.04 : 0.04;
+            g.add(pillar);
+            // 溶岩ライン
+            const crack = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 5.0), moltenMat);
+            crack.position.set(px + (px > 0 ? -0.48 : 0.48), 3.6, 0.001);
+            crack.rotation.y = Math.PI / 2;
+            g.add(crack);
+        }
+        // 上部の重厚な笠木（鳥居の上段）
+        const upperBeam = new THREE.Mesh(new THREE.BoxGeometry(6.6, 0.9, 1.5), obsidianMat);
+        upperBeam.position.y = 8.0;
+        g.add(upperBeam);
+        const middleBeam = new THREE.Mesh(new THREE.BoxGeometry(5.2, 0.55, 1.2), obsidianMat);
+        middleBeam.position.y = 7.05;
+        g.add(middleBeam);
+        // 笠木の上の角飾り
+        for (const px of [-2.7, 2.7]) {
+            const horn = new THREE.Mesh(new THREE.ConeGeometry(0.35, 1.0, 4), obsidianMat);
+            horn.position.set(px, 8.85, 0);
+            horn.rotation.z = px > 0 ? -0.3 : 0.3;
+            g.add(horn);
+        }
+        // 中央吊り下げの溶岩オーブ
+        const orb = new THREE.Mesh(new THREE.SphereGeometry(0.55, 14, 10), moltenMat);
+        orb.position.set(0, 6.3, 0);
+        g.add(orb);
+        const chain = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.75, 5), obsidianMat);
+        chain.position.set(0, 6.95, 0);
+        g.add(chain);
+
+        // 篝火（左右）
+        const flameLayers = [];
+        for (const px of [-3.4, 3.4]) {
+            const bowl = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.45, 0.4, 8), obsidianMat);
+            bowl.position.set(px, 0.7, 0.6);
+            g.add(bowl);
+            const post = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.1, 1.4, 6), obsidianMat);
+            post.position.set(px, 0.0 + 0.7, 0.6);
+            g.add(post);
+            // 炎（多層、derrick と同じ参照形式）
+            for (let i = 0; i < 3; i++) {
+                const flame = new THREE.Mesh(
+                    new THREE.ConeGeometry(0.32 - i * 0.08, 0.9 + i * 0.25, 8),
+                    new THREE.MeshBasicMaterial({
+                        color: i === 0 ? 0xFFE070 : (i === 1 ? 0xFF8030 : 0xC03010),
+                        transparent: true, opacity: 0.75 - i * 0.18, depthWrite: false,
+                    }),
+                );
+                flame.position.set(px, 1.25 + i * 0.18, 0.6);
+                g.add(flame);
+                flameLayers.push(flame);
+            }
+        }
+
+        // 地面の灰色オーラ（焦土）
+        const auraMat = _sharedMat('hell_aura', () => new THREE.MeshBasicMaterial({
+            color: 0x401510, transparent: true, opacity: 0.35, depthWrite: false,
+        }));
+        const aura = new THREE.Mesh(new THREE.CircleGeometry(3.4, 16), auraMat);
+        aura.position.y = 0.02;
+        aura.rotation.x = -Math.PI / 2;
+        g.add(aura);
+
+        // derrick 互換のスモークパフ
+        const smokeMat = new THREE.MeshBasicMaterial({ color: 0x1A1010, transparent: true, opacity: 0.5, depthWrite: false });
+        const smokePuffs = [];
+        for (let i = 0; i < 4; i++) {
+            const puff = new THREE.Mesh(new THREE.SphereGeometry(0.6 + i * 0.15, 8, 6), smokeMat);
+            puff.position.set(((i % 2) ? -3.4 : 3.4), 2.4 + i * 0.5, 0.6);
+            g.add(puff);
+            smokePuffs.push({ mesh: puff, phase: Math.random() * Math.PI * 2, baseY: puff.position.y });
+        }
+
+        this.dynamicProps.push({ type: 'derrick', flameLayers, smokePuffs, time: 0 });
+        return g;
+    }
+
+    /* ========================================================
      *  UPDATE
      * ======================================================== */
     update(dt, scrollZ) {
@@ -9303,6 +10287,15 @@ export class World {
                     });
                     break;
                 }
+                case 'landing_pad': {
+                    // 円周誘導灯のランウェイ点滅（時計回りに走る）
+                    const phase = p.time * 4.5;
+                    p.lampMats.forEach((m, idx) => {
+                        const wave = Math.sin(phase - idx * 0.85);
+                        m.opacity = 0.25 + Math.max(0, wave) * 0.7;
+                    });
+                    break;
+                }
             }
         }
 
@@ -9351,7 +10344,10 @@ export class World {
         // 各プロップの mesh 参照は破棄済み chunk と共に既に dispose されているので
         // ここでは配列から外すのみで安全。
         const endgamePhase = this._getEndgamePhase(scrollZ);
-        const MAX_DYNAMIC_PROPS = endgamePhase >= 0 ? 18 : (this._isFinalStage(scrollZ) ? 24 : 32);
+        const finalActPhaseNow = this._getFinalActPhase(scrollZ);
+        const MAX_DYNAMIC_PROPS = finalActPhaseNow >= 0
+            ? 15
+            : (endgamePhase >= 0 ? 18 : (this._isFinalStage(scrollZ) ? 24 : 32));
         if (this.dynamicProps.length > MAX_DYNAMIC_PROPS) {
             this.dynamicProps.splice(0, this.dynamicProps.length - MAX_DYNAMIC_PROPS);
         }
