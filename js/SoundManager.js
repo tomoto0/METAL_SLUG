@@ -55,6 +55,10 @@ export class SoundManager {
 
     _init() {
         this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        // 一部ブラウザでは初回ユーザー操作後でも suspended で生成されることがある。
+        if (this.ctx.state === 'suspended') {
+            this.ctx.resume().catch(() => { /* noop */ });
+        }
         this.masterGain = this.ctx.createGain();
         this.masterGain.gain.value = 0.6;
         this.masterGain.connect(this.ctx.destination);
@@ -432,6 +436,12 @@ export class SoundManager {
     startBGM() {
         if (!this._ready() || this.bgmPlaying) return;
 
+        // 自動再生ポリシーやタブ切替で AudioContext が suspended になっている場合がある。
+        // resume() しないと createBufferSource().start() が無音のまま進む。
+        if (this.ctx.state === 'suspended') {
+            this.ctx.resume().catch(() => { /* user gesture 不在等の失敗は無視 */ });
+        }
+
         // 実音声ファイルが読み込み済みの場合
         if (this._bgmLoaded && this._bgmBuffer) {
             this._playAudioBGM(this._bgmBuffer, 'battle');
@@ -459,6 +469,10 @@ export class SoundManager {
      */
     startTitleBGM() {
         if (!this._ready() || this.bgmPlaying) return;
+
+        if (this.ctx.state === 'suspended') {
+            this.ctx.resume().catch(() => { /* noop */ });
+        }
 
         if (this._titleBgmLoaded && this._titleBgmBuffer) {
             this._playAudioBGM(this._titleBgmBuffer, 'title');
@@ -506,6 +520,9 @@ export class SoundManager {
     stopBGM() {
         this.bgmPlaying = false;
         this._currentBgmType = null;
+        // 未完了のロード完了時自動再生フラグも解除。
+        // 残しておくとリスタート/ミュート解除時に意図しないタイミングで再生開始してしまう。
+        this._pendingBattleBgmStart = false;
 
         // 実音声BGM停止
         this._stopAudioBGM();

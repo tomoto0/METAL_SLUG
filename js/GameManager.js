@@ -70,6 +70,16 @@ export class GameManager {
         this.getScrollZ = () => 0;
         this.getScrollSpeed = () => 5;
 
+        // 衝突判定の per-frame キャッシュID。_checkCollisions の冒頭でインクリメントし、
+        // 同一フレーム内では _getHitSpheresFor*() の再計算をスキップする。
+        // Wave 16+ では N 弾 × M 敵 で数百回呼ばれるため、quaternion 適用回数の削減効果が大きい。
+        this._collisionFrameId = 0;
+        // 敵 AI 更新の位相分散用フレームカウンタ。視界外の遠距離敵を半分の頻度で
+        // 更新し、Wave 16+ の同時敵数による update コストを削減する。
+        this._aiFrame = 0;
+        // getAllEnemyProjectiles() の戻り値配列を再利用（毎フレーム新規配列＋spread の GC 負荷を回避）
+        this._allEnemyProjectilesBuf = [];
+
         // ウェーブ定義（23ステージ）
         // 構成: 1〜3 序盤 / 4 中ボス / 5〜7 中盤 / 8 中盤ボス / 9〜12 後半 /
         // 13〜17 終盤拡張 / 18〜22 深部要塞 / 23 無限
@@ -437,12 +447,36 @@ export class GameManager {
             this._spawnFromPool(wave.pool, playerPos, scrollZ);
         }
 
-        // 全敵更新
-        this.enemies.forEach(enemy => {
-            if (enemy.alive) {
-                enemy.update(dt, playerPos, elapsedTime);
+        // 全敵更新（視界外の遠距離敵は LOD で間引き / 完全スキップ）
+        // Wave 16+ で 20 体超の敵が同時に AI を走らせると update が支配的になる。
+        // - dz が画面の枠外（前方 +60 以上、後方 -22 以下）の敵は AI スキップ
+        //   後方は cleanup の閾値 -25 とほぼ同じなので、見た目に影響しない
+        // - 画面外周（dz > 40 or dz < -10）の敵は 2 フレームに 1 回更新（位相を i でズラす）
+        //   スキップした分の dt を accumulate して次回の effectiveDt に補填し、AI タイマが破綻しないようにする
+        const aiFrame = ++this._aiFrame;
+        const enemiesArr = this.enemies;
+        for (let i = 0; i < enemiesArr.length; i++) {
+            const enemy = enemiesArr[i];
+            if (!enemy.alive) continue;
+            const dz = enemy.getPosition().z - scrollZ;
+            if (dz < -22 || dz > 60) {
+                // 完全に視界外＆動かしても見えない: dt 加算だけして AI スキップ
+                // 上限 0.2s: 長時間スキップ後の再エントリ時に巨大 dt で一気にワープ移動するのを防ぐ
+                enemy._aiPendingDt = Math.min(0.2, (enemy._aiPendingDt || 0) + dt);
+                // 既に発射された弾だけは前進させる（空中に凍結させない）。
+                // AI 本体はスキップなので走行・発砲・モデルアニメは止まる。
+                if (enemy._updateProjectiles) enemy._updateProjectiles(dt);
+                continue;
             }
-        });
+            if ((dz > 40 || dz < -10) && ((i + aiFrame) & 1)) {
+                enemy._aiPendingDt = Math.min(0.2, (enemy._aiPendingDt || 0) + dt);
+                if (enemy._updateProjectiles) enemy._updateProjectiles(dt);
+                continue;
+            }
+            const effectiveDt = dt + (enemy._aiPendingDt || 0);
+            enemy._aiPendingDt = 0;
+            enemy.update(effectiveDt, playerPos, elapsedTime);
+        }
 
         // ボス更新
         if (this.boss && this.boss.alive) {
@@ -518,8 +552,10 @@ export class GameManager {
         });
 
         // クリーンアップ（ランダムではなく周期実行）
+        // 0.5s → 0.3s: 死亡敵 / 画面外弾 / エフェクトが累積する平均時間を短縮し、
+        // 同時保持されるメッシュ・マテリアル数のピークを抑える。
         this.cleanupTimer += dt;
-        if (this.cleanupTimer >= 0.5) {
+        if (this.cleanupTimer >= 0.3) {
             this.cleanupTimer = 0;
             this._cleanup(player);
         }
@@ -529,6 +565,12 @@ export class GameManager {
     // 衝突判定
     // ============================================
     _checkCollisions(player) {
+        // フレームID をインクリメント: 同一 _checkCollisions サイクル中の
+        // _getHitSpheresFor*() 呼び出しはキャッシュ命中する。
+        // enemy.update() は既に終わっており、本サイクル内で各エンティティの
+        // position/quaternion は変動しないため安全に再利用可能。
+        this._collisionFrameId++;
+
         // プレイヤー弾 × POW 誤射判定 (Feature 1)
         this.pows.forEach(pow => {
             if (!pow.alive || pow.state !== 'tied') return;
@@ -605,17 +647,29 @@ export class GameManager {
         const obstacles = this.world.getObstacles();
         if (!obstacles.length) return;
 
+        // 内ループで Vector3 を新規生成しない（毎フレーム弾×障害物の二重ループで
+        // 数百回呼ばれるためアロケーション圧が高い）
+        const center = _hitTmpV;
+
         for (const projectile of player.projectiles) {
             if (!projectile.alive || projectile.impactPending) continue;
 
             const { start, end } = this._getProjectileSegment(projectile);
             const projRadius = projectile.hitRadius || 0.2;
+            // 弾の進行範囲だけでスクリーニング: 弾の Z 付近にない障害物は判定対象から除外。
+            // 障害物の半径分の余裕を取って false-negative を防ぐ。
+            const segMinZ = Math.min(start.z, end.z);
+            const segMaxZ = Math.max(start.z, end.z);
 
             // 最近接で当たった障害物を選ぶ
             let bestHit = null;
-            for (const o of obstacles) {
+            for (let oi = 0; oi < obstacles.length; oi++) {
+                const o = obstacles[oi];
                 if (o.info.destroyed) continue;
-                const center = new THREE.Vector3(o.obj.position.x, 0.9, o.obj.position.z);
+                const opos = o.obj.position;
+                const r = (o.info.radius || 0) + projRadius;
+                if (opos.z + r < segMinZ || opos.z - r > segMaxZ) continue;
+                center.set(opos.x, 0.9, opos.z);
                 const hit = this._segmentSphereHit(start, end, center, o.info.radius + projRadius);
                 if (hit && (!bestHit || hit.t < bestHit.t)) {
                     bestHit = { ...hit, target: o };
@@ -678,14 +732,14 @@ export class GameManager {
                 if (!enemy.alive) continue;
                 const d = enemy.getPosition().distanceTo(pos);
                 if (d < info.blastRadius) {
-                    const dmg = Math.max(20, Math.floor(110 * (1 - d / info.blastRadius)));
+                    const dmg = Math.max(40, Math.floor(200 * (1 - d / info.blastRadius)));
                     this._damageEnemyFromPlayer(enemy, dmg, projectile, playerPos);
                 }
             }
             if (this.boss && this.boss.alive) {
                 const d = this.boss.getPosition().distanceTo(pos);
                 if (d < info.blastRadius * 1.5) {
-                    this._damageBoss(Math.floor(60 * (1 - d / (info.blastRadius * 1.5))));
+                    this._damageBoss(Math.floor(100 * (1 - d / (info.blastRadius * 1.5))));
                 }
             }
         }
@@ -861,8 +915,14 @@ export class GameManager {
     }
 
     _getHitSpheresForEnemy(enemy) {
+        // 同一フレーム内の再計算をスキップ。_checkCollisions の中で
+        // 敵 × プレイヤー弾 × 爆発スプラッシュと複数経路から呼ばれるため効果が大きい。
+        if (enemy._hitSphereFrameId === this._collisionFrameId && enemy._hitSphereCache) {
+            return enemy._hitSphereCache;
+        }
         const pos = enemy.getPosition();
         const q = enemy.group ? enemy.group.quaternion : null;
+        enemy._hitSphereFrameId = this._collisionFrameId;
 
         switch (enemy.type) {
             case 'tank': {
@@ -901,8 +961,12 @@ export class GameManager {
     }
 
     _getHitSpheresForBoss(boss) {
+        if (boss._hitSphereFrameId === this._collisionFrameId && boss._hitSphereCache) {
+            return boss._hitSphereCache;
+        }
         const pos = boss.getPosition();
         const q = boss.group ? boss.group.quaternion : null;
+        boss._hitSphereFrameId = this._collisionFrameId;
 
         if (boss.subType === 'tani_oh') {
             const arr = this._ensureSphereCache(boss, 3);
@@ -925,12 +989,16 @@ export class GameManager {
     }
 
     _getHitSpheresForPlayer(player) {
+        if (player._hitSphereFrameId === this._collisionFrameId && player._hitSphereCache) {
+            return player._hitSphereCache;
+        }
         const pos = player.getPosition();
         // visualGroup はモデルローカル +X → ワールド +Z（前方）になるよう回転されている。
         // ローカル前後オフセットをワールドへ変換する。
         const q = player.visualGroup ? player.visualGroup.quaternion : null;
         const hasTurret = !!player.turretGroup;
         const arr = this._ensureSphereCache(player, hasTurret ? 4 : 3);
+        player._hitSphereFrameId = this._collisionFrameId;
         this._setSphereCenter(arr[0], 0, 1.0, 0, q, pos);     arr[0].radius = 1.25;
         this._setSphereCenter(arr[1], -0.95, 0.8, 0, q, pos); arr[1].radius = 0.72;
         this._setSphereCenter(arr[2], 1.1, 0.85, 0, q, pos);  arr[2].radius = 0.8;
@@ -1552,18 +1620,23 @@ export class GameManager {
         }
 
         const spawnPos = perchedPos || this._getSpawnPosition(playerPos, selected.type, scrollZ, selected.subType);
+        // Wave 8+ から shadow caster を間引く（同時敵密度で shadow pass が
+        // 支配的になるため、しきい値を 13 → 8 へ前倒し）。
+        // 1 体あたり 5〜10 個の caster が抜けるので、Wave 16+ で 20 体並ぶ局面では
+        // shadow map の draw call が 100+ 減る。
+        const lowShadow = this.getCurrentWave() >= 8;
 
         let enemy;
         switch (selected.type) {
             case 'infantry':
-                enemy = new Infantry(this.scene, { position: spawnPos, subType: selected.subType });
+                enemy = new Infantry(this.scene, { position: spawnPos, subType: selected.subType, lowShadow });
                 if (enemy.perched) enemy.perchY = spawnPos.y;
                 break;
             case 'tank':
-                enemy = new EnemyTank(this.scene, { position: spawnPos, subType: selected.subType });
+                enemy = new EnemyTank(this.scene, { position: spawnPos, subType: selected.subType, lowShadow });
                 break;
             case 'aircraft':
-                enemy = new Aircraft(this.scene, { position: spawnPos, subType: selected.subType });
+                enemy = new Aircraft(this.scene, { position: spawnPos, subType: selected.subType, lowShadow });
                 break;
         }
 
@@ -1654,7 +1727,7 @@ export class GameManager {
                 spawnIntervalScale: 1.25,
                 enemyProjectiles: 12,
                 bossProjectiles: 24,
-                effects: 34,
+                effects: 32,
                 items: 14,
             };
         }
@@ -1664,7 +1737,18 @@ export class GameManager {
                 spawnIntervalScale: 1.12,
                 enemyProjectiles: 14,
                 bossProjectiles: 28,
-                effects: 38,
+                effects: 34,
+                items: 14,
+            };
+        }
+        // Wave 6+ から段階的に絞る (進行とともに敵・弾・破片の同時数が累積するため)
+        if (waveNum >= 6) {
+            return {
+                maxEnemies: 22,
+                spawnIntervalScale: 1.05,
+                enemyProjectiles: 16,
+                bossProjectiles: 32,
+                effects: 40,
                 items: 16,
             };
         }
@@ -1673,8 +1757,10 @@ export class GameManager {
             spawnIntervalScale: 1.0,
             enemyProjectiles: 18,
             bossProjectiles: 36,
-            effects: 48,
-            items: 20,
+            // ベース 48 → 36: 開始直後でも mesh / material 累積を抑える。
+            // 1 発の爆発が ~30 個 mesh を生むので 36 でも十分演出は破綻しない。
+            effects: 36,
+            items: 18,
         };
     }
 
@@ -1849,12 +1935,19 @@ export class GameManager {
     }
 
     getAllEnemyProjectiles() {
-        const all = [];
-        this.enemies.forEach(enemy => {
-            all.push(...enemy.projectiles);
-        });
+        // 毎フレーム配列を新規生成＋spread すると、Wave 16+ で敵×弾数が多い時に
+        // 1 フレームに数百要素のコピーが走る。固定 buffer を再利用し、spread を
+        // 使わず push でコピーしてアロケーションを抑える。
+        const all = this._allEnemyProjectilesBuf;
+        all.length = 0;
+        const enemies = this.enemies;
+        for (let i = 0; i < enemies.length; i++) {
+            const arr = enemies[i].projectiles;
+            for (let j = 0; j < arr.length; j++) all.push(arr[j]);
+        }
         if (this.boss) {
-            all.push(...this.boss.projectiles);
+            const arr = this.boss.projectiles;
+            for (let j = 0; j < arr.length; j++) all.push(arr[j]);
         }
         return all;
     }
@@ -1889,6 +1982,7 @@ export class GameManager {
             x: 0,
             z: scrollZ + 45,
             subType: subType,
+            waveNum: waveNum,
             // 重要: 生成する Explosion を effects に登録させる。
             // これがないとマズルフラッシュ等が永遠に scene に残り重くなる
             effectSink: this.effects,

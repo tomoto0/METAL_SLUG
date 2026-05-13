@@ -11,6 +11,7 @@ export class EnemyTank extends Enemy {
     constructor(scene, {
         position,
         subType = 'light',
+        lowShadow = false,
     }) {
         // Metal Slug 戦車スコア: Di-Cokka 相当の light=1500, heavy/Hairbuster 相当=3000
         // HP: キャノン 3〜4 発、もしくはバルカン連射で処理できる目安
@@ -24,10 +25,14 @@ export class EnemyTank extends Enemy {
 
         super(scene, { position, ...spec, type: 'tank' });
         this.subType = subType;
+        // Wave 13+ では shadow caster を間引き shadow pass を軽くする
+        this._lowShadow = lowShadow;
 
         // AI
         this.aiState = 'advance';
-        this.attackRange = subType === 'siege' ? 36 : (subType === 'heavy' ? 30 : (subType === 'flak' ? 28 : 22));
+        this.attackRange = subType === 'siege' ? 72 : (subType === 'heavy' ? 60 : (subType === 'flak' ? 90 : 44));
+        // Vulcan（散弾型機関砲）はメイン砲より遠くから撃てる
+        this.vulcanRange = subType === 'heavy' ? 110 : 0;
         this.movePauseTimer = 0;
         this.movePhase = 'move'; // 'move' | 'pause'
 
@@ -73,7 +78,8 @@ export class EnemyTank extends Enemy {
                 new THREE.MeshStandardMaterial({ color: C.track, roughness: 0.9, metalness: 0.2 })
             );
             trackOuter.position.y = 0.52 * scale;
-            trackOuter.castShadow = true;
+            // Wave 13+ は上部 hull / dome の影のみで識別できるので track 影を省略
+            if (!this._lowShadow) trackOuter.castShadow = true;
             pod.add(trackOuter);
 
             const trackInner = new THREE.Mesh(
@@ -157,7 +163,7 @@ export class EnemyTank extends Enemy {
         );
         belly.scale.set(1.15, 0.72, 0.84);
         belly.position.set(-0.05 * scale, 1.22 * scale, 0);
-        belly.castShadow = true;
+        if (!this._lowShadow) belly.castShadow = true;
         this.group.add(belly);
 
         const upperHull = new THREE.Mesh(
@@ -275,7 +281,7 @@ export class EnemyTank extends Enemy {
         );
         this.barrel.rotation.z = Math.PI / 2;
         this.barrel.position.set((barrelLen / 2 + 0.9) * scale, 0.18 * scale, 0);
-        this.barrel.castShadow = true;
+        if (!this._lowShadow) this.barrel.castShadow = true;
         this.turretGroup.add(this.barrel);
 
         // マズルブレーキ二段
@@ -682,7 +688,7 @@ export class EnemyTank extends Enemy {
             }
         }
 
-        this.commander.castShadow = true;
+        if (!this._lowShadow) this.commander.castShadow = true;
         this.turretGroup.add(this.commander);
 
         this.group.add(this.turretGroup);
@@ -717,6 +723,11 @@ export class EnemyTank extends Enemy {
         // 砲塔をプレイヤー方向に向ける（車体回転を差し引いたローカル回転）
         const turretWorldAngle = Math.atan2(-dirToPlayer.z, dirToPlayer.x);
         this.turretGroup.rotation.y = turretWorldAngle - this.group.rotation.y;
+
+        // 超長距離砲撃（heavy / siege のみ、長クールダウン）
+        if ((this.subType === 'heavy' || this.subType === 'siege') && dist > 32 && dist < 220) {
+            this._fireLongShell(playerPos, elapsedTime);
+        }
 
         // 導線ターゲットに接近したら新しい横断点を引き直す
         if (crossDist < 3.0) {
@@ -777,9 +788,9 @@ export class EnemyTank extends Enemy {
 
         if (dist < this.attackRange) {
             this._fireCannon(playerPos, elapsed);
-            if (this.subType === 'heavy') {
-                this._fireSpread(playerPos, elapsed);
-            }
+        }
+        if (this.subType === 'heavy' && dist < this.vulcanRange) {
+            this._fireSpread(playerPos, elapsed);
         }
     }
 
@@ -873,11 +884,11 @@ export class EnemyTank extends Enemy {
             const bullet = new Projectile(this.scene, {
                 position: muzzlePos.clone(),
                 direction: dir,
-                speed: 22,
+                speed: 34,
                 damage: this.damage,
                 owner: 'enemy',
                 type: 'bullet',
-                maxDistance: 52,
+                maxDistance: 140,
             });
             this.projectiles.push(bullet);
         }
@@ -911,6 +922,41 @@ export class EnemyTank extends Enemy {
         }
     }
 
+    _fireLongShell(playerPos, elapsed) {
+        // 初回タイミングをずらす（スポーン直後の同時発射を防ぐ）
+        if (this._nextLongShotAt === undefined) {
+            this._nextLongShotAt = elapsed + 3.5 + Math.random() * 5.0;
+            return;
+        }
+        if (elapsed < this._nextLongShotAt) return;
+        // 7〜12秒のランダム間隔
+        this._nextLongShotAt = elapsed + 7.0 + Math.random() * 5.0;
+
+        const muzzlePos = this.group.position.clone();
+        const heightScale = this.subType === 'siege' ? 1.75 : 1.4;
+        muzzlePos.y += 2.0 * heightScale;
+
+        const shellSpeed = 28;
+        // 自動スクロール（+Z, ~5/s）を見越したリードと軽い左右誤差
+        const flatDist = Math.hypot(playerPos.x - muzzlePos.x, playerPos.z - muzzlePos.z);
+        const travelTime = flatDist / shellSpeed;
+        const aimX = playerPos.x + (Math.random() - 0.5) * 1.6;
+        const aimZ = playerPos.z + 5.0 * travelTime;
+
+        const dir = new THREE.Vector3(aimX - muzzlePos.x, 0, aimZ - muzzlePos.z).normalize();
+
+        const shell = new Projectile(this.scene, {
+            position: muzzlePos,
+            direction: dir,
+            speed: shellSpeed,
+            damage: Math.floor(this.damage * 1.4),
+            owner: 'enemy',
+            type: 'cannon',
+            maxDistance: 260,
+        });
+        this.projectiles.push(shell);
+    }
+
     _fireSpread(playerPos, elapsed) {
         // 3way散弾（メイン砲弾と同時に小弾）
         const muzzlePos = this.group.position.clone();
@@ -920,7 +966,7 @@ export class EnemyTank extends Enemy {
         baseDir.y = 0;
         baseDir.normalize();
 
-        for (let angle of [-0.2, 0.2]) {
+        for (let angle of [-0.12, 0.12]) {
             const dir = baseDir.clone();
             const cos = Math.cos(angle);
             const sin = Math.sin(angle);
@@ -932,11 +978,11 @@ export class EnemyTank extends Enemy {
             const bullet = new Projectile(this.scene, {
                 position: muzzlePos.clone(),
                 direction: dir,
-                speed: 14,
+                speed: 32,
                 damage: 8,
                 owner: 'enemy',
                 type: 'bullet',
-                maxDistance: 40,
+                maxDistance: 130,
             });
             this.projectiles.push(bullet);
         }

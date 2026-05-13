@@ -32,6 +32,7 @@ export class Infantry extends Enemy {
     constructor(scene, {
         position,
         subType = 'rifle',
+        lowShadow = false,
     }) {
         // Metal Slug 原作準拠チューニング
         // - 歩兵は基本 1HP 換算（バルカン 1〜2 発）で倒せるのが原則
@@ -62,6 +63,9 @@ export class Infantry extends Enemy {
 
         super(scene, { position, ...spec, type: 'infantry' });
         this.subType = subType;
+        // Wave 13+ では shadow caster を間引いて shadow pass コストを下げる。
+        // 低 wave では原作風の影を維持して見栄えを優先。
+        this._lowShadow = lowShadow;
 
         // AI状態
         this.aiState = 'advance';  // 'advance' | 'attack' | 'charge'
@@ -304,7 +308,7 @@ export class Infantry extends Enemy {
 
             const boot = new THREE.Mesh(bootGeo, bootMat);
             boot.position.set(0.07, -0.31, 0);
-            boot.castShadow = true;
+            if (!this._lowShadow) boot.castShadow = true;
             lower.add(boot);
 
             const sole = new THREE.Mesh(_geo('inf_boot_sole', () => new THREE.BoxGeometry(0.42, 0.045, 0.32)), soleMat);
@@ -332,7 +336,8 @@ export class Infantry extends Enemy {
         const torsoMat = new THREE.MeshStandardMaterial({ color: COLORS.uniform, roughness: 0.8 });
         const torso = new THREE.Mesh(torsoGeo, torsoMat);
         torso.position.y = 0.95;
-        torso.castShadow = true;
+        // Wave 13+ は helmet 影のみで読み取れるため torso 影を省略する。
+        if (!this._lowShadow) torso.castShadow = true;
         this.group.add(torso);
 
         // ベスト/装備ハーネス（スプライトシートの特徴）
@@ -391,7 +396,7 @@ export class Infantry extends Enemy {
         const head = new THREE.Mesh(headGeo, headMat);
         head.position.y = 1.42;
         head.scale.set(1.05, 1.0, 0.95);
-        head.castShadow = true;
+        if (!this._lowShadow) head.castShadow = true;
         this.group.add(head);
         this.headMesh = head;
 

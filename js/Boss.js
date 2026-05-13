@@ -23,6 +23,12 @@ export class Boss {
         // 生成した爆発・マズルフラッシュを登録する外部 effects 配列
         // (GameManager.effects)。未設定だと update() されず scene に永遠に残る
         this.effectSink = options.effectSink || null;
+        // Wave 別の挙動切替に使う（Wave 16=ランジ/撤退、Wave 20=軌道周回+ダイブ）
+        this.waveNum = options.waveNum || 8;
+        // ダッシュ/軌道用ステートマシン
+        this.dashState = 'idle';
+        this.dashTimer = 0;
+        this.dashAngle = Math.random() * Math.PI * 2;
 
         // ステータス（タイプ別 — Metal Slug 原作のボス倒しスコア相当）
         //   Di-Cokka 相当: 15000pt / Tani-Oh (ハイレッグ) 相当: 50000pt
@@ -1352,32 +1358,13 @@ export class Boss {
             this.attackCooldown = 2.0;
         }
 
-        // 移動パターン（フェーズ別）— 左右に X 揺らしつつ、Z でプレイヤー前方をキープ
-        if (this.phase >= 3) {
-            // 激しく左右に動く
-            const targetX = playerPos.x + Math.sin(this.bobPhase * 0.7) * 12;
-            const diffX = targetX - this.group.position.x;
-            this.group.position.x += Math.sign(diffX) * Math.min(Math.abs(diffX), this.speed * 1.5 * dt);
-
-            const targetZ = playerPos.z + 14;
-            const diffZ = targetZ - this.group.position.z;
-            this.group.position.z += Math.sign(diffZ) * Math.min(Math.abs(diffZ), this.speed * 0.8 * dt);
-            this.group.position.y = 6 + bobY + Math.sin(this.bobPhase * 2) * 1.5;
-        } else if (this.phase >= 2) {
-            const targetX = playerPos.x + Math.sin(this.bobPhase * 0.5) * 8;
-            const diffX = targetX - this.group.position.x;
-            this.group.position.x += Math.sign(diffX) * Math.min(Math.abs(diffX), this.speed * dt);
-
-            const targetZ = playerPos.z + 18;
-            const diffZ = targetZ - this.group.position.z;
-            this.group.position.z += Math.sign(diffZ) * Math.min(Math.abs(diffZ), this.speed * 0.6 * dt);
-            this.group.position.y = 7 + bobY;
+        // Wave 別の移動パターン
+        if (this.waveNum >= 20) {
+            this._moveTaniOhOrbit(dt, playerPos, bobY);
+        } else if (this.waveNum >= 16) {
+            this._moveTaniOhLunge(dt, playerPos, bobY);
         } else {
-            const diff = this.targetZ - this.group.position.z;
-            if (Math.abs(diff) > 1) {
-                this.group.position.z += Math.sign(diff) * this.speed * 0.5 * dt;
-            }
-            this.group.position.y = 8 + bobY;
+            this._moveTaniOhDefault(dt, playerPos, bobY);
         }
 
         // 攻撃タイマー
@@ -1396,6 +1383,114 @@ export class Boss {
                 this._fireTaniOhSub(playerPos);
             }
         }
+    }
+
+    /* ========================================================
+     *  Tani-Oh 移動パターン群（Wave 別）
+     * ======================================================== */
+
+    // Wave 8/12: HP フェーズに応じて左右に揺れつつプレイヤー前方をキープ
+    _moveTaniOhDefault(dt, playerPos, bobY) {
+        // Wave 12 はベース速度と振幅を少し増やす
+        const aggro = this.waveNum >= 12 ? 1.25 : 1.0;
+        if (this.phase >= 3) {
+            const targetX = playerPos.x + Math.sin(this.bobPhase * 0.7) * 12 * aggro;
+            const diffX = targetX - this.group.position.x;
+            this.group.position.x += Math.sign(diffX) * Math.min(Math.abs(diffX), this.speed * 1.5 * aggro * dt);
+
+            const targetZ = playerPos.z + 14;
+            const diffZ = targetZ - this.group.position.z;
+            this.group.position.z += Math.sign(diffZ) * Math.min(Math.abs(diffZ), this.speed * 0.8 * aggro * dt);
+            this.group.position.y = 6 + bobY + Math.sin(this.bobPhase * 2) * 1.5;
+        } else if (this.phase >= 2) {
+            const targetX = playerPos.x + Math.sin(this.bobPhase * 0.5) * 8 * aggro;
+            const diffX = targetX - this.group.position.x;
+            this.group.position.x += Math.sign(diffX) * Math.min(Math.abs(diffX), this.speed * aggro * dt);
+
+            const targetZ = playerPos.z + 18;
+            const diffZ = targetZ - this.group.position.z;
+            this.group.position.z += Math.sign(diffZ) * Math.min(Math.abs(diffZ), this.speed * 0.6 * aggro * dt);
+            this.group.position.y = 7 + bobY;
+        } else {
+            const diff = this.targetZ - this.group.position.z;
+            if (Math.abs(diff) > 1) {
+                this.group.position.z += Math.sign(diff) * this.speed * 0.5 * dt;
+            }
+            this.group.position.y = 8 + bobY;
+        }
+    }
+
+    // Wave 16: ランジ→撤退→ストレイフ の 3 ステート切替で「迫る/離れる」を強調
+    // close-up（z+5）→ far（z+38）の往復で距離変動を大きく見せる
+    _moveTaniOhLunge(dt, playerPos, bobY) {
+        this.dashTimer -= dt;
+        if (this.dashTimer <= 0) {
+            // 次の状態へ遷移
+            if (this.dashState === 'lunge') {
+                this.dashState = 'retreat';
+                this.dashTimer = 2.0 + Math.random() * 0.6;
+            } else if (this.dashState === 'retreat') {
+                this.dashState = 'strafe';
+                this.dashTimer = 1.6 + Math.random() * 0.6;
+            } else {
+                this.dashState = 'lunge';
+                this.dashTimer = 1.2 + Math.random() * 0.6;
+            }
+        }
+
+        const base = this.speed;
+        if (this.dashState === 'lunge') {
+            // プレイヤー直上ぎりぎりまで急接近、高度も下げる
+            this._approachTaniOhTarget(playerPos.x, 4 + bobY * 0.4, playerPos.z + 5, base * 4.0, dt);
+        } else if (this.dashState === 'retreat') {
+            // 遠方へ全速撤退（カメラフェードアウトを誘う距離）
+            const dx = Math.sin(this.bobPhase * 0.6) * 18;
+            this._approachTaniOhTarget(playerPos.x + dx, 11 + bobY, playerPos.z + 38, base * 3.2, dt);
+        } else {
+            // 中距離で左右に大きくストレイフ
+            const tx = playerPos.x + Math.sin(this.bobPhase * 1.1) * 20;
+            this._approachTaniOhTarget(tx, 7 + bobY, playerPos.z + 18, base * 2.0, dt);
+        }
+    }
+
+    // Wave 20: プレイヤーを中心に楕円軌道周回 ⇔ 急降下ダイブ
+    _moveTaniOhOrbit(dt, playerPos, bobY) {
+        this.dashTimer -= dt;
+        if (this.dashTimer <= 0) {
+            if (this.dashState === 'dive') {
+                this.dashState = 'orbit';
+                this.dashTimer = 3.5 + Math.random() * 1.0;
+            } else {
+                this.dashState = 'dive';
+                this.dashTimer = 1.4;
+            }
+        }
+
+        // 軌道進行（ダイブ時は速く回り込む）
+        this.dashAngle += dt * (this.dashState === 'dive' ? 2.4 : 0.8);
+
+        if (this.dashState === 'dive') {
+            // 低空でプレイヤーを掠めるダイブ
+            const tx = playerPos.x + Math.cos(this.dashAngle) * 5;
+            const tz = playerPos.z - 3 + Math.sin(this.dashAngle) * 7;
+            this._approachTaniOhTarget(tx, 3.2 + bobY * 0.3, tz, this.speed * 5.0, dt);
+        } else {
+            // 楕円軌道（プレイヤー前方寄り重心）
+            const orbitR = 16;
+            const tx = playerPos.x + Math.cos(this.dashAngle) * orbitR;
+            const tz = playerPos.z + 14 + Math.sin(this.dashAngle) * orbitR * 0.55;
+            const ty = 8 + bobY + Math.sin(this.dashAngle * 2.0) * 2.2;
+            this._approachTaniOhTarget(tx, ty, tz, this.speed * 2.8, dt);
+        }
+    }
+
+    // 目標座標へ最大 speed で接近（毎軸独立の速度上限）
+    _approachTaniOhTarget(tx, ty, tz, speed, dt) {
+        const pos = this.group.position;
+        const dx = tx - pos.x, dy = ty - pos.y, dz = tz - pos.z;
+        pos.x += Math.sign(dx) * Math.min(Math.abs(dx), speed * dt);
+        pos.y += Math.sign(dy) * Math.min(Math.abs(dy), speed * 0.7 * dt);
+        pos.z += Math.sign(dz) * Math.min(Math.abs(dz), speed * dt);
     }
 
     /* ========================================================
@@ -1647,6 +1742,9 @@ export class Boss {
         this.flashTimer = 0.08;
         this._setColor(this.hullMesh, 0xFF4444);
 
+        // ボス関連の爆発は地面残骸（岩塊・焦げ跡）を一切残さない（skipResidue: true）。
+        // 残骸を残すと、ボス撃破直前に発生したパーツ破壊爆発の残骸が
+        // 「小さな爆発が画面に残り続けているように見える」原因になる。
         // パーツ破壊チェック
         if (!this.armorDestroyed && this.hp < this.maxHp * 0.6) {
             this.armorDestroyed = true;
@@ -1654,13 +1752,13 @@ export class Boss {
                 this.armorGroup.visible = false;
                 const pos = this.group.position.clone();
                 pos.y += 2;
-                this._spawnEffect(new Explosion(this.scene, pos, { type: 'large' }));
+                this._spawnEffect(new Explosion(this.scene, pos, { type: 'large', skipResidue: true }));
                 // 追加爆発（リセット時にキャンセルできるよう _attackTimers に追跡）
                 this._attackTimers = this._attackTimers || [];
                 const tid = setTimeout(() => {
                     this._attackTimers && this._attackTimers.splice(this._attackTimers.indexOf(tid), 1);
                     if (!this.alive) return;
-                    this._spawnEffect(new Explosion(this.scene, pos.clone().add(new THREE.Vector3(2, 1, -1)), { type: 'large' }));
+                    this._spawnEffect(new Explosion(this.scene, pos.clone().add(new THREE.Vector3(2, 1, -1)), { type: 'large', skipResidue: true }));
                 }, 200);
                 this._attackTimers.push(tid);
             }
@@ -1674,12 +1772,12 @@ export class Boss {
             }
             const pos = this.group.position.clone();
             pos.y += this.subType === 'tani_oh' ? 0 : 4;
-            this._spawnEffect(new Explosion(this.scene, pos, { type: 'large' }));
+            this._spawnEffect(new Explosion(this.scene, pos, { type: 'large', skipResidue: true }));
             this._attackTimers = this._attackTimers || [];
             const tid2 = setTimeout(() => {
                 this._attackTimers && this._attackTimers.splice(this._attackTimers.indexOf(tid2), 1);
                 if (!this.alive) return;
-                this._spawnEffect(new Explosion(this.scene, pos.clone().add(new THREE.Vector3(-1, 2, 0.5)), { type: 'large' }));
+                this._spawnEffect(new Explosion(this.scene, pos.clone().add(new THREE.Vector3(-1, 2, 0.5)), { type: 'large', skipResidue: true }));
             }, 300);
             this._attackTimers.push(tid2);
         }
@@ -1702,48 +1800,57 @@ export class Boss {
 
     /* ========================================================
      *  DESTROY
+     *  ボス撃破時はボス本体を即時に dispose し、画面いっぱいの
+     *  単発「boss_finale」爆発を 1 つだけ生成する。
+     *  以前は setTimeout で複数の小爆発をカスケードしていたが、
+     *  そのタイマー由来で爆発玉が画面に残ったり、リセット時に
+     *  古いボスのエフェクトが混入する不具合があったため廃止。
      * ======================================================== */
     destroy(effectsList = null) {
         const pos = this.group.position.clone();
-        const explosionCount = this.subType === 'tani_oh' ? 10 : 7;
-        // 引数で渡された effects list を一時的に使い、無ければ this.effectSink にフォールバック
         const sink = effectsList || this.effectSink || null;
+        const aerial = (this.subType === 'tani_oh');
 
-        // 段階的な爆発カスケード — タイマー ID を保持してリセット時にキャンセル可
-        this._destroyTimers = this._destroyTimers || [];
-        for (let i = 0; i < explosionCount; i++) {
-            const tid = setTimeout(() => {
-                const offset = new THREE.Vector3(
-                    (Math.random() - 0.5) * (this.subType === 'tani_oh' ? 10 : 6),
-                    Math.random() * (this.subType === 'tani_oh' ? 5 : 4),
-                    (Math.random() - 0.5) * (this.subType === 'tani_oh' ? 8 : 4)
-                );
-                const ex = new Explosion(this.scene, pos.clone().add(offset), {
-                    type: 'large',
-                    color: i % 3 === 0 ? 0xFF4400 : (i % 3 === 1 ? 0xFFAA00 : 0xFFFF44),
-                    residueLife: 2.4,
-                });
-                if (sink && Array.isArray(sink)) {
-                    sink.push(ex);
-                } else {
-                    this._spawnEffect(ex);
-                }
-            }, i * 180);
-            this._destroyTimers.push(tid);
+        // 進行中の攻撃タイマーをキャンセル（古い弾/爆発が漏れないように）
+        if (this._attackTimers) {
+            this._attackTimers.forEach(t => clearTimeout(t));
+            this._attackTimers = [];
         }
+        // _destroyTimers は廃止だが GameManager の cleanup チェックがあるので空配列で残す
+        this._destroyTimers = [];
 
-        const finalTid = setTimeout(() => {
-            this.scene.remove(this.group);
+        // ボス本体を即時に scene から外して dispose する（残像/玉が残らない）
+        if (this.group) {
+            if (this.group.parent) this.scene.remove(this.group);
             this.group.traverse(child => {
                 if (child.isMesh) {
-                    child.geometry.dispose();
-                    if (child.material.dispose) child.material.dispose();
+                    if (child.geometry && child.geometry.dispose) child.geometry.dispose();
+                    if (child.material) {
+                        if (Array.isArray(child.material)) child.material.forEach(m => m.dispose());
+                        else if (child.material.dispose) child.material.dispose();
+                    }
                 }
             });
-            // 全タイマーが完了したのでクリア（メモリリーク防止）
-            this._destroyTimers = [];
-        }, explosionCount * 180 + 500);
-        this._destroyTimers.push(finalTid);
+        }
+
+        // ボス撃破専用の巨大単発爆発をボスの最後の位置に 1 発だけ生成。
+        // 空中ボスは地表で派手に演出するため Y を抑えて爆発位置を下げる。
+        const blastPos = pos.clone();
+        if (aerial) blastPos.y = Math.max(2.0, blastPos.y * 0.4);
+        const ex = new Explosion(this.scene, blastPos, {
+            type: 'boss_finale',
+            // boss_finale は内部で skipResidue=true を強制するので明示は不要だが、念のため指定
+            skipResidue: true,
+        });
+        if (sink && Array.isArray(sink)) {
+            sink.push(ex);
+        } else {
+            // _spawnEffect は spawnedEffects に追加するので、ここでは追跡から除外する
+            this._spawnEffect(ex);
+        }
+        // 既存のボス由来エフェクト（パーツ破壊の large 爆発、マズルフラッシュ等）が
+        // 残っていれば即座に破棄する。boss_finale だけは残して華々しく演出する。
+        this._purgeSpawnedEffects(ex);
 
         this.projectiles.forEach(p => p.destroy());
         this.projectiles = [];
@@ -1776,6 +1883,8 @@ export class Boss {
      *  R 連打時に古いボスの爆発カスケードが新ゲームに混入するのを防ぐ。 */
     destroyImmediate() {
         this.cancelDestroyTimers();
+        // リセット時はボス由来エフェクトを全て破棄（フィナーレ含め全部消す）
+        this._purgeSpawnedEffects(null);
         this.alive = false;
         if (this.group && this.group.parent) {
             this.scene.remove(this.group);
@@ -1807,6 +1916,12 @@ export class Boss {
      * 生成した Explosion エフェクトを effectSink に登録する。
      * 登録しない場合 update() が呼ばれず scene に永遠に残り
      * メタルスラッグが時間と共に重くなる主因となる。
+     *
+     * 加えて、ボスがこれまでに生成した爆発（マズルフラッシュも含む）への弱参照を
+     * `_spawnedEffects` に保持しておき、Boss.destroy() で残存する爆発をまとめて
+     * 強制終了する。これにより「ボス撃破直前のパーツ破壊爆発の岩塊/煙が画面に
+     * 残り続ける」「リセット時にボス由来のエフェクトが新ゲームに混入する」など
+     * の症状を確実に防止する。
      */
     _spawnEffect(effect) {
         if (!effect) return effect;
@@ -1820,6 +1935,26 @@ export class Boss {
                 }
             }, ((effect.maxAge || 1.0) * 1000) + 200);
         }
+        // 追跡: destroy() 時にまとめて掃除できるよう参照を残す
+        this._spawnedEffects = this._spawnedEffects || [];
+        this._spawnedEffects.push(effect);
         return effect;
+    }
+
+    /**
+     * Boss が生成したすべての Explosion を強制終了する。
+     * `boss_finale` 以外（マズルフラッシュ、パーツ破壊の large 爆発など）は
+     * boss 撃破時点で残っていれば即座に破棄して、画面上に小さな爆発残骸が
+     * 居座らないようにする。
+     */
+    _purgeSpawnedEffects(except = null) {
+        if (!this._spawnedEffects) return;
+        for (const eff of this._spawnedEffects) {
+            if (!eff || eff === except) continue;
+            if (eff.alive && typeof eff.destroy === 'function') {
+                try { eff.destroy(); } catch (_) { /* ignore */ }
+            }
+        }
+        this._spawnedEffects = [];
     }
 }

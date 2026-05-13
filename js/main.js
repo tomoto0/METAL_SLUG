@@ -219,6 +219,13 @@ gameManager.onEnemyKilled = (enemy) => {
 gameManager.onWaveChange = (waveNum) => {
     uiManager.announceWave(waveNum);
     soundManager.playWaveStart();
+    // Wave 切替の節目で強制クリーンアップ。前 Wave で滞留したエフェクトや
+    // shader / texture program キャッシュをここで一括解放し、ヒープ膨張を抑える。
+    gameManager.cleanupTimer = 999;
+    if (renderer.renderLists && renderer.renderLists.dispose) {
+        renderer.renderLists.dispose();
+    }
+    renderListsCleanupTimer = 0;
 };
 
 gameManager.onPlayerHit = (hp, maxHp) => {
@@ -252,6 +259,10 @@ gameManager.onBossHpChange = (hp, maxHp) => {
 
 gameManager.onBossDefeated = () => {
     uiManager.hideBossHp();
+    // 画面いっぱいの爆発に合わせて強めのインパクトフラッシュ + 大きな揺れ
+    uiManager.triggerImpactFlash(1.4, true);
+    shakeIntensity = Math.max(shakeIntensity, 1.2);
+    cameraZoomTarget = 0.95;
     soundManager.playWaveStart();
     scrollPaused = false;
     // ボス出現時に変更したライトをデイライト初期値へ戻す
@@ -722,9 +733,10 @@ function gameLoop(timestamp) {
     }
     // アクティブキャラのエフェクト上限管理
     // shift しただけだと scene 上の Mesh は残るので、必ず後処理で解放する。
-    // Wave 12以降は同時敵・発射物が増えるため、エフェクト保持数も少し絞る。
+    // Wave 進行とともに段階的に絞り、序盤からの mesh 累積も抑える。
     const activeEffects = activeEntity.effects || [];
-    const activeEffectLimit = gameManager.getCurrentWave() >= 12 ? 32 : 40;
+    const _waveNum = gameManager.getCurrentWave();
+    const activeEffectLimit = _waveNum >= 12 ? 24 : (_waveNum >= 6 ? 28 : 32);
     while (activeEffects.length > activeEffectLimit) {
         const old = activeEffects.shift();
         forceReleaseEffect(old);
@@ -746,16 +758,17 @@ function gameLoop(timestamp) {
         const heapMB = (performance && performance.memory && performance.memory.usedJSHeapSize)
             ? performance.memory.usedJSHeapSize / (1024 * 1024) : 0;
 
-        // クールダウン中は閾値を緩めて頻繁な切替を防ぐ
+        // クールダウン中は閾値を緩めて頻繁な切替を防ぐ。
+        // 序盤からのヒープ膨張に早めに対応するため全体的に閾値を引き下げ。
         const onCooldown = memPressureCooldown > 0;
-        const HIGH_GEO     = onCooldown ? 1500 : 1800;
-        const HIGH_TEX     = onCooldown ? 250  : 320;
-        const HIGH_CALLS   = onCooldown ? 700  : 850;
-        const HIGH_HEAP_MB = onCooldown ? 900  : 1200;
-        const CRIT_GEO     = onCooldown ? 1900 : 2200;
-        const CRIT_TEX     = onCooldown ? 380  : 460;
-        const CRIT_CALLS   = onCooldown ? 950  : 1100;
-        const CRIT_HEAP_MB = onCooldown ? 1500 : 1900;
+        const HIGH_GEO     = onCooldown ? 1200 : 1400;
+        const HIGH_TEX     = onCooldown ? 200  : 250;
+        const HIGH_CALLS   = onCooldown ? 600  : 720;
+        const HIGH_HEAP_MB = onCooldown ? 700  : 900;
+        const CRIT_GEO     = onCooldown ? 1600 : 1850;
+        const CRIT_TEX     = onCooldown ? 320  : 390;
+        const CRIT_CALLS   = onCooldown ? 820  : 950;
+        const CRIT_HEAP_MB = onCooldown ? 1200 : 1500;
 
         const isHigh =
             geoCount > HIGH_GEO || texCount > HIGH_TEX ||
@@ -830,12 +843,13 @@ function gameLoop(timestamp) {
         }
     }
 
-    // RenderList キャッシュの定期解放（10 秒ごと）。
+    // RenderList キャッシュの定期解放（5 秒ごと）。
     // dispose しても scene 上のオブジェクトには影響しないが、
     // three.js が draw call ごとに保持する内部キャッシュ
     // (WebGLRenderList / WebGLProgram の参照) を解放してヒープ膨張を抑える。
+    // 10s → 5s: 序盤からの累積を抑えるため頻度を倍化。
     renderListsCleanupTimer += rawDt;
-    if (renderListsCleanupTimer >= 10.0) {
+    if (renderListsCleanupTimer >= 5.0) {
         renderListsCleanupTimer = 0;
         if (renderer.renderLists && renderer.renderLists.dispose) {
             renderer.renderLists.dispose();

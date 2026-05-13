@@ -1744,7 +1744,7 @@ export class Player {
             impactPosition: startPos.clone(),
             damage: 80,
             hitRadius: 0.28,
-            blastRadius: 6.0,
+            blastRadius: 7.5,
             explosionVisual: 'mega',
         };
 

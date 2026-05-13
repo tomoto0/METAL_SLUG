@@ -10,6 +10,7 @@ export class Aircraft extends Enemy {
     constructor(scene, {
         position,
         subType = 'scout_heli',
+        lowShadow = false,
     }) {
         // 航空機スコア（原作 Metal Slug 相当）
         //   scout_heli: 800 / attack_heli (R-Shobu系): 2000 / bomber: 1500 / fighter: 1200
@@ -27,6 +28,8 @@ export class Aircraft extends Enemy {
 
         super(scene, { position, ...spec, type: 'aircraft' });
         this.subType = subType;
+        // Wave 13+ では shadow caster を間引いて shadow pass を軽くする
+        this._lowShadow = lowShadow;
 
         // 飛行高度（プレイヤー戦車の砲身仰角で届く低空に調整）
         // 砲塔高 ≈ 1.2m、目安として 4〜7m を主役の高度に。
@@ -600,7 +603,7 @@ export class Aircraft extends Enemy {
         const wingMat = new THREE.MeshStandardMaterial({ color: C.wing, roughness: 0.6 });
         const wing = new THREE.Mesh(wingGeo, wingMat);
         wing.position.set(-0.3, 0, 0);
-        wing.castShadow = true;
+        if (!this._lowShadow) wing.castShadow = true;
         this.group.add(wing);
 
         // 尾翼
@@ -763,7 +766,7 @@ export class Aircraft extends Enemy {
             const wing = new THREE.Mesh(wingGeo, wingMat);
             wing.rotation.x = side > 0 ? 0 : Math.PI;
             wing.position.set(0, 0, side * 0.02);
-            wing.castShadow = true;
+            if (!this._lowShadow) wing.castShadow = true;
             this.group.add(wing);
         }
 

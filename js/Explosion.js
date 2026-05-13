@@ -126,11 +126,14 @@ export class Explosion {
         type = 'small',  // 'muzzle' | 'small' | 'large'
         color = 0xFF6600,
         residueLife = null,
+        skipResidue = false, // 地面に岩塊/焦げ跡を残さない（空中ボスのカスケード爆発用）
+        maxAge = null,       // 個別 maxAge を強制したいとき（ボス死亡カスケード等で短命化）
     } = {}) {
         this.scene = scene;
         this.alive = true;
         this.age = 0;
         this.residueLife = residueLife;
+        this.skipResidue = skipResidue;
         this.group = new THREE.Group();
         this.group.position.copy(position);
         this.particles = [];
@@ -153,7 +156,16 @@ export class Explosion {
                 this.maxAge = 0.9;
                 this._buildMegaExplosion();
                 break;
+            case 'boss_finale':
+                // ボス撃破専用の巨大爆発。残骸は一切残さず、約 1.4 秒で完全に消える。
+                this.maxAge = 1.4;
+                this.skipResidue = true;
+                this._buildBossFinaleExplosion();
+                break;
         }
+        // 呼び出し側で maxAge をオーバーライドした場合は反映（progress は age/maxAge なので
+        // 内部の particle/extra のフェード曲線も自動的に短縮される）。
+        if (typeof maxAge === 'number' && maxAge > 0) this.maxAge = maxAge;
 
         this.scene.add(this.group);
     }
@@ -529,6 +541,128 @@ export class Explosion {
     }
 
     // ============================================
+    // ボス撃破フィナーレ爆発（画面いっぱいの巨大演出）
+    // - 中心の閃光、3 重シックウェーブ、多数の放射スパイク、多層の炎パフ、煙柱
+    // - 地面残骸は一切作らない（skipResidue で _addRockPile/_addGroundScorch をスキップ）
+    // - extras は shockwave のみ。爆発グループ寿命 (1.4s) で完全に dispose される。
+    // ============================================
+    _buildBossFinaleExplosion() {
+        // ===== 巨大中心核（白い閃光 → 赤橙） =====
+        const coreMat = new THREE.MeshBasicMaterial({
+            color: 0xFFFFFF, transparent: true, opacity: 1.0,
+            blending: THREE.AdditiveBlending, depthWrite: false,
+        });
+        const core = new THREE.Mesh(_geoCache.sphere_mega_core, coreMat);
+        core.scale.setScalar(1.6);
+        this.group.add(core);
+        this.particles.push({
+            mesh: core, vx: 0, vy: 0.4, vz: 0,
+            scale: 5.5, noGravity: true, colorFade: true,
+            startColor: new THREE.Color(0xFFFFFF),
+            endColor: new THREE.Color(0xFF2200),
+        });
+
+        // ===== 第二の発光球（外側のハロー） =====
+        const haloMat = new THREE.MeshBasicMaterial({
+            color: 0xFFCC44, transparent: true, opacity: 0.85,
+            blending: THREE.AdditiveBlending, depthWrite: false,
+        });
+        const halo = new THREE.Mesh(_geoCache.sphere_mega_core, haloMat);
+        halo.scale.setScalar(2.2);
+        this.group.add(halo);
+        this.particles.push({
+            mesh: halo, vx: 0, vy: 0.9, vz: 0,
+            scale: 9.0, noGravity: true, fadeDelay: 0.08,
+            colorFade: true,
+            startColor: new THREE.Color(0xFFEE88),
+            endColor: new THREE.Color(0xFF3300),
+        });
+
+        // ===== 三重衝撃波（速さ・大きさ・色を変えて層感を出す） =====
+        this._addShockwave({ expandSpeed: 30, maxScale: 26, color: 0xFFEE88, opacity: 0.9 });
+        this._addShockwave({ expandSpeed: 20, maxScale: 18, color: 0xFFAA33, opacity: 0.75 });
+        this._addShockwave({ expandSpeed: 12, maxScale: 11, color: 0xFF4400, opacity: 0.65 });
+
+        // ===== 大量の放射スパイクフレーム（画面外まで伸びる長さ） =====
+        this._addSpikeStreaks({ count: 22, length: 7.5, thickness: 1.8, tilt: 0.4 });
+
+        // ===== 多層クラスター・パフ（巨大なキノコ雲の輪郭） =====
+        this._addPuffCluster({ count: 14, geo: _geoCache.sphere_puff_l, radius: 2.0, color: 0xFFEE66 });
+        this._addPuffCluster({ count: 12, geo: _geoCache.sphere_puff_l, radius: 3.2, color: 0xFF7722, vy: 1.6 });
+        this._addPuffCluster({ count: 10, geo: _geoCache.sphere_puff_l, radius: 4.4, color: 0xFF3300, vy: 2.5 });
+
+        // ===== 飛散する大きな火球 =====
+        for (let i = 0; i < 14; i++) {
+            const flameMat = new THREE.MeshBasicMaterial({
+                color: 0xFF6600, transparent: true, opacity: 0.95,
+                blending: THREE.AdditiveBlending, depthWrite: false,
+            });
+            const flame = new THREE.Mesh(_geoCache.sphere_flame_l, flameMat);
+            flame.scale.setScalar(1.0 + Math.random() * 0.8);
+            const a = Math.random() * Math.PI * 2;
+            const r = 0.3 + Math.random() * 0.4;
+            flame.position.set(Math.cos(a) * r, 0.3, Math.sin(a) * r);
+            this.group.add(flame);
+            this.particles.push({
+                mesh: flame,
+                vx: Math.cos(a) * (6 + Math.random() * 4),
+                vy: 3 + Math.random() * 6,
+                vz: Math.sin(a) * (6 + Math.random() * 4),
+                scale: 2.8, colorFade: true,
+                startColor: new THREE.Color(0xFFDD44),
+                endColor: new THREE.Color(0x330000),
+            });
+        }
+
+        // ===== 高速エンバー（火花） =====
+        for (let i = 0; i < 18; i++) {
+            const emberMat = new THREE.MeshBasicMaterial({
+                color: 0xFFCC44, transparent: true, opacity: 1.0,
+            });
+            const ember = new THREE.Mesh(_geoCache.sphere_ember, emberMat);
+            ember.scale.setScalar(0.8 + Math.random() * 1.2);
+            this.group.add(ember);
+            this.particles.push({
+                mesh: ember,
+                vx: (Math.random() - 0.5) * 14,
+                vy: 5 + Math.random() * 12,
+                vz: (Math.random() - 0.5) * 14,
+                isEmber: true,
+                colorFade: true,
+                startColor: new THREE.Color(0xFFEE66),
+                endColor: new THREE.Color(0xFF2200),
+            });
+        }
+
+        // ===== 高く立ち上がる煙柱 =====
+        for (let i = 0; i < 8; i++) {
+            const smokeMat = new THREE.MeshBasicMaterial({
+                color: i < 4 ? 0x444444 : 0x222222,
+                transparent: true, opacity: 0.7,
+            });
+            const smoke = new THREE.Mesh(_geoCache.sphere_smoke_m, smokeMat);
+            smoke.scale.setScalar(1.0 + Math.random() * 0.8);
+            this.group.add(smoke);
+            this.particles.push({
+                mesh: smoke,
+                vx: (Math.random() - 0.5) * 4,
+                vy: 3 + Math.random() * 5,
+                vz: (Math.random() - 0.5) * 4,
+                scale: 6.5, fadeDelay: 0.2, noGravity: true,
+            });
+        }
+
+        // ===== 強力な PointLight（プールから取得） =====
+        if (_activeExplosionLights < MAX_CONCURRENT_EXPLOSION_LIGHTS) {
+            const light = _acquireLight(this.scene, 0xFFAA44, 14, 60, this.group.position);
+            if (light) {
+                this.flashLight = light;
+                _activeExplosionLights++;
+            }
+        }
+    }
+
+    // ============================================
     // Metal Slug 風 放射スパイクフレーム
     // 中心から外向きに伸びる先細りの炎ジェット。爆発の象徴的シルエット。
     // ============================================
@@ -634,6 +768,7 @@ export class Explosion {
     //     extras 経由で個別に setTimeout 解放する（焦げ跡と同じ方式）。
     // ============================================
     _addRockPile({ count = 4, geo, spread = 1.0 } = {}) {
+        if (this.skipResidue) return;
         const rockColors = [0x555555, 0x444444, 0x6a5a48, 0x4a3a2a, 0x333333];
         const worldPos = this.group.position;
         for (let i = 0; i < count; i++) {
@@ -673,25 +808,26 @@ export class Explosion {
     // ============================================
     // 衝撃波リング
     // ============================================
-    _addShockwave() {
+    _addShockwave({ expandSpeed = 15, maxScale = 8, color = 0xFFDD88, opacity = 0.7, y = 0.1 } = {}) {
         const shockwaveMat = new THREE.MeshBasicMaterial({
-            color: 0xFFDD88,
+            color,
             transparent: true,
-            opacity: 0.7,
+            opacity,
             side: THREE.DoubleSide,
             blending: THREE.AdditiveBlending,
             depthWrite: false,
         });
         const shockwave = new THREE.Mesh(_geoCache.shockwave, shockwaveMat);
         shockwave.rotation.x = -Math.PI / 2;
-        shockwave.position.y = 0.1;
+        shockwave.position.y = y;
         this.group.add(shockwave);
 
         this.extras.push({
             type: 'shockwave',
             mesh: shockwave,
-            expandSpeed: 15,
-            maxScale: 8,
+            expandSpeed,
+            maxScale,
+            baseOpacity: opacity,
         });
     }
 
@@ -699,6 +835,7 @@ export class Explosion {
     // 地面の焦げ跡
     // ============================================
     _addGroundScorch(radius) {
+        if (this.skipResidue) return;
         // 共有ジオメトリ: 呼び出し側半径に対応する _geoCache を選択。
         // 半径ベースの Circle を毎爆発で生成・dispose すると後半シーンで
         // GPU バッファの fragmentation と GC pressure が積もる。
@@ -807,7 +944,8 @@ export class Explosion {
                 const s = 1 + e.expandSpeed * this.age;
                 if (s < e.maxScale) {
                     e.mesh.scale.setScalar(s);
-                    e.mesh.material.opacity = Math.max(0, 0.7 * (1 - s / e.maxScale));
+                    const baseOp = e.baseOpacity !== undefined ? e.baseOpacity : 0.7;
+                    e.mesh.material.opacity = Math.max(0, baseOp * (1 - s / e.maxScale));
                 } else {
                     e.mesh.visible = false;
                 }
