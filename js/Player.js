@@ -286,27 +286,31 @@ export class Player {
         // 特徴: 青緑の丸い装甲殻、巨大砲塔、牙状履帯パッド、黄三角マーク、
         //       過剰な配管・アンテナ・補助ポッド
         // ============================================
+        // 参考: concept_images/ZUZzv0zhIA2a.jpg (SV-001 公式コンセプト)
+        // 青緑系から、より明るいスチールブルー / 灰青へ寄せる。
         const C = {
-            body:     0x4E8A8F,  // 青緑メイン装甲
-            bodyHi:   0x9BC8C8,  // 水色ハイライト
-            bodyDk:   0x1E3E44,  // 深い青緑シャドウ
-            bodyMid:  0x6D9EA2,  // 中間トーン
-            track:    0x20242A,  // 黒鉄キャタピラ
-            trackIn:  0x303840,  // キャタピラ内側
-            wheel:    0x3F5558,  // ホイール
-            wheelHub: 0x92A9A8,  // ハブ
-            metal:    0x6F878C,  // 砲身メタル
-            metalDk:  0x223137,  // ダークメタル
-            outline:  0x000000,  // 縁
-            light:    0xCFFF66,  // 黄緑ヘッドライト
-            exhaust:  0x6B3A24,  // 焼けた排気管
-            hatch:    0x2A545A,  // ハッチ
+            body:     0x8AAFC4,  // メイン装甲: 明るいスチールブルー
+            bodyHi:   0xCBE0EC,  // 上面ハイライト
+            bodyDk:   0x2C4458,  // 深い青影 (パネル境界)
+            bodyMid:  0x5F84A0,  // 中間トーン
+            track:    0x1B1F26,  // 黒鉄キャタピラ
+            trackIn:  0x2A323C,  // キャタピラ内側
+            wheel:    0x3A4A56,  // ホイール
+            wheelHub: 0xA8BAC4,  // ハブ
+            metal:    0x6F8290,  // 砲身メタル
+            metalDk:  0x1E2A33,  // ダークメタル
+            outline:  0x05080C,  // パネルライン縁
+            light:    0xFFD060,  // ポートホール用イエロー
+            exhaust:  0x9B5A28,  // 銅色排気管 (リファレンスの曲がり管)
+            exhaustDk:0x5A2E14,  // 焼けた排気管影
+            hatch:    0x355064,  // ハッチ
             flag:     0xE83A2D,  // 旗
             mark:     0xFFCC22,  // 識別マーク用イエロー
             scope:    0xDFFF8A,  // ペリスコープのレンズ発光色
             rust:     0x7A4322,  // 錆/泥
-            claw:     0xD3C8AA,  // コンセプト画像の牙状履帯カバー
+            claw:     0xD3C8AA,  // 牙状履帯カバー
             clawDk:   0x8F846E,
+            vent:     0x14181E,  // 冷却スリット
         };
 
         this.hullGroup = new THREE.Group();
@@ -1080,6 +1084,201 @@ export class Player {
             star.position.set(0.35, 1.45, z);
             star.rotation.y = Math.PI / 2;
             this.hullGroup.add(star);
+        }
+
+        // ============================================
+        // 11. リファレンス強化パーツ (concept_images/ZUZzv0zhIA2a.jpg)
+        //     a. 前面下部の 3 連黄ポートホール
+        //     b. 後部のカーブした銅色排気管
+        //     c. 右側面の副砲クラスタ (3 連短砲身)
+        //     d. 砲塔肩のショルダーアーマー
+        //     e. パネルライン / 冷却ベント / リベットグリッド
+        // ============================================
+        this._buildRefDetails(C);
+    }
+
+    _buildRefDetails(C) {
+        // ---- (a) 前面下部の 3 連ポートホール ----
+        // 参考画像の特徴: 車体前面に黄色く光る丸窓が並ぶ
+        const portRimMat = new THREE.MeshStandardMaterial({ color: C.metalDk, metalness: 0.65, roughness: 0.38 });
+        const portLensMat = new THREE.MeshStandardMaterial({
+            color: C.light, emissive: C.light, emissiveIntensity: 0.78,
+            roughness: 0.25, metalness: 0.1,
+        });
+        for (const z of [-0.42, 0, 0.42]) {
+            // 金属枠（リング）
+            const rim = new THREE.Mesh(new THREE.TorusGeometry(0.12, 0.022, 6, 16), portRimMat);
+            rim.position.set(1.36, 1.24, z);
+            rim.rotation.y = Math.PI / 2;
+            this.hullGroup.add(rim);
+            // 黄色レンズ
+            const lens = new THREE.Mesh(new THREE.CylinderGeometry(0.10, 0.10, 0.04, 14), portLensMat);
+            lens.rotation.z = Math.PI / 2;
+            lens.position.set(1.38, 1.24, z);
+            this.hullGroup.add(lens);
+            // 内側の十字仕切り（電球の格子表現）
+            for (let i = 0; i < 2; i++) {
+                const bar = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.20, 0.012), portRimMat);
+                bar.position.set(1.40, 1.24, z);
+                bar.rotation.x = i === 0 ? 0 : Math.PI / 2;
+                this.hullGroup.add(bar);
+            }
+        }
+        // ポートホール上下のパネルライン（横長スリット）
+        const panelLineMat = new THREE.MeshStandardMaterial({ color: C.outline, roughness: 0.85, metalness: 0.05 });
+        for (const y of [1.40, 1.08]) {
+            const line = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.022, 1.05), panelLineMat);
+            line.position.set(1.36, y, 0);
+            this.hullGroup.add(line);
+        }
+
+        // ---- (b) 後部カーブ排気管 (銅色、リファレンスの S 字煙突) ----
+        const copperMat = new THREE.MeshStandardMaterial({ color: C.exhaust, metalness: 0.62, roughness: 0.42 });
+        const copperDkMat = new THREE.MeshStandardMaterial({ color: C.exhaustDk, metalness: 0.5, roughness: 0.55 });
+        // 立ち上がり管 (車体後部から垂直に上)
+        const stack = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.10, 0.65, 10), copperMat);
+        stack.position.set(-1.25, 2.15, 0.45);
+        this.hullGroup.add(stack);
+        // 90度カーブ（トーラスの 1/4 で表現）
+        const elbow = new THREE.Mesh(
+            new THREE.TorusGeometry(0.18, 0.085, 8, 14, Math.PI * 0.5),
+            copperMat
+        );
+        elbow.position.set(-1.07, 2.48, 0.45);
+        elbow.rotation.x = Math.PI / 2;
+        elbow.rotation.z = Math.PI;
+        this.hullGroup.add(elbow);
+        // 出口管（後方斜め下を向く）
+        const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.085, 0.45, 10), copperMat);
+        tail.position.set(-1.02, 2.48, 0.30);
+        tail.rotation.x = Math.PI / 2;
+        tail.rotation.z = -0.18;
+        this.hullGroup.add(tail);
+        // 出口の暗いキャップ（焼け跡）
+        const exhaustCap = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.075, 0.05, 12), copperDkMat);
+        exhaustCap.position.set(-0.97, 2.48, 0.10);
+        exhaustCap.rotation.x = Math.PI / 2;
+        this.hullGroup.add(exhaustCap);
+        // 補強リング 3 本
+        for (const y of [1.95, 2.10, 2.28]) {
+            const ring = new THREE.Mesh(new THREE.TorusGeometry(0.105, 0.012, 5, 14), copperDkMat);
+            ring.position.set(-1.25, y, 0.45);
+            ring.rotation.x = Math.PI / 2;
+            this.hullGroup.add(ring);
+        }
+        // 排気口位置を記憶（煙パーティクル放出位置に使う場合の anchor）
+        this.exhaustTipAnchor = new THREE.Object3D();
+        this.exhaustTipAnchor.position.set(-0.97, 2.48, 0.10);
+        this.hullGroup.add(this.exhaustTipAnchor);
+
+        // ---- (c) 右側副砲クラスタ (3 連短砲身) ----
+        // 砲塔右側面に外付けの短い迫撃砲を 3 本まとめる
+        const subGunMat = new THREE.MeshStandardMaterial({ color: C.metal, metalness: 0.7, roughness: 0.32 });
+        const subGunDkMat = new THREE.MeshStandardMaterial({ color: C.metalDk, metalness: 0.6, roughness: 0.4 });
+        const subCluster = new THREE.Group();
+        // 円形ベース (砲塔に取り付ける円盤)
+        const subBase = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.10, 14), subGunDkMat);
+        subBase.rotation.x = Math.PI / 2;
+        subBase.position.set(0.28, 0, 0);
+        subCluster.add(subBase);
+        // ベースの中央ボルト
+        const subHub = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.14, 6), subGunDkMat);
+        subHub.rotation.x = Math.PI / 2;
+        subHub.position.set(0.32, 0, 0);
+        subCluster.add(subHub);
+        // 3 本の短砲身（前方へ）
+        const offsets = [
+            { dy:  0.13, dz:  0.0  },
+            { dy: -0.06, dz:  0.12 },
+            { dy: -0.06, dz: -0.12 },
+        ];
+        for (const o of offsets) {
+            const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.06, 0.55, 10), subGunMat);
+            tube.rotation.z = -Math.PI / 2;
+            tube.position.set(0.62, o.dy, o.dz);
+            subCluster.add(tube);
+            // マズル
+            const muzzle = new THREE.Mesh(new THREE.CylinderGeometry(0.072, 0.06, 0.06, 10), subGunDkMat);
+            muzzle.rotation.z = -Math.PI / 2;
+            muzzle.position.set(0.92, o.dy, o.dz);
+            subCluster.add(muzzle);
+            // 開口（黒）
+            const hole = new THREE.Mesh(
+                new THREE.CircleGeometry(0.045, 10),
+                new THREE.MeshBasicMaterial({ color: 0x050505, side: THREE.DoubleSide })
+            );
+            hole.position.set(0.96, o.dy, o.dz);
+            hole.rotation.y = Math.PI / 2;
+            subCluster.add(hole);
+        }
+        // 砲塔右側 (-Z 側) に取り付ける
+        subCluster.position.set(0.10, 0.05, -0.95);
+        this.turretGroup.add(subCluster);
+
+        // ---- (d) 砲塔ショルダーアーマー (両肩のチャンキーパッド) ----
+        const shoulderMat = new THREE.MeshStandardMaterial({ color: C.bodyDk, metalness: 0.45, roughness: 0.5 });
+        const shoulderHiMat = new THREE.MeshStandardMaterial({ color: C.bodyMid, metalness: 0.35, roughness: 0.45 });
+        for (const sz of [-1, 1]) {
+            const pad = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.18, 0.34), shoulderMat);
+            pad.position.set(-0.05, 0.42, sz * 0.78);
+            pad.rotation.z = sz * 0.06;
+            this.turretGroup.add(pad);
+            // 上面ハイライトプレート
+            const padHi = new THREE.Mesh(new THREE.BoxGeometry(0.50, 0.04, 0.28), shoulderHiMat);
+            padHi.position.set(-0.05, 0.52, sz * 0.78);
+            this.turretGroup.add(padHi);
+            // パッドの 4 隅ボルト
+            for (const dx of [-0.24, 0.24]) {
+                for (const dz of [-0.12, 0.12]) {
+                    const b = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.024, 0.04, 6), shoulderMat);
+                    b.rotation.x = Math.PI / 2;
+                    b.position.set(-0.05 + dx, 0.55, sz * 0.78 + dz);
+                    this.turretGroup.add(b);
+                }
+            }
+        }
+
+        // ---- (e) 車体側面の冷却ベント (細長スリット 4 本) ----
+        const ventMat = new THREE.MeshStandardMaterial({ color: C.vent, roughness: 0.95, metalness: 0.05 });
+        for (const sz of [-1, 1]) {
+            for (let i = 0; i < 4; i++) {
+                const slit = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.04, 0.02), ventMat);
+                slit.position.set(-0.55 + i * 0.10, 1.78, sz * 0.78);
+                slit.rotation.z = -0.42;
+                this.hullGroup.add(slit);
+            }
+        }
+        // 砲塔下部のリング状冷却スリット (8 本)
+        for (let i = 0; i < 8; i++) {
+            const a = (i / 8) * Math.PI * 2 + 0.2;
+            const slit = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.10, 0.18), ventMat);
+            slit.position.set(Math.cos(a) * 0.85, 0.16, Math.sin(a) * 0.85);
+            slit.rotation.y = -a;
+            this.turretGroup.add(slit);
+        }
+
+        // ---- (e2) 車体上面のパネルライン格子 ----
+        const seamMat2 = new THREE.MeshStandardMaterial({ color: C.outline, roughness: 0.9, metalness: 0.05 });
+        // 縦方向 3 本
+        for (const x of [-0.5, 0.2, 0.9]) {
+            const seam = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.018, 1.4), seamMat2);
+            seam.position.set(x, 1.96, 0);
+            this.hullGroup.add(seam);
+        }
+        // 横方向 1 本
+        const crossSeam = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.018, 0.025), seamMat2);
+        crossSeam.position.set(0, 1.96, 0);
+        this.hullGroup.add(crossSeam);
+
+        // ---- (e3) 車体上面のリベットグリッド ----
+        const rivBoldMat = new THREE.MeshStandardMaterial({ color: C.metalDk, metalness: 0.65, roughness: 0.4 });
+        const rivBoldGeo = new THREE.SphereGeometry(0.034, 5, 4);
+        for (const x of [-0.85, -0.15, 0.55]) {
+            for (const z of [-0.55, 0.55]) {
+                const r = new THREE.Mesh(rivBoldGeo, rivBoldMat);
+                r.position.set(x, 1.97, z);
+                this.hullGroup.add(r);
+            }
         }
     }
 

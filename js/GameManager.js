@@ -3,7 +3,7 @@ import { Infantry } from './Infantry.js';
 import { EnemyTank } from './EnemyTank.js';
 import { Aircraft } from './Aircraft.js';
 import { Boss } from './Boss.js';
-import { Explosion } from './Explosion.js';
+import { Explosion, resetExplosionGlobals, cancelAllPendingExtraDisposals } from './Explosion.js';
 import { ItemDrop } from './ItemDrop.js';
 import { POW } from './POW.js';
 
@@ -109,6 +109,7 @@ export class GameManager {
                     { type: 'infantry', subType: 'knife',   weight: 1 },
                     { type: 'infantry', subType: 'hunter',  weight: 1 },
                     { type: 'infantry', subType: 'sniper',  weight: 1 },
+                    { type: 'infantry', subType: 'bugler',  weight: 1 },
                 ],
             },
             // --- Wave 4: ボス戦の前哨戦 + Di-Cokka 中ボス ---
@@ -125,10 +126,12 @@ export class GameManager {
             {
                 duration: 28, spawnInterval: 1.15, maxSimultaneous: 13,
                 pool: [
-                    { type: 'infantry', subType: 'rifle', weight: 1 },
-                    { type: 'infantry', subType: 'mummy', weight: 3 },
-                    { type: 'infantry', subType: 'ninja', weight: 2 },
-                    { type: 'infantry', subType: 'knife', weight: 1 },
+                    { type: 'infantry', subType: 'rifle',    weight: 1 },
+                    { type: 'infantry', subType: 'mummy',    weight: 3 },
+                    { type: 'infantry', subType: 'ninja',    weight: 2 },
+                    { type: 'infantry', subType: 'knife',    weight: 1 },
+                    { type: 'infantry', subType: 'pharaoh',  weight: 1 },
+                    { type: 'infantry', subType: 'spearman', weight: 1 },
                 ],
             },
             // --- Wave 6: 重装部隊（火炎・盾・士官）---
@@ -224,6 +227,8 @@ export class GameManager {
                     { type: 'infantry', subType: 'flamethrower', weight: 1 },
                     { type: 'infantry', subType: 'officer',      weight: 1 },
                     { type: 'infantry', subType: 'juggernaut',   weight: 1 },
+                    { type: 'infantry', subType: 'bugler',       weight: 1 },
+                    { type: 'infantry', subType: 'pharaoh',      weight: 1 },
                     { type: 'tank',     subType: 'heavy',        weight: 1 },
                     { type: 'aircraft', subType: 'tomahawk',     weight: 1 },
                 ],
@@ -574,6 +579,12 @@ export class GameManager {
             const effectiveDt = dt + (enemy._aiPendingDt || 0);
             enemy._aiPendingDt = 0;
             enemy.update(effectiveDt, playerPos, elapsedTime);
+            // ラッパ手の増援要求を消費してスポーン。
+            // maxActiveEnemies の上限を尊重し、超える場合は要求を捨てる。
+            if (enemy.summonRequest) {
+                this._consumeSummonRequest(enemy.summonRequest, maxActiveEnemies);
+                enemy.summonRequest = null;
+            }
         }
 
         // ボス更新
@@ -1672,10 +1683,18 @@ export class GameManager {
             this._gameOverTimers.forEach(t => clearTimeout(t));
             this._gameOverTimers = [];
         }
+        // 爆発ライトプールを初期化。restart 経路の単一障害点を排除するため、
+        // 呼び出し元（main.js の restartGame など）にも同じ呼び出しがあるが、
+        // GameManager.restart 自体に組み込むことで「ここを通れば必ずプールが綺麗になる」
+        // 保証を持たせる。プール光は scene 常駐で intensity を 0 に戻すだけなので
+        // 二重呼び出しも安全。effect.destroy() による _releaseLight も同様に冪等。
+        resetExplosionGlobals();
         this.enemies.forEach(e => e.destroy());
         this.enemies = [];
         this.effects.forEach(e => { if (e.destroy) e.destroy(); });
         this.effects = [];
+        // effect.destroy で _residues に流れ込んだ岩塊/焦げ跡も併せて全廃棄。
+        cancelAllPendingExtraDisposals();
         this.items.forEach(item => { if (item.destroy) item.destroy(); });
         this.items = [];
         this.pows.forEach(p => p.destroy());
@@ -1762,6 +1781,30 @@ export class GameManager {
 
         if (enemy) {
             this.enemies.push(enemy);
+            this.enemiesSpawnedInWave++;
+        }
+    }
+
+    /**
+     * ラッパ手の増援要求を処理する。
+     * 要求位置の近くに歩兵をポップさせる（プレイヤー方向は気にせず、
+     * ラッパ手の周囲 1.5〜3.5 m に配置）。同時敵数の上限は守る。
+     */
+    _consumeSummonRequest(req, maxActiveEnemies) {
+        const lowShadow = this.getCurrentWave() >= 8;
+        const aliveCount = this.enemies.reduce((n, e) => n + (e.alive ? 1 : 0), 0);
+        const slots = Math.max(0, maxActiveEnemies - aliveCount);
+        const toSpawn = Math.min(req.count || 0, slots);
+        for (let i = 0; i < toSpawn; i++) {
+            const subType = req.subTypes[i % req.subTypes.length];
+            const ang = Math.random() * Math.PI * 2;
+            const r = 1.8 + Math.random() * 1.8;
+            const pos = req.position.clone();
+            pos.x += Math.cos(ang) * r;
+            pos.z += Math.sin(ang) * r;
+            pos.y = 0;
+            const e = new Infantry(this.scene, { position: pos, subType, lowShadow });
+            this.enemies.push(e);
             this.enemiesSpawnedInWave++;
         }
     }

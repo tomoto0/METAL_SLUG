@@ -58,6 +58,10 @@ export class Infantry extends Enemy {
             demolition:  { hp: 46, speed: 3.1, scoreValue: 900, fireRate: 2.6,  damage: 22 }, // 終盤工兵: 面制圧
             jetpack_raider:{ hp: 18, speed: 6.2, scoreValue: 650, fireRate: 1.15, damage: 12 }, // 低空強襲兵
             perched_sniper: { hp: 22, speed: 0, scoreValue: 700, fireRate: 2.4, damage: 30 }, // 屋上スナイパー
+            // --- 参考画像から追加 ---
+            bugler:    { hp: 12, speed: 2.6, scoreValue: 350, fireRate: 6.0,  damage: 6  }, // 増援を呼ぶラッパ手
+            pharaoh:   { hp: 36, speed: 2.2, scoreValue: 700, fireRate: 1.9,  damage: 18 }, // 杖から呪術弾
+            spearman:  { hp: 14, speed: 5.0, scoreValue: 250, fireRate: 99,   damage: 14 }, // 槍突進
         };
         const spec = SPECS[subType] || SPECS.rifle;
 
@@ -76,6 +80,7 @@ export class Infantry extends Enemy {
             commando: 18, demolition: 24,
             jetpack_raider: 22,
             perched_sniper: 65,
+            bugler: 30, pharaoh: 22, spearman: 2.2,
         };
         this.attackRange = RANGES[subType] !== undefined ? RANGES[subType] : 15;
         this.walkCycle = 0;
@@ -103,6 +108,11 @@ export class Infantry extends Enemy {
         // 屋上配置スナイパーは静止 / 高所固定
         this.perched = (subType === 'perched_sniper');
         this.airborne = (subType === 'jetpack_raider');
+        // ラッパ手の増援要求フラグ。GameManager が consume してスポーンする。
+        // { count, position, subTypes } をセット → GameManager 側で 1 フレーム後に消費。
+        this.summonRequest = null;
+        this.bugleCallTimer = 1.5 + Math.random() * 1.5;
+        this.bugleVisualTimer = 0;
         this.perchY = 0;
         this.jetpackBaseHeight = 1.55 + Math.random() * 0.45;
         this.jetpackBoostTimer = 0;
@@ -263,6 +273,32 @@ export class Infantry extends Enemy {
             COLORS.helmetBand = 0xD2A53A;
             COLORS.boots = 0x182024;
             COLORS.backpack = 0x394A48;
+        } else if (this.subType === 'bugler') {
+            // ラッパ手: 黄色シャツ + 茶色ズボン + 赤いキャップ（参考画像のラッパ兵）
+            COLORS.uniform = 0xD8B82C;
+            COLORS.uniformDark = 0x8C5A18;
+            COLORS.vest = 0x6E3C18;
+            COLORS.helmet = 0xB8332A;
+            COLORS.helmetBand = 0x6A1D18;
+            COLORS.boots = 0x3A2210;
+        } else if (this.subType === 'pharaoh') {
+            // ファラオ呪術師: 白いリネン + 金の頭飾り + 青の縞模様
+            COLORS.uniform = 0xE8D8B0;
+            COLORS.uniformDark = 0xB0987A;
+            COLORS.vest = 0x2E5AB0;
+            COLORS.helmet = 0xE2BA42;
+            COLORS.helmetBand = 0x2E5AB0;
+            COLORS.boots = 0xA88848;
+            COLORS.skin = 0xD2A878;
+            COLORS.skinDark = 0xA07848;
+        } else if (this.subType === 'spearman') {
+            // 漁師槍兵: タン色シャツ + 円錐の麦わら笠
+            COLORS.uniform = 0xC8B080;
+            COLORS.uniformDark = 0x8C7848;
+            COLORS.vest = 0x6A4828;
+            COLORS.helmet = 0xC8A858;
+            COLORS.boots = 0x4A3018;
+            COLORS.skin = 0xE8C088;
         }
 
         // ============================================
@@ -417,8 +453,8 @@ export class Infantry extends Enemy {
             this.group.add(ear);
         }
 
-        // ヘルメット類は兵種ごとに置き換え（sniper/hunter/mummy/ninja は別装備）
-        const wearsHelmet = !['sniper', 'hunter', 'mummy', 'ninja'].includes(this.subType);
+        // ヘルメット類は兵種ごとに置き換え（sniper/hunter/mummy/ninja/pharaoh/spearman は別装備）
+        const wearsHelmet = !['sniper', 'hunter', 'mummy', 'ninja', 'pharaoh', 'spearman'].includes(this.subType);
         if (!wearsHelmet) {
             this.helmetMesh = null;
         }
@@ -1607,6 +1643,142 @@ export class Infantry extends Enemy {
                 this.group.add(star);
             }
         }
+
+        // ============================================
+        // ラッパ手: 赤いキャップの庇 + 肩の金色エポレット + 腰の白サッシュ
+        // ============================================
+        if (this.subType === 'bugler') {
+            // 軍楽隊風の白いサッシュ（斜め掛け）
+            const sashMat = new THREE.MeshStandardMaterial({ color: 0xF0EAD0, roughness: 0.7 });
+            for (let s of [-1, 1]) {
+                const sash = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.07, 0.06), sashMat);
+                sash.position.set(0, 0.95, 0);
+                sash.rotation.z = s * 0.5;
+                sash.rotation.x = s * 0.6;
+                this.group.add(sash);
+            }
+            // 金色のエポレット（肩房）
+            const epauletMat = new THREE.MeshStandardMaterial({ color: 0xE2C24A, metalness: 0.6, roughness: 0.32 });
+            for (let z of [-0.36, 0.36]) {
+                const ep = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.08, 0.16), epauletMat);
+                ep.position.set(0, 1.13, z);
+                this.group.add(ep);
+                // 房のフリンジ
+                for (let i = 0; i < 3; i++) {
+                    const fr = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.008, 0.10, 4), epauletMat);
+                    fr.position.set(0.06, 1.04, z - 0.04 + i * 0.04);
+                    this.group.add(fr);
+                }
+            }
+            // 赤キャップの庇に金縁
+            const trimMat = new THREE.MeshStandardMaterial({ color: 0xE2C24A, metalness: 0.65, roughness: 0.3 });
+            const trim = new THREE.Mesh(new THREE.TorusGeometry(0.42, 0.012, 5, 18), trimMat);
+            trim.position.y = 1.42;
+            trim.rotation.x = Math.PI / 2;
+            trim.scale.set(1.05, 1.0, 0.62);
+            this.group.add(trim);
+        }
+
+        // ============================================
+        // ファラオ呪術師: 金のネメス頭巾 + 青縞 + 胸の宝石
+        // ============================================
+        if (this.subType === 'pharaoh') {
+            const goldMat = new THREE.MeshStandardMaterial({ color: 0xE2BA42, metalness: 0.65, roughness: 0.32 });
+            const stripeMat = new THREE.MeshStandardMaterial({ color: 0x2E5AB0, roughness: 0.6 });
+            // ネメス頭巾（後頭部の三角形シルエット）
+            const nemes = new THREE.Mesh(new THREE.SphereGeometry(0.46, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.62), goldMat);
+            nemes.position.y = 1.46;
+            nemes.scale.set(1.18, 1.05, 1.32);
+            this.group.add(nemes);
+            // 青い縦縞（前面 5本）
+            for (let i = 0; i < 5; i++) {
+                const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.32, 0.05), stripeMat);
+                stripe.position.set(0.32, 1.40, -0.28 + i * 0.14);
+                stripe.rotation.z = -0.18;
+                this.group.add(stripe);
+            }
+            // 額のコブラ（ウラエウス）— 小さな金の S 字
+            const cobraBody = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.10, 0.04), goldMat);
+            cobraBody.position.set(0.40, 1.55, 0);
+            this.group.add(cobraBody);
+            const cobraHood = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.08, 0.12), goldMat);
+            cobraHood.position.set(0.42, 1.62, 0);
+            this.group.add(cobraHood);
+            // 後頭部の垂れ布（肩へ）
+            for (let s of [-1, 1]) {
+                const flap = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.34, 0.04), goldMat);
+                flap.position.set(-0.05, 1.20, s * 0.30);
+                flap.rotation.z = s * 0.18;
+                this.group.add(flap);
+            }
+            // 金の襟（広い首飾り）
+            const collar = new THREE.Mesh(new THREE.TorusGeometry(0.30, 0.05, 6, 18), goldMat);
+            collar.position.y = 1.18;
+            collar.rotation.x = Math.PI / 2;
+            collar.scale.set(1.0, 1.0, 0.55);
+            this.group.add(collar);
+            // 胸の青宝石（スカラベ）
+            const gemMat = new THREE.MeshStandardMaterial({ color: 0x2EA8D0, emissive: 0x103848, metalness: 0.5, roughness: 0.3 });
+            const gem = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 6), gemMat);
+            gem.position.set(0.30, 1.05, 0);
+            gem.scale.set(0.6, 0.9, 1.2);
+            this.group.add(gem);
+            // 腰の青サッシュ
+            const sash = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.10, 0.62), stripeMat);
+            sash.position.y = 0.78;
+            this.group.add(sash);
+            // 金のベルト
+            const beltGold = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.04, 0.62), goldMat);
+            beltGold.position.y = 0.71;
+            this.group.add(beltGold);
+        }
+
+        // ============================================
+        // 漁師槍兵: 円錐の麦わら笠 + 腰の魚籠 + 茶色のサッシュ
+        // ============================================
+        if (this.subType === 'spearman') {
+            const strawMat = new THREE.MeshStandardMaterial({ color: 0xC8A858, roughness: 0.92 });
+            const strawDarkMat = new THREE.MeshStandardMaterial({ color: 0x8E7438, roughness: 0.95 });
+            // 麦わら笠（円錐）— 浅め広めで漁師笠らしく
+            const hat = new THREE.Mesh(new THREE.ConeGeometry(0.62, 0.32, 14), strawMat);
+            hat.position.y = 1.62;
+            this.group.add(hat);
+            // 笠の縁
+            const hatRim = new THREE.Mesh(new THREE.TorusGeometry(0.62, 0.025, 5, 18), strawDarkMat);
+            hatRim.position.y = 1.46;
+            hatRim.rotation.x = Math.PI / 2;
+            this.group.add(hatRim);
+            // 笠の編み目（同心 2 本）
+            for (let i = 1; i < 3; i++) {
+                const ring = new THREE.Mesh(new THREE.TorusGeometry(0.18 * i, 0.006, 4, 14), strawDarkMat);
+                ring.position.y = 1.62 - i * 0.10;
+                ring.rotation.x = Math.PI / 2;
+                this.group.add(ring);
+            }
+            // 顎紐
+            const cordMat = new THREE.MeshStandardMaterial({ color: 0x6A4828, roughness: 0.85 });
+            for (let s of [-1, 1]) {
+                const cord = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.30, 0.012), cordMat);
+                cord.position.set(0.10, 1.30, s * 0.34);
+                cord.rotation.z = s * 0.05;
+                this.group.add(cord);
+            }
+            // 茶色のサッシュ（腰の左肩がけ）
+            const sash = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.10, 0.06), cordMat);
+            sash.position.set(0, 0.90, 0);
+            sash.rotation.z = 0.5;
+            sash.rotation.x = 0.6;
+            this.group.add(sash);
+            // 腰の魚籠（小さな茶色の円筒）
+            const basket = new THREE.Mesh(new THREE.CylinderGeometry(0.10, 0.08, 0.18, 10), strawDarkMat);
+            basket.position.set(-0.05, 0.55, -0.32);
+            this.group.add(basket);
+            // 籠の縁
+            const basketRim = new THREE.Mesh(new THREE.TorusGeometry(0.10, 0.012, 4, 12), cordMat);
+            basketRim.position.set(-0.05, 0.64, -0.32);
+            basketRim.rotation.x = Math.PI / 2;
+            this.group.add(basketRim);
+        }
     }
 
     _buildWeapon(COLORS) {
@@ -1981,6 +2153,109 @@ export class Infantry extends Enemy {
             const muzzle = new THREE.Mesh(new THREE.RingGeometry(0.05, 0.085, 10), new THREE.MeshBasicMaterial({ color: 0x080808, side: THREE.DoubleSide }));
             muzzle.position.set(0.30, 0.94, 0.78);
             this.group.add(muzzle);
+        } else if (this.subType === 'bugler') {
+            // 真鍮ラッパ: 細いマウスパイプ + 太いベル + 中央のループ
+            const brassMat = new THREE.MeshStandardMaterial({ color: 0xD8A030, metalness: 0.78, roughness: 0.28 });
+            const brassDarkMat = new THREE.MeshStandardMaterial({ color: 0x8E5A18, metalness: 0.5, roughness: 0.45 });
+            // マウスピース側のパイプ（口元から前へ）
+            const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.34, 8), brassMat);
+            pipe.rotation.x = Math.PI / 2;
+            pipe.position.set(0.36, 1.22, 0.30);
+            this.group.add(pipe);
+            // 中央のループ（楕円トーラス）— 横向きに
+            const loop = new THREE.Mesh(new THREE.TorusGeometry(0.10, 0.028, 6, 18), brassMat);
+            loop.position.set(0.36, 1.22, 0.50);
+            loop.rotation.y = Math.PI / 2;
+            loop.scale.set(0.85, 1.0, 1.0);
+            this.group.add(loop);
+            // ベル側のパイプ
+            const pipe2 = new THREE.Mesh(new THREE.CylinderGeometry(0.030, 0.038, 0.30, 8), brassMat);
+            pipe2.rotation.x = Math.PI / 2;
+            pipe2.position.set(0.36, 1.22, 0.74);
+            this.group.add(pipe2);
+            // 大きなベル開口（ラッパ朝顔）
+            const bell = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.06, 0.20, 14, 1, true), brassMat);
+            bell.rotation.x = Math.PI / 2;
+            bell.position.set(0.36, 1.24, 0.95);
+            this.group.add(bell);
+            // ベル内側の影
+            const bellInner = new THREE.Mesh(new THREE.CircleGeometry(0.16, 14), new THREE.MeshBasicMaterial({ color: 0x3A1E08, side: THREE.DoubleSide }));
+            bellInner.position.set(0.36, 1.24, 1.04);
+            bellInner.rotation.y = Math.PI;
+            this.group.add(bellInner);
+            // バルブ（3 個の小キャップ）
+            for (let i = 0; i < 3; i++) {
+                const valve = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.07, 8), brassDarkMat);
+                valve.position.set(0.36, 1.30, 0.42 + i * 0.08);
+                this.group.add(valve);
+            }
+            // 吹き出し時の SE オーラ用メッシュ（最初は非表示）
+            const blastMat = new THREE.MeshBasicMaterial({
+                color: 0xFFE090, transparent: true, opacity: 0,
+                blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+            });
+            const blast = new THREE.Mesh(new THREE.RingGeometry(0.15, 0.40, 18), blastMat);
+            blast.position.set(0.36, 1.24, 1.10);
+            blast.rotation.y = Math.PI / 2;
+            this.group.add(blast);
+            this.bugleBlast = blast;
+        } else if (this.subType === 'pharaoh') {
+            // アンク杖: 黒い杖 + 上端の黄金アンク + 浮遊する青い呪術オーブ
+            const staffMat = new THREE.MeshStandardMaterial({ color: 0x2A1A0A, roughness: 0.7 });
+            const goldMat = new THREE.MeshStandardMaterial({ color: 0xE2BA42, metalness: 0.7, roughness: 0.28 });
+            // 杖本体（縦に長い）
+            const staff = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.030, 1.45, 8), staffMat);
+            staff.position.set(0.30, 1.05, 0.25);
+            this.group.add(staff);
+            // 上端のアンク（縦棒+横棒+リング）
+            const ankhV = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.16, 0.04), goldMat);
+            ankhV.position.set(0.30, 1.85, 0.25);
+            this.group.add(ankhV);
+            const ankhH = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.04, 0.18), goldMat);
+            ankhH.position.set(0.30, 1.83, 0.25);
+            this.group.add(ankhH);
+            const ankhRing = new THREE.Mesh(new THREE.TorusGeometry(0.07, 0.018, 6, 14), goldMat);
+            ankhRing.position.set(0.30, 1.95, 0.25);
+            ankhRing.rotation.y = Math.PI / 2;
+            this.group.add(ankhRing);
+            // 杖先端の浮遊オーブ（呪術エネルギー）
+            const orbMat = new THREE.MeshBasicMaterial({ color: 0x7AD8FF, transparent: true, opacity: 0.85 });
+            const orb = new THREE.Mesh(new THREE.SphereGeometry(0.08, 10, 8), orbMat);
+            orb.position.set(0.30, 2.00, 0.25);
+            this.group.add(orb);
+            this.pharaohOrb = orb;
+        } else if (this.subType === 'spearman') {
+            // 長い槍: 木製シャフト + 鋼の穂先 + 紐の握り
+            const shaftMat = new THREE.MeshStandardMaterial({ color: 0x4A2E18, roughness: 0.85 });
+            const tipMat = new THREE.MeshStandardMaterial({ color: 0xCCCCCC, metalness: 0.85, roughness: 0.18 });
+            const cordMat2 = new THREE.MeshStandardMaterial({ color: 0xA82822, roughness: 0.7 });
+            // シャフト（前へ突き出す）
+            const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.024, 1.7, 7), shaftMat);
+            shaft.rotation.x = Math.PI / 2;
+            shaft.position.set(0.30, 0.92, 0.55);
+            this.group.add(shaft);
+            // 穂先（前方の長いコーン）
+            const tip = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.34, 8), tipMat);
+            tip.rotation.x = Math.PI / 2;
+            tip.position.set(0.30, 0.92, 1.55);
+            this.group.add(tip);
+            // 鍔の付け根（丸い金属環）
+            const ferrule = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.06, 8), tipMat);
+            ferrule.rotation.x = Math.PI / 2;
+            ferrule.position.set(0.30, 0.92, 1.34);
+            this.group.add(ferrule);
+            // 握り部（赤い紐巻き）
+            for (let i = 0; i < 3; i++) {
+                const wrap = new THREE.Mesh(new THREE.TorusGeometry(0.030, 0.008, 4, 10), cordMat2);
+                wrap.position.set(0.30, 0.92, 0.18 + i * 0.06);
+                wrap.rotation.y = Math.PI / 2;
+                this.group.add(wrap);
+            }
+            // 後端の小さな石突
+            const butt = new THREE.Mesh(new THREE.CylinderGeometry(0.030, 0.020, 0.06, 6), tipMat);
+            butt.rotation.x = Math.PI / 2;
+            butt.position.set(0.30, 0.92, -0.30);
+            this.group.add(butt);
         }
     }
 
@@ -2078,6 +2353,15 @@ export class Infantry extends Enemy {
             case 'perched_sniper':
                 this._aiPerchedSniper(dt, dist, dirToPlayer, playerPos, elapsedTime);
                 break;
+            case 'bugler':
+                this._aiBugler(dt, dist, dirToPlayer, playerPos, elapsedTime);
+                break;
+            case 'pharaoh':
+                this._aiPharaoh(dt, dist, dirToPlayer, playerPos, elapsedTime);
+                break;
+            case 'spearman':
+                this._aiSpearman(dt, dist, dirToPlayer, playerPos);
+                break;
         }
 
         if (this.burstCount > 0) {
@@ -2137,11 +2421,11 @@ export class Infantry extends Enemy {
 
         // 歩行アニメーション（Metal Slug 風の大袈裟な揺れ）
         // モデルの前方はローカル +X なので、脚は Z 軸回転で前後に振る。
-        const cycleSpeed = this.subType === 'knife' ? 22 : (this.subType === 'officer' ? 12 : (this.subType === 'juggernaut' ? 9 : 13));
+        const cycleSpeed = (this.subType === 'knife' || this.subType === 'spearman') ? 22 : (this.subType === 'officer' ? 12 : (this.subType === 'juggernaut' ? 9 : (this.subType === 'pharaoh' ? 8 : 13)));
         this.walkCycle += dt * cycleSpeed;
         const swing = Math.sin(this.walkCycle);
         const heavyScale = this.subType === 'juggernaut' ? 0.72 : 1.0;
-        const stride = (this.subType === 'knife' || this.subType === 'ninja') ? 0.46 : 0.34;
+        const stride = (this.subType === 'knife' || this.subType === 'ninja' || this.subType === 'spearman') ? 0.46 : 0.34;
         const legSwing = swing * stride * heavyScale;
         this.leftLeg.rotation.x = 0;
         this.rightLeg.rotation.x = 0;
@@ -2460,6 +2744,95 @@ export class Infantry extends Enemy {
             this.lastFireTime = elapsed;
             this._fireGrenadeCluster(playerPos);
         }
+    }
+
+    _aiBugler(dt, dist, dirToPlayer, playerPos, elapsed) {
+        // ラッパ手: 中距離をキープしながら、定期的にラッパを吹いて増援を呼ぶ。
+        // 自衛用の射撃は弱め (拳銃級)。プレイヤーから少し離れた位置で吹奏する。
+        this.aiState = dist > 14 ? 'advance' : (dist < 8 ? 'attack' : 'attack');
+        const rangeControl = dist > 14 ? 1.0 : (dist < 7 ? -0.45 : 0.15);
+        this.weavePhase += dt * 1.6;
+        const d = (this._dirToCross || dirToPlayer).clone();
+        const perp = new THREE.Vector3(-d.z, 0, d.x).multiplyScalar(Math.sin(this.weavePhase) * 0.6);
+        const move = d.multiplyScalar(rangeControl).add(perp);
+        if (move.lengthSq() > 0.001) {
+            move.normalize().multiplyScalar(this.speed * dt);
+            this.group.position.add(move);
+        }
+
+        // ラッパ吹奏 → 増援要求
+        this.bugleCallTimer -= dt;
+        this.bugleVisualTimer = Math.max(0, this.bugleVisualTimer - dt);
+        if (this.bugleCallTimer <= 0 && dist < 30) {
+            this.bugleCallTimer = this.fireRate + Math.random() * 1.5;
+            this.bugleVisualTimer = 0.55;
+            // GameManager がこの 1 フレームで consume する
+            this.summonRequest = {
+                count: 2,
+                position: this.group.position.clone(),
+                subTypes: ['rifle', 'knife'],
+            };
+        }
+        // 吹奏中はベル開口に光るリングを出す
+        if (this.bugleBlast) {
+            const t = this.bugleVisualTimer / 0.55;
+            this.bugleBlast.material.opacity = Math.max(0, t * 0.85);
+            const s = 1.0 + (1 - t) * 1.4;
+            this.bugleBlast.scale.set(s, s, 1);
+        }
+
+        // 自衛: ごく稀に拳銃で発砲
+        if (dist <= 14 && elapsed - this.lastFireTime > 2.4) {
+            this.lastFireTime = elapsed;
+            this._fire(playerPos, elapsed);
+        }
+    }
+
+    _aiPharaoh(dt, dist, dirToPlayer, playerPos, elapsed) {
+        // ファラオ呪術師: ゆっくり前進し、射程内で杖から青い呪術弾。
+        this.aiState = dist > this.attackRange ? 'advance' : 'attack';
+        this._advanceCrossing(dt, dist > this.attackRange ? 0.85 : 0.30);
+        if (dist <= this.attackRange && elapsed - this.lastFireTime > this.fireRate) {
+            this.lastFireTime = elapsed;
+            this._firePharaohOrb(playerPos);
+        }
+        // 杖先端のオーブをふわふわさせる
+        if (this.pharaohOrb) {
+            const s = 1.0 + Math.sin(elapsed * 4.5) * 0.18;
+            this.pharaohOrb.scale.setScalar(s);
+            this.pharaohOrb.material.opacity = 0.7 + Math.sin(elapsed * 6.0) * 0.2;
+        }
+    }
+
+    _firePharaohOrb(playerPos) {
+        const muzzleLocal = new THREE.Vector3(0.30, 2.00, 0.25);
+        const muzzlePos = muzzleLocal.applyMatrix4(this.group.matrixWorld);
+        const dir = new THREE.Vector3().subVectors(playerPos, muzzlePos);
+        dir.y = 0;
+        dir.normalize();
+        const orb = new Projectile(this.scene, {
+            position: muzzlePos,
+            direction: dir,
+            speed: 16,
+            damage: this.damage,
+            owner: 'enemy',
+            type: 'rocket',
+            maxDistance: 50,
+        });
+        // 青い呪術弾の見た目を上書き（rocket の弾頭マテリアルがあれば）
+        orb.group?.traverse?.(child => {
+            if (child.isMesh && child.material && child.material.color) {
+                child.material.color.setHex(0x66CCFF);
+                if ('emissive' in child.material) child.material.emissive?.setHex?.(0x224488);
+            }
+        });
+        this.projectiles.push(orb);
+    }
+
+    _aiSpearman(dt, dist, dirToPlayer, playerPos) {
+        // 槍兵: ナイフ兵と同じく直行突進。射程は槍の分やや長い。
+        this.aiState = 'charge';
+        this.group.position.add(dirToPlayer.multiplyScalar(this.speed * dt));
     }
 
     _aiJetpackRaider(dt, dist, dir, playerPos, elapsed) {

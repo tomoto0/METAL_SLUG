@@ -6,7 +6,7 @@ import { World } from './World.js';
 import { GameManager } from './GameManager.js';
 import { UIManager } from './UIManager.js';
 import { SoundManager } from './SoundManager.js';
-import { cancelAllPendingExtraDisposals, resetExplosionGlobals } from './Explosion.js';
+import { cancelAllPendingExtraDisposals, resetExplosionGlobals, updateExplosionResidues } from './Explosion.js';
 
 // ============================================
 // レンダラー
@@ -471,17 +471,19 @@ window.addEventListener('keydown', (e) => {
 });
 
 function restartGame() {
-    // 前ゲームの未発火 setTimeout（焦げ跡/岩塊の遅延 dispose）を取り消し、
-    // 新ゲーム中に過去 mesh が突然消える/メモリが揺れる症状を防ぐ。
-    cancelAllPendingExtraDisposals();
     // 爆発ライトプール（_activeExplosionLights カウンタ + 各 light の _busy フラグ）を初期化。
     // これを呼ばないと、Game Over 時点で update が止まったまま release されなかった
     // ライトが永続的に占有されたままになり、新ゲームの爆発が無灯化＋古いライトが
     // シーン上で点きっぱなしになって点滅・重さの原因になる。
+    // 必ず gameManager.restart() の前に呼ぶこと（restart 内の effect.destroy が
+    // _releaseLight を呼んでも 0→0 で安全）。
     resetExplosionGlobals();
     uiManager.reset();
     player.restart();
     gameManager.restart();
+    // gameManager.restart() 内で爆発エフェクトを destroy する際に新たな残骸が
+    // _residues に流入する。restart の最後でまとめて残骸を全廃棄するため、
+    // ここではまだ呼ばない。
     gameMode = 'tank';
     marco.mount();
     player.group.visible = true;
@@ -512,6 +514,9 @@ function restartGame() {
     dirLight.color.setHex(0xFFF0B8);
     dirLight.intensity = 2.5;
     world.reset(scrollZ);
+    // 残骸（岩塊/焦げ跡）リストを完全クリア。
+    // gameManager.restart() 中の effect.destroy で流入した分も含めて廃棄する。
+    cancelAllPendingExtraDisposals();
     // シーン防衛的クリーンアップ: 既知の永続オブジェクト以外の遺残メッシュを除去。
     // dispose 漏れの最後のセーフティネット。
     _deepCleanScene();
@@ -549,6 +554,11 @@ window.addEventListener('resize', () => {
 // ============================================
 // ゲームループ
 // ============================================
+// gameLoop で毎フレーム使い回す Vector3。後半シーンで 60fps × 2 = 120 個/秒の
+// GC 圧を生まないよう、モジュールスコープに 1 個ずつ確保して .set() で書き換える。
+const _targetCamPos = new THREE.Vector3();
+const _lookTarget = new THREE.Vector3();
+
 let lastTime = -1;
 let isFirstFrame = true;
 let elapsedTime = 0;
@@ -687,6 +697,10 @@ function gameLoop(timestamp) {
 
     // ワールド更新
     world.update(dt, scrollZ);
+
+    // 爆発残骸（岩塊/焦げ跡）の継続フェード＋自動 dispose
+    // 旧実装の setTimeout/setInterval を廃して、毎フレーム経過時間で寿命管理する。
+    updateExplosionResidues(dt);
 
     // UI更新
     uiManager.update(dt, gameManager, activeEntity);
@@ -900,14 +914,14 @@ function gameLoop(timestamp) {
 
     // カメラ追従（3/4 view、+Z 方向を見る）
     const effectiveZoom = cameraZoomCurrent * kickZoom;
-    const targetCamPos = new THREE.Vector3(
+    _targetCamPos.set(
         laneX,
         CAMERA_OFFSET.y * effectiveZoom,
         scrollZ + CAMERA_OFFSET.z * effectiveZoom
     );
-    camera.position.lerp(targetCamPos, 0.08);
+    camera.position.lerp(_targetCamPos, 0.08);
 
-    const lookTarget = new THREE.Vector3(
+    _lookTarget.set(
         laneX * 0.75,
         4,
         scrollZ + CAMERA_LOOK_AHEAD
@@ -922,7 +936,7 @@ function gameLoop(timestamp) {
         shakeIntensity = 0;
     }
 
-    camera.lookAt(lookTarget);
+    camera.lookAt(_lookTarget);
 
     // ライト追従
     dirLight.position.set(20, 30, scrollZ + 12);

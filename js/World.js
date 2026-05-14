@@ -10328,12 +10328,25 @@ export class World {
         // 1 フレームあたり maxChunkDisposesPerFrame 個までに制限し、解放コストを分散する。
         // 残ったチャンクは次フレーム以降に処理されるため、メモリ蓄積は数フレーム遅延するだけ。
         // メモリプレッシャー検出時は main.js から _memPressureBoost が立ち、その分だけ追加で dispose する。
+        //
+        // 動的バッチ化: まず破棄対象の総数（backlog）を数え、それに応じて frameLimit を引き上げる。
+        // 後半シーンでチャンク生成が追いつかなくなり廃棄キューが溜まると、固定上限のままでは
+        // 数十個の chunk を抱えたまま走り続け、まとめて dispose した瞬間にフレームが固まる。
+        // backlog ≥ 8 で +2、≥ 16 で +4、≥ 24 で +8 と段階的に増やして滞留を抑える。
+        let backlog = 0;
+        const cleanupZ = scrollZ - this.cleanupRange;
+        for (let i = 0; i < this.chunks.length; i++) {
+            if (this.chunks[i].startZ + this.chunkSize < cleanupZ) backlog++;
+        }
         let disposedThisFrame = 0;
         let frameLimit = this.maxChunkDisposesPerFrame;
         if (this._memPressureBoost && this._memPressureBoost > 0) {
             frameLimit += this._memPressureBoost;
             this._memPressureBoost = 0;
         }
+        if (backlog >= 24)      frameLimit += 8;
+        else if (backlog >= 16) frameLimit += 4;
+        else if (backlog >= 8)  frameLimit += 2;
         for (let i = this.chunks.length - 1; i >= 0; i--) {
             if (disposedThisFrame >= frameLimit) break;
             const chunk = this.chunks[i];

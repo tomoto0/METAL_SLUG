@@ -51,17 +51,107 @@ const _geoCache = {
     sphere_mega_core: new THREE.SphereGeometry(1.2, 10, 8),
 };
 
-// 同時に生成できる爆発由来 PointLight の数を制限（GPU 負荷上限）
-const MAX_CONCURRENT_EXPLOSION_LIGHTS = 3;
+// 同時に生成できる爆発由来 PointLight の数を制限（GPU 負荷上限）。
+// 3 → 5: Wave 後半でボス＋戦車多発時に枯渇して新規爆発が無灯化し、
+// 「3Dオブジェクトが消えたように見える」一因になっていたため拡張。
+// プール光は常駐させ intensity 切替なので、5 個でもシェーダ再コンパイルは発生しない。
+const MAX_CONCURRENT_EXPLOSION_LIGHTS = 5;
 let _activeExplosionLights = 0;
 
-// 焦げ跡/岩塊の遅延 dispose 用 setTimeout 追跡。
-// リセット (R) や全体破棄時に未発火の callback が残ると、scene から既に消えた mesh を
-// 再度操作したり、過去ゲームのリソースが意図せず残るので、明示的にキャンセルできるよう保持する。
-const _pendingExtraTimers = new Set();
+// 爆発寿命より長く残る残骸（岩塊・焦げ跡）の継続管理リスト。
+// 旧実装は destroy() 内で setTimeout/setInterval を多重発行して個別にフェードしていたが、
+// 後半シーンで数百個のタイマーがメッシュ参照を抱え込み、GC を阻害して
+// ヒープが膨張する原因になっていた。
+// 新方式: destroy() で extras を _residues へ移譲し、毎フレーム updateExplosionResidues(dt)
+// が経過時間ベースでフェード→dispose を行う（タイマー完全撤廃）。
+const _residues = [];
+
+/**
+ * 残骸（岩塊・焦げ跡）の毎フレーム更新。main.js のゲームループから呼ぶ。
+ * 寿命を過ぎたものは scene から除去し、ジオメトリ/マテリアルも dispose する。
+ */
+export function updateExplosionResidues(dt) {
+    if (_residues.length === 0) return;
+    const cachedGeoms = Object.values(_geoCache);
+    for (let i = _residues.length - 1; i >= 0; i--) {
+        const e = _residues[i];
+        let expired = false;
+        if (e.type === 'rock') {
+            if (!e.resting) {
+                e.mesh.position.x += e.vx * dt;
+                e.mesh.position.y += e.vy * dt;
+                e.mesh.position.z += e.vz * dt;
+                e.vy -= 9.8 * dt;
+                e.mesh.rotation.x += e.rotSpeed * dt;
+                e.mesh.rotation.z += e.rotSpeed * dt * 0.7;
+                if (e.mesh.position.y <= e.groundY) {
+                    e.mesh.position.y = e.groundY;
+                    e.vx *= 0.25;
+                    e.vz *= 0.25;
+                    e.vy = 0;
+                    e.rotSpeed = 0;
+                    e.resting = true;
+                }
+            }
+            if (e.lifeAge !== undefined) {
+                e.lifeAge += dt;
+                const fadeStart = Math.max(0, e.lifeTimer - 2.0);
+                if (e.lifeAge > fadeStart) {
+                    const fadeProgress = (e.lifeAge - fadeStart) / 2.0;
+                    e.mesh.scale.multiplyScalar(1 - dt * 0.4);
+                    if (e.mesh.material && e.mesh.material.transparent !== undefined) {
+                        e.mesh.material.transparent = true;
+                        e.mesh.material.opacity = Math.max(0, 1 - fadeProgress);
+                    }
+                }
+                if (e.lifeAge >= e.lifeTimer) expired = true;
+            }
+        } else if (e.type === 'scorch') {
+            if (e.fadeAge !== undefined) {
+                e.fadeAge += dt;
+                const fadeStart = Math.max(0, e.fadeTimer - 2.5);
+                if (e.fadeAge > fadeStart) {
+                    const fadeProgress = (e.fadeAge - fadeStart) / 2.5;
+                    if (e.mesh.material) {
+                        e.mesh.material.opacity = Math.max(0, 0.35 * (1 - fadeProgress));
+                    }
+                }
+                if (e.fadeAge >= e.fadeTimer) expired = true;
+            }
+        }
+        if (expired && e.mesh) {
+            if (e.mesh.parent) e.mesh.parent.remove(e.mesh);
+            if (e.mesh.geometry && !cachedGeoms.includes(e.mesh.geometry)) {
+                e.mesh.geometry.dispose();
+            }
+            if (e.mesh.material) {
+                if (Array.isArray(e.mesh.material)) e.mesh.material.forEach(m => m.dispose());
+                else e.mesh.material.dispose();
+            }
+            _residues.splice(i, 1);
+        }
+    }
+}
+
+/**
+ * 残骸を即座に全廃棄する。リスタート/全体リセット経路から呼ぶ。
+ * 旧 API 名 (cancelAllPendingExtraDisposals) のまま、setTimeout 撤廃後も
+ * 「過去ゲームのリソースを次ゲームに持ち込まない」役目を担う。
+ */
 export function cancelAllPendingExtraDisposals() {
-    for (const tid of _pendingExtraTimers) clearTimeout(tid);
-    _pendingExtraTimers.clear();
+    const cachedGeoms = Object.values(_geoCache);
+    for (const e of _residues) {
+        if (!e.mesh) continue;
+        if (e.mesh.parent) e.mesh.parent.remove(e.mesh);
+        if (e.mesh.geometry && !cachedGeoms.includes(e.mesh.geometry)) {
+            e.mesh.geometry.dispose();
+        }
+        if (e.mesh.material) {
+            if (Array.isArray(e.mesh.material)) e.mesh.material.forEach(m => m.dispose());
+            else e.mesh.material.dispose();
+        }
+    }
+    _residues.length = 0;
 }
 
 // リスタート時に爆発関連グローバル状態（ライトプール / アクティブカウンタ）を初期化する。
@@ -764,8 +854,9 @@ export class Explosion {
 
     // ============================================
     // 岩塊・瓦礫の山（地面に残るチャンク）
-    // 注: 岩は爆発グループの寿命より長く残したいので、scene 直下に置いて
-    //     extras 経由で個別に setTimeout 解放する（焦げ跡と同じ方式）。
+    // 注: 岩は爆発グループの寿命より長く残したいので、scene 直下に置く。
+    //     destroy() 時に extras → _residues へ移譲され、updateExplosionResidues(dt) が
+    //     経過時間ベースでフェード＋自動 dispose する（タイマー不要）。
     // ============================================
     _addRockPile({ count = 4, geo, spread = 1.0 } = {}) {
         if (this.skipResidue) return;
@@ -1031,63 +1122,14 @@ export class Explosion {
             // プール光源は dispose しない（シーン常駐）
         });
 
-        // 焦げ跡・岩塊のクリーンアップ: 爆発グループ寿命より長く残すため scene 直下
-        // 即座にフェードアウトアニメーションを開始し、一定時間後に完全除去
-        const cachedGeomList = Object.values(_geoCache);
-        this.extras.forEach(e => {
-            const mesh = e.mesh;
-            if (!mesh) return;
-
-            // フェードアウトの開始タイミングと持続時間を計算
-            const totalLife = e.type === 'scorch'
-                ? Math.min(e.fadeTimer || 5, 5)  // 最大5秒
-                : Math.min(e.lifeTimer || 4, 4); // 最大4秒
-            const fadeStartDelay = Math.max(0, (totalLife - 2.0)) * 1000; // 最後の2秒でフェードアウト
-            const fadeDuration = 2000; // 2秒かけてフェードアウト
-
-            // フェードアウトアニメーション（setIntervalでscene外でも動作）
-            let fadeTimerId;
-            fadeTimerId = setTimeout(() => {
-                _pendingExtraTimers.delete(fadeTimerId);
-                const fadeStart = performance.now();
-                const startOpacity = mesh.material ? (mesh.material.opacity || 1.0) : 1.0;
-                let animId;
-                animId = setInterval(() => {
-                    const elapsed = performance.now() - fadeStart;
-                    const t = Math.min(1, elapsed / fadeDuration);
-                    if (mesh.material) {
-                        mesh.material.transparent = true;
-                        mesh.material.opacity = startOpacity * (1 - t);
-                    }
-                    if (e.type === 'rock') {
-                        const s = Math.max(0.01, 1 - t * 0.8);
-                        mesh.scale.setScalar(s);
-                    }
-                    if (t >= 1) {
-                        clearInterval(animId);
-                        _pendingExtraTimers.delete(animId);
-                    }
-                }, 50);
-                _pendingExtraTimers.add(animId);
-            }, fadeStartDelay);
-            _pendingExtraTimers.add(fadeTimerId);
-
-            // 最終的な強制除去（フェードアウト完了後）
-            const totalDelay = fadeStartDelay + fadeDuration + 200;
-            let tid;
-            tid = setTimeout(() => {
-                _pendingExtraTimers.delete(tid);
-                if (mesh.parent) mesh.parent.remove(mesh);
-                if (mesh.geometry && !cachedGeomList.includes(mesh.geometry)) {
-                    mesh.geometry.dispose();
-                }
-                if (mesh.material) {
-                    if (Array.isArray(mesh.material)) mesh.material.forEach(m => m.dispose());
-                    else mesh.material.dispose();
-                }
-            }, totalDelay);
-            _pendingExtraTimers.add(tid);
-        });
+        // 焦げ跡・岩塊は scene 直下に既に配置済み。爆発グループ寿命を超えて残すため、
+        // 残骸専用リストへ移譲し updateExplosionResidues(dt) でフェード→dispose を継続する。
+        // shockwave は this.group の子なので、上の traverse で既に dispose 済み。
+        for (const e of this.extras) {
+            if (e.type === 'rock' || e.type === 'scorch') {
+                _residues.push(e);
+            }
+        }
         this.extras.length = 0;
     }
 }
