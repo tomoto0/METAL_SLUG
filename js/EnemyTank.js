@@ -32,7 +32,7 @@ export class EnemyTank extends Enemy {
         this.aiState = 'advance';
         this.attackRange = subType === 'siege' ? 72 : (subType === 'heavy' ? 60 : (subType === 'flak' ? 90 : 44));
         // Vulcan（散弾型機関砲）はメイン砲より遠くから撃てる
-        this.vulcanRange = subType === 'heavy' ? 110 : 0;
+        this.vulcanRange = subType === 'heavy' ? 155 : 0;
         this.movePauseTimer = 0;
         this.movePhase = 'move'; // 'move' | 'pause'
 
@@ -982,7 +982,7 @@ export class EnemyTank extends Enemy {
                 damage: 8,
                 owner: 'enemy',
                 type: 'bullet',
-                maxDistance: 130,
+                maxDistance: 175,
             });
             this.projectiles.push(bullet);
         }
