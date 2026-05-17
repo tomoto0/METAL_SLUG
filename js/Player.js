@@ -317,237 +317,268 @@ export class Player {
         this.visualGroup.add(this.hullGroup);
 
         // ============================================
-        // 1. キャタピラ（左右） - 画像: 非常に大きく厚い
-        //    前後に大きな起動輪/誘導輪、中間に転輪3つ
+        // 1. キャタピラ（左右） - SV-001公式コンセプト準拠リファイン
+        //    前後輪を内包するD字シルエットのベルト + 外周全周を覆う
+        //    チャンキー履帯シュー + 彫り込み式の重厚ホイールハブ
         // ============================================
         this.wheels = [];
-        const trackH = 1.3;  // キャタピラ高さ（大きめ）
-        const trackW = 3.2;  // キャタピラ幅
-        const trackD = 0.55; // キャタピラ厚み
+        const trackD = 0.55;        // 履帯厚み（Z方向）
+        const frontX = 1.25;        // 起動輪X
+        const rearX = -1.25;        // 誘導輪X
+        const wheelR = 0.60;        // 起動輪/誘導輪半径
+        const beltR = 0.66;         // ベルト外周半径
+        const beltCY = 0.68;        // 全ホイール中心Y
+        const trackH = beltCY + beltR + 0.30; // フェンダー高さ参考値
 
-        // 共有マテリアル（左右トラックで再利用）
-        const wheelMatOuter = new THREE.MeshStandardMaterial({ color: C.track, roughness: 0.85, metalness: 0.18 });
-        const wheelMatInner = new THREE.MeshStandardMaterial({ color: C.wheel, roughness: 0.5, metalness: 0.5 });
-        const hubMat = new THREE.MeshStandardMaterial({ color: C.wheelHub, metalness: 0.72, roughness: 0.28 });
-        const boltMat = new THREE.MeshStandardMaterial({ color: C.metalDk, metalness: 0.6, roughness: 0.45 });
-        const clawMat = new THREE.MeshStandardMaterial({ color: C.claw, roughness: 0.78, metalness: 0.08 });
-        const clawDkMat = new THREE.MeshStandardMaterial({ color: C.clawDk, roughness: 0.82, metalness: 0.08 });
-        const padMat = new THREE.MeshStandardMaterial({ color: C.metalDk, roughness: 0.85, metalness: 0.25 });
-        const trackPlateMat = new THREE.MeshStandardMaterial({ color: C.trackIn, roughness: 0.78, metalness: 0.32 });
-        const fenderMat = new THREE.MeshStandardMaterial({ color: C.bodyDk, roughness: 0.7, metalness: 0.15 });
+        // 共有マテリアル
+        const wheelMatOuter  = new THREE.MeshStandardMaterial({ color: C.track,    roughness: 0.85, metalness: 0.18 });
+        const wheelMatInner  = new THREE.MeshStandardMaterial({ color: C.wheel,    roughness: 0.50, metalness: 0.50 });
+        const hubMat         = new THREE.MeshStandardMaterial({ color: C.wheelHub, metalness: 0.72, roughness: 0.28 });
+        const boltMat        = new THREE.MeshStandardMaterial({ color: C.metalDk,  metalness: 0.60, roughness: 0.45 });
+        const clawMat        = new THREE.MeshStandardMaterial({ color: C.claw,     roughness: 0.78, metalness: 0.08 });
+        const padMat         = new THREE.MeshStandardMaterial({ color: C.metalDk,  roughness: 0.85, metalness: 0.25 });
+        const trackPlateMat  = new THREE.MeshStandardMaterial({ color: C.trackIn,  roughness: 0.78, metalness: 0.32 });
+        const beltSideMat    = new THREE.MeshStandardMaterial({ color: C.track,    roughness: 0.78, metalness: 0.22 });
+        const beltInsideMat  = new THREE.MeshStandardMaterial({ color: C.trackIn,  roughness: 0.70, metalness: 0.30 });
+        const fenderMat      = new THREE.MeshStandardMaterial({ color: C.bodyDk,   roughness: 0.70, metalness: 0.15 });
+        const rimDarkMat     = new THREE.MeshStandardMaterial({ color: C.bodyDk,   roughness: 0.70, metalness: 0.35, side: THREE.DoubleSide });
+        const glowMat        = new THREE.MeshStandardMaterial({ color: C.mark,     emissive: C.mark, emissiveIntensity: 0.7, roughness: 0.4, side: THREE.DoubleSide });
+
+        // D字シルエット形状（前後輪を内包する閉曲線）
+        const makeBeltShape = (r) => {
+            const s = new THREE.Shape();
+            s.moveTo(frontX, beltCY + r);
+            s.lineTo(rearX,  beltCY + r);
+            s.absarc(rearX,  beltCY, r,  Math.PI / 2, -Math.PI / 2, true);
+            s.lineTo(frontX, beltCY - r);
+            s.absarc(frontX, beltCY, r, -Math.PI / 2,  Math.PI / 2, true);
+            return s;
+        };
+        const beltGeo = new THREE.ExtrudeGeometry(makeBeltShape(beltR), {
+            depth: trackD, bevelEnabled: true,
+            bevelThickness: 0.05, bevelSize: 0.05, bevelSegments: 3, steps: 1,
+        });
+        beltGeo.translate(0, 0, -trackD / 2);
+        const beltInGeo = new THREE.ExtrudeGeometry(makeBeltShape(beltR - 0.14), {
+            depth: trackD - 0.22, bevelEnabled: true,
+            bevelThickness: 0.04, bevelSize: 0.04, bevelSegments: 2, steps: 1,
+        });
+        beltInGeo.translate(0, 0, -(trackD - 0.22) / 2);
+
+        // 共有ホイールジオメトリ
+        const bigTireGeo  = new THREE.CylinderGeometry(wheelR, wheelR, 0.30, 28);
+        const bigDiscGeo  = new THREE.CylinderGeometry(0.52, 0.52, 0.20, 22);
+        const bigRimGeo   = new THREE.RingGeometry(0.42, 0.52, 28);
+        const backPlateGeo = new THREE.CylinderGeometry(0.40, 0.40, 0.04, 20);
+        const hubBaseGeo  = new THREE.CylinderGeometry(0.27, 0.30, 0.08, 18);
+        const hubCapGeo   = new THREE.CylinderGeometry(0.17, 0.23, 0.10, 14);
+        const bigBoltGeo  = new THREE.CylinderGeometry(0.058, 0.058, 0.08, 6);
+        const centerBoltGeo = new THREE.CylinderGeometry(0.10, 0.12, 0.12, 6);
+        const glowGeo     = new THREE.CircleGeometry(0.07, 14);
+        const midWheelGeo = new THREE.CylinderGeometry(0.40, 0.40, 0.22, 18);
+        const midRimGeo   = new THREE.CylinderGeometry(0.32, 0.32, 0.18, 14);
+        const midHubGeo   = new THREE.CylinderGeometry(0.14, 0.16, 0.12, 10);
+        const midBoltGeo  = new THREE.CylinderGeometry(0.038, 0.038, 0.06, 5);
+        const shoeGeo     = new THREE.BoxGeometry(0.18, 0.14, trackD - 0.05);
+        const shoeAccGeo  = new THREE.BoxGeometry(0.11, 0.05, trackD * 0.42);
 
         for (let side = -1; side <= 1; side += 2) {
             const tg = new THREE.Group();
 
-            // キャタピラ外殻 - 丸みのある厚い帯
-            const outerGeo = this._roundedBox(trackW, trackH, trackD, 0.25, C.track);
-            outerGeo.position.set(0, trackH / 2, 0);
-            tg.add(outerGeo);
+            // ベルト本体（D字外殻）
+            const beltOuter = new THREE.Mesh(beltGeo, beltSideMat);
+            beltOuter.castShadow = true;
+            tg.add(beltOuter);
+            // ベルト内側の凹みディテール（暗色で深さ表現）
+            tg.add(new THREE.Mesh(beltInGeo, beltInsideMat));
 
-            // キャタピラ内側ディテール
-            const innerGeo = this._roundedBox(trackW - 0.4, trackH - 0.3, trackD - 0.15, 0.2, C.trackIn);
-            innerGeo.position.set(0, trackH / 2, 0);
-            tg.add(innerGeo);
+            // ---- 外周にチャンキーな履帯シューを配置 ----
+            const placeShoe = (x, y, ang, nx, ny) => {
+                const shoe = new THREE.Mesh(shoeGeo, padMat);
+                shoe.position.set(x, y, 0);
+                shoe.rotation.z = ang;
+                tg.add(shoe);
+                // 中央の明るい彫り
+                const accent = new THREE.Mesh(shoeAccGeo, trackPlateMat);
+                accent.position.set(x + nx * 0.05, y + ny * 0.05, 0);
+                accent.rotation.z = ang;
+                tg.add(accent);
+            };
 
-            // 履帯セグメント（シェブロン状トレッドパッド）— 上下の走行面に並ぶ
-            for (let px = -1.30; px <= 1.30; px += 0.20) {
-                for (const py of [trackH - 0.05, 0.05]) {
-                    // メインパッド（横長プレート）
-                    const pad = new THREE.Mesh(
-                        new THREE.BoxGeometry(0.16, 0.09, trackD * 0.95),
-                        padMat
-                    );
-                    pad.position.set(px, py, 0);
-                    tg.add(pad);
-                    // V字のリブ（左右に少し傾けた小ブロック）
-                    for (const dz of [-trackD * 0.30, trackD * 0.30]) {
-                        const v = new THREE.Mesh(
-                            new THREE.BoxGeometry(0.10, 0.05, trackD * 0.32),
-                            trackPlateMat
-                        );
-                        const yOffset = (py < trackH / 2 ? -0.03 : 0.03);
-                        v.position.set(px, py + yOffset, dz);
-                        v.rotation.y = (dz > 0 ? 1 : -1) * 0.4;
-                        tg.add(v);
-                    }
-                }
+            const straightCount = 11;
+            // 上面シュー
+            for (let i = 0; i < straightCount; i++) {
+                const t = i / (straightCount - 1);
+                placeShoe(rearX + (frontX - rearX) * t, beltCY + beltR + 0.03, 0, 0, 1);
+            }
+            // 底面シュー
+            for (let i = 0; i < straightCount; i++) {
+                const t = i / (straightCount - 1);
+                placeShoe(rearX + (frontX - rearX) * t, beltCY - beltR - 0.03, Math.PI, 0, -1);
+            }
+            // 前後の半円シュー（接線方向に倒して配置）
+            const arcSegments = 7;
+            for (let i = 1; i < arcSegments; i++) {
+                const tF = i / arcSegments;
+                const angF = Math.PI / 2 - tF * Math.PI;
+                placeShoe(
+                    frontX + Math.cos(angF) * (beltR + 0.03),
+                    beltCY + Math.sin(angF) * (beltR + 0.03),
+                    angF + Math.PI / 2,
+                    Math.cos(angF), Math.sin(angF)
+                );
+                const angR = Math.PI / 2 + tF * Math.PI;
+                placeShoe(
+                    rearX + Math.cos(angR) * (beltR + 0.03),
+                    beltCY + Math.sin(angR) * (beltR + 0.03),
+                    angR + Math.PI / 2,
+                    Math.cos(angR), Math.sin(angR)
+                );
             }
 
-            // ============================================
-            // 前後の大型ホイール（起動輪/誘導輪）— 多層構造
-            //  - 外側タイヤリング（黒鉄）
-            //  - 内側ディスク（明るめのプレート）
-            //  - リムの溝（シャドウ）
-            //  - ハブキャップ + 6本のボルトサークル + 中央六角ボルト
-            //  - 外周の湾曲クロウ（コンセプト画像の白い牙）
-            // ============================================
-            const buildBigWheel = (xPos) => {
-                // 外側タイヤリング — これが回転対象
-                const tire = new THREE.Mesh(
-                    new THREE.CylinderGeometry(0.62, 0.62, 0.26, 24),
-                    wheelMatOuter
-                );
+            // ---- 前後の大型起動輪/誘導輪 ----
+            const buildBigWheel = (xPos, isFront) => {
+                // 外側タイヤ（回転対象）
+                const tire = new THREE.Mesh(bigTireGeo, wheelMatOuter);
                 tire.rotation.x = Math.PI / 2;
-                tire.position.set(xPos, trackH * 0.5, side * 0.04);
+                tire.position.set(xPos, beltCY, side * 0.04);
                 tg.add(tire);
                 this.wheels.push(tire);
 
-                // 内側ディスク（明るめのサイドプレート）
-                const disc = new THREE.Mesh(
-                    new THREE.CylinderGeometry(0.50, 0.50, 0.18, 20),
-                    wheelMatInner
-                );
+                // 内側ディスク
+                const disc = new THREE.Mesh(bigDiscGeo, wheelMatInner);
                 disc.rotation.x = Math.PI / 2;
-                disc.position.set(xPos, trackH * 0.5, side * 0.16);
+                disc.position.set(xPos, beltCY, side * 0.18);
                 tg.add(disc);
 
-                // リム凹み（暗いリングで彫り込み感）
-                const rimRing = new THREE.Mesh(
-                    new THREE.RingGeometry(0.40, 0.49, 24),
-                    new THREE.MeshStandardMaterial({
-                        color: C.bodyDk, roughness: 0.7, metalness: 0.3,
-                        side: THREE.DoubleSide,
-                    })
-                );
-                rimRing.position.set(xPos, trackH * 0.5, side * 0.26);
+                // 深いリム凹み
+                const rimRing = new THREE.Mesh(bigRimGeo, rimDarkMat);
+                rimRing.position.set(xPos, beltCY, side * 0.29);
                 rimRing.rotation.y = side > 0 ? 0 : Math.PI;
                 tg.add(rimRing);
 
-                // ハブキャップ
-                const hubCap = new THREE.Mesh(
-                    new THREE.CylinderGeometry(0.22, 0.24, 0.12, 12),
-                    hubMat
-                );
+                // ハブ裏打ち
+                const back = new THREE.Mesh(backPlateGeo, wheelMatInner);
+                back.rotation.x = Math.PI / 2;
+                back.position.set(xPos, beltCY, side * 0.28);
+                tg.add(back);
+
+                // ハブキャップ（2段で厚みを出す）
+                const hubBase = new THREE.Mesh(hubBaseGeo, hubMat);
+                hubBase.rotation.x = Math.PI / 2;
+                hubBase.position.set(xPos, beltCY, side * 0.32);
+                tg.add(hubBase);
+                const hubCap = new THREE.Mesh(hubCapGeo, hubMat);
                 hubCap.rotation.x = Math.PI / 2;
-                hubCap.position.set(xPos, trackH * 0.5, side * 0.30);
+                hubCap.position.set(xPos, beltCY, side * 0.39);
                 tg.add(hubCap);
 
-                // ボルトサークル（6個）
-                for (let b = 0; b < 6; b++) {
-                    const ang = (b / 6) * Math.PI * 2;
-                    const bolt = new THREE.Mesh(
-                        new THREE.CylinderGeometry(0.055, 0.055, 0.08, 6),
-                        boltMat
-                    );
+                // ボルトサークル（8本）
+                for (let b = 0; b < 8; b++) {
+                    const a = (b / 8) * Math.PI * 2;
+                    const bolt = new THREE.Mesh(bigBoltGeo, boltMat);
                     bolt.rotation.x = Math.PI / 2;
                     bolt.position.set(
-                        xPos + Math.cos(ang) * 0.34,
-                        trackH * 0.5 + Math.sin(ang) * 0.34,
-                        side * 0.30
+                        xPos + Math.cos(a) * 0.36,
+                        beltCY + Math.sin(a) * 0.36,
+                        side * 0.31
                     );
                     tg.add(bolt);
                 }
 
-                // 中央六角ナット
-                const centerBolt = new THREE.Mesh(
-                    new THREE.CylinderGeometry(0.10, 0.10, 0.10, 6),
-                    boltMat
-                );
-                centerBolt.rotation.x = Math.PI / 2;
-                centerBolt.position.set(xPos, trackH * 0.5, side * 0.36);
-                tg.add(centerBolt);
+                // 中央六角ナット（突出）
+                const cBolt = new THREE.Mesh(centerBoltGeo, boltMat);
+                cBolt.rotation.x = Math.PI / 2;
+                cBolt.position.set(xPos, beltCY, side * 0.45);
+                tg.add(cBolt);
 
-                // 外周の湾曲クロウ（10本、コンセプト画像の牙）
-                for (let t = 0; t < 10; t++) {
-                    const ang = (t / 10) * Math.PI * 2;
-                    const claw = new THREE.Mesh(
-                        new THREE.ConeGeometry(0.13, 0.36, 4),
-                        clawMat
-                    );
-                    claw.position.set(
-                        xPos + Math.cos(ang) * 0.78,
-                        trackH * 0.5 + Math.sin(ang) * 0.78,
-                        side * 0.04
-                    );
-                    claw.rotation.z = ang - Math.PI / 2;
-                    claw.scale.set(1, 1, 0.85);
-                    tg.add(claw);
-                    // クロウの根元（暗い縁取り、影）
-                    const clawShade = new THREE.Mesh(
-                        new THREE.BoxGeometry(0.14, 0.10, 0.08),
-                        clawDkMat
-                    );
-                    clawShade.position.set(
-                        xPos + Math.cos(ang) * 0.62,
-                        trackH * 0.5 + Math.sin(ang) * 0.62,
-                        side * 0.04
-                    );
-                    clawShade.rotation.z = ang;
-                    tg.add(clawShade);
+                // 前輪のみイエロー発光アクセント（コンセプト画像の温色感）
+                if (isFront) {
+                    const glow = new THREE.Mesh(glowGeo, glowMat);
+                    glow.position.set(xPos, beltCY, side * 0.52);
+                    glow.rotation.y = side > 0 ? 0 : Math.PI;
+                    tg.add(glow);
                 }
             };
 
-            buildBigWheel(1.25);   // 前方起動輪
-            buildBigWheel(-1.25);  // 後方誘導輪
+            buildBigWheel(frontX, true);
+            buildBigWheel(rearX,  false);
 
-            // 中間転輪（3つ）— 小ぶりでハブ + 4ボルト
-            const midWheelGeo = new THREE.CylinderGeometry(0.40, 0.40, 0.20, 16);
-            const midRimGeo = new THREE.CylinderGeometry(0.32, 0.32, 0.18, 14);
+            // ---- 中間転輪（3つ）— ビッグホイールと底面を揃える ----
+            const roadWheelY = beltCY - (wheelR - 0.40);
             for (const mx of [-0.55, 0.10, 0.75]) {
                 const mw = new THREE.Mesh(midWheelGeo, wheelMatOuter);
                 mw.rotation.x = Math.PI / 2;
-                mw.position.set(mx, trackH * 0.4, side * 0.04);
+                mw.position.set(mx, roadWheelY, side * 0.04);
                 tg.add(mw);
                 this.wheels.push(mw);
 
                 const mwInner = new THREE.Mesh(midRimGeo, wheelMatInner);
                 mwInner.rotation.x = Math.PI / 2;
-                mwInner.position.set(mx, trackH * 0.4, side * 0.14);
+                mwInner.position.set(mx, roadWheelY, side * 0.14);
                 tg.add(mwInner);
 
-                const mhub = new THREE.Mesh(
-                    new THREE.CylinderGeometry(0.13, 0.14, 0.12, 8),
-                    hubMat
-                );
+                const mhub = new THREE.Mesh(midHubGeo, hubMat);
                 mhub.rotation.x = Math.PI / 2;
-                mhub.position.set(mx, trackH * 0.4, side * 0.22);
+                mhub.position.set(mx, roadWheelY, side * 0.22);
                 tg.add(mhub);
 
-                // 4ボルト
                 for (let b = 0; b < 4; b++) {
-                    const ang = (b / 4) * Math.PI * 2 + Math.PI / 4;
-                    const bolt = new THREE.Mesh(
-                        new THREE.CylinderGeometry(0.038, 0.038, 0.06, 5),
-                        boltMat
-                    );
+                    const a = (b / 4) * Math.PI * 2 + Math.PI / 4;
+                    const bolt = new THREE.Mesh(midBoltGeo, boltMat);
                     bolt.rotation.x = Math.PI / 2;
                     bolt.position.set(
-                        mx + Math.cos(ang) * 0.20,
-                        trackH * 0.4 + Math.sin(ang) * 0.20,
+                        mx + Math.cos(a) * 0.20,
+                        roadWheelY + Math.sin(a) * 0.20,
                         side * 0.20
                     );
                     tg.add(bolt);
                 }
             }
 
-            // 前端の牙状トレッドカバー（爪先が地面に刺さるイメージ）
+            // ---- 前端の牙状トレッドカバー（前方装甲の鋭利な突起） ----
             for (let i = 0; i < 4; i++) {
-                const fang = new THREE.Mesh(
-                    new THREE.ConeGeometry(0.12, 0.42, 5),
-                    clawMat
-                );
-                fang.position.set(1.58 + i * 0.03, 0.23 + i * 0.18, side * (0.22 - i * 0.015));
+                const fang = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.42, 5), clawMat);
+                fang.position.set(1.58 + i * 0.03, 0.30 + i * 0.18, side * (0.22 - i * 0.015));
                 fang.rotation.z = -Math.PI / 2 + i * 0.1;
                 fang.rotation.y = side * 0.18;
                 tg.add(fang);
             }
 
-            // 上部フェンダー（泥除け）
-            const fender = new THREE.Mesh(
-                new THREE.BoxGeometry(trackW - 0.2, 0.07, trackD + 0.05),
+            // ---- 上部フェンダー（厚い装甲フード） ----
+            const fenderY = beltCY + beltR + 0.04;
+            const fenderTop = new THREE.Mesh(
+                new THREE.BoxGeometry(2.6, 0.10, trackD + 0.14),
                 fenderMat
             );
-            fender.position.set(0, trackH + 0.03, 0);
-            tg.add(fender);
+            fenderTop.position.set(0, fenderY, 0);
+            fenderTop.castShadow = true;
+            tg.add(fenderTop);
+            // フェンダー上のリベット列
+            for (let rx = -1.05; rx <= 1.05; rx += 0.42) {
+                for (const dz of [-0.22, 0.22]) {
+                    const rivet = new THREE.Mesh(new THREE.SphereGeometry(0.045, 6, 4), boltMat);
+                    rivet.position.set(rx, fenderY + 0.07, dz);
+                    tg.add(rivet);
+                }
+            }
 
-            // フェンダー上のリベット列（金属感のディテール）
-            for (let rx = -trackW / 2 + 0.25; rx <= trackW / 2 - 0.25; rx += 0.42) {
-                const rivet = new THREE.Mesh(
-                    new THREE.SphereGeometry(0.04, 6, 4),
+            // ---- サイド装甲スカート（コンセプト画像の凸装甲帯） ----
+            const skirt = new THREE.Mesh(
+                new THREE.BoxGeometry(2.0, 0.18, 0.04),
+                fenderMat
+            );
+            skirt.position.set(0, beltCY + 0.40, side * (trackD / 2 + 0.02));
+            tg.add(skirt);
+            // スカート上のボルト
+            for (let bx = -0.85; bx <= 0.85; bx += 0.34) {
+                const sbolt = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.028, 0.028, 0.06, 6),
                     boltMat
                 );
-                rivet.position.set(rx, trackH + 0.09, side * (trackD * 0.4));
-                tg.add(rivet);
+                sbolt.position.set(bx, beltCY + 0.40, side * (trackD / 2 + 0.05));
+                sbolt.rotation.x = Math.PI / 2;
+                tg.add(sbolt);
             }
 
             tg.position.set(0, 0, side * 0.85);
@@ -2495,21 +2526,33 @@ export class Player {
         }
 
         // 瀕死時の赤発光パルス
+        // ヘッドライトやポートホール等、元から emissive を設定した光る部品の
+        // 発光色/強度を破壊しないよう、初回のみ元値を保存して回復時に復元する。
         if (hpRatio < 0.15 && this.hullGroup) {
             const pulse = Math.abs(Math.sin(Date.now() * 0.008));
             this.hullGroup.traverse(c => {
-                if (c.isMesh && c.material && !c._damageIgnore) {
-                    if (!c.material.emissive) c.material.emissive = new THREE.Color();
-                    c.material.emissive.setHex(0xFF2211);
-                    c.material.emissiveIntensity = pulse * 0.4;
+                if (!c.isMesh || !c.material || c._damageIgnore) return;
+                const m = c.material;
+                // emissive を持たないマテリアル（LineBasic 等）はスキップ
+                if (!m.emissive) return;
+                // 初回のみ元の発光状態をマテリアル毎に保存
+                if (!m.userData._dmgSaved) {
+                    m.userData._dmgSaved = true;
+                    m.userData._origEmissiveHex = m.emissive.getHex();
+                    m.userData._origEmissiveIntensity = m.emissiveIntensity ?? 1;
                 }
+                m.emissive.setHex(0xFF2211);
+                m.emissiveIntensity = pulse * 0.4;
             });
         } else if (hpRatio >= 0.15 && this.hullGroup && this._prevHpRatio < 0.15) {
-            // 回復時に発光解除
+            // 回復時に元の発光色/強度を復元
             this.hullGroup.traverse(c => {
-                if (c.isMesh && c.material && c.material.emissiveIntensity !== undefined) {
-                    c.material.emissiveIntensity = 0;
-                }
+                if (!c.isMesh || !c.material) return;
+                const m = c.material;
+                if (!m.userData._dmgSaved) return;
+                if (m.emissive) m.emissive.setHex(m.userData._origEmissiveHex);
+                m.emissiveIntensity = m.userData._origEmissiveIntensity;
+                m.userData._dmgSaved = false;
             });
         }
         this._prevHpRatio = hpRatio;
