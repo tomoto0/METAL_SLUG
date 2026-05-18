@@ -169,6 +169,14 @@ export class UIManager {
             if (this.displayScore > this.targetScore) this.displayScore = this.targetScore;
         }
 
+        // 現在の Wave をキャッシュ。Wave が上がると敵密度も上がり、
+        // 同時表示の popup / killFeed 要素数が増えて DOM が圧迫されるため、
+        // 上限と寿命を _addScorePopup / _addKillFeed で動的に絞る。
+        this._currentWave = gameManager.getCurrentWave();
+
+        // Wave に応じて killFeed の寿命短縮（同時表示数を抑える）
+        const killFeedMaxAge = this._currentWave >= 20 ? 1.8 : (this._currentWave >= 12 ? 2.4 : 3.0);
+
         this.scorePopups = this.scorePopups.filter(popup => {
             popup.age += dt;
             if (popup.age > popup.maxAge) {
@@ -180,7 +188,7 @@ export class UIManager {
 
         this.killFeedQueue = this.killFeedQueue.filter(item => {
             item.age += dt;
-            if (item.age > 3.0) {
+            if (item.age > killFeedMaxAge) {
                 item.el.style.opacity = '0';
                 setTimeout(() => item.el.remove(), 250);
                 return false;
@@ -673,7 +681,11 @@ export class UIManager {
         this.killFeedEl.appendChild(el);
 
         this.killFeedQueue.push({ el, age: 0 });
-        while (this.killFeedQueue.length > 6) {
+        // Wave に応じて同時表示の最大数を絞る（後半は敵が大量に死ぬので
+        // DOM ノードがあっという間に積み上がる）。
+        const wave = this._currentWave || 1;
+        const maxFeed = wave >= 20 ? 3 : (wave >= 12 ? 4 : 6);
+        while (this.killFeedQueue.length > maxFeed) {
             const old = this.killFeedQueue.shift();
             old.el.remove();
         }
@@ -692,7 +704,16 @@ export class UIManager {
         el.style.top = `${screenPos.y}px`;
         this.scorePopupsEl.appendChild(el);
 
-        this.scorePopups.push({ el, age: 0, maxAge: 1.2 });
+        // Wave に応じて寿命と同時表示数を絞る。後半 Wave は同時に
+        // 大量の +score が湧くので、DOM 要素が瞬間的に数十個積み上がる。
+        const wave = this._currentWave || 1;
+        const popupMaxAge = wave >= 20 ? 0.7 : (wave >= 12 ? 0.95 : 1.2);
+        const popupCap = wave >= 20 ? 6 : (wave >= 12 ? 10 : 16);
+        this.scorePopups.push({ el, age: 0, maxAge: popupMaxAge });
+        while (this.scorePopups.length > popupCap) {
+            const old = this.scorePopups.shift();
+            old.el.remove();
+        }
     }
 
     _worldToScreen(worldPos) {

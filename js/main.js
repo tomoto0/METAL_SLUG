@@ -767,6 +767,10 @@ function gameLoop(timestamp) {
         const geoCount = renderer.info.memory.geometries;
         const texCount = renderer.info.memory.textures;
         const renderCalls = renderer.info.render.calls;
+        // WebGLProgram は three.js のプログラムキャッシュに残り続け、
+        // material が解放されても一定数残留する。長時間プレイで増えていくと
+        // GPU ドライバ側の VRAM 圧迫 + シェーダコンパイル時のスパイクの原因となる。
+        const programCount = (renderer.info.programs && renderer.info.programs.length) || 0;
         // Chrome は performance.memory.usedJSHeapSize を MB 単位で取得できる。
         // 他ブラウザでは undefined のため、その場合はリソース数のみで判定する。
         const heapMB = (performance && performance.memory && performance.memory.usedJSHeapSize)
@@ -779,17 +783,21 @@ function gameLoop(timestamp) {
         const HIGH_TEX     = onCooldown ? 200  : 250;
         const HIGH_CALLS   = onCooldown ? 600  : 720;
         const HIGH_HEAP_MB = onCooldown ? 700  : 900;
+        const HIGH_PROG    = onCooldown ? 90   : 110;
         const CRIT_GEO     = onCooldown ? 1600 : 1850;
         const CRIT_TEX     = onCooldown ? 320  : 390;
         const CRIT_CALLS   = onCooldown ? 820  : 950;
         const CRIT_HEAP_MB = onCooldown ? 1200 : 1500;
+        const CRIT_PROG    = onCooldown ? 130  : 160;
 
         const isHigh =
             geoCount > HIGH_GEO || texCount > HIGH_TEX ||
-            renderCalls > HIGH_CALLS || (heapMB > 0 && heapMB > HIGH_HEAP_MB);
+            renderCalls > HIGH_CALLS || (heapMB > 0 && heapMB > HIGH_HEAP_MB) ||
+            programCount > HIGH_PROG;
         const isCritical =
             geoCount > CRIT_GEO || texCount > CRIT_TEX ||
-            renderCalls > CRIT_CALLS || (heapMB > 0 && heapMB > CRIT_HEAP_MB);
+            renderCalls > CRIT_CALLS || (heapMB > 0 && heapMB > CRIT_HEAP_MB) ||
+            programCount > CRIT_PROG;
 
         if (isCritical) {
             memPressureLevel = 2;

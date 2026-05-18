@@ -1179,6 +1179,15 @@ export class Boss {
 
         // ダメージ煙トレイル
         this._updateDamageSmoke(dt);
+
+        // 生成済みエフェクト追跡配列のトリム。effectSink 側で destroy 済みのものは
+        // alive=false になっているので、参照を切ってクロージャの GC を促す。
+        // 2 秒に 1 回だけ走らせる（毎フレームだと長戦闘で配列スキャンが効いてくる）。
+        this._spawnedTrimTimer = (this._spawnedTrimTimer || 0) + dt;
+        if (this._spawnedTrimTimer >= 2.0 && this._spawnedEffects && this._spawnedEffects.length > 0) {
+            this._spawnedTrimTimer = 0;
+            this._spawnedEffects = this._spawnedEffects.filter(e => e && e.alive);
+        }
     }
 
     _updateDamageSmoke(dt) {
