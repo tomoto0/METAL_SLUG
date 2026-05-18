@@ -6,18 +6,24 @@ import { Explosion } from './Explosion.js';
  * ボスエネミー — Metal Slug風の巨大敵
  *
  * subType:
- *   'di_cokka'  — 中ボス: 巨大装甲戦車（Wave 4）
- *                  大きなキャタピラ、二連主砲、サイドミサイルポッド
- *                  パーツ破壊あり（装甲→砲塔→コア）
+ *   'di_cokka'    — 中ボス: 巨大装甲戦車（Wave 4）
+ *                    大きなキャタピラ、二連主砲、サイドミサイルポッド
+ *                    パーツ破壊あり（装甲→砲塔→コア）
  *
- *   'tani_oh'   — 大ボス: 巨大飛行メカ（Wave 8/12/16/20）
- *                  ホバリング巨大機体、大型レーザー砲、ミサイル斉射
- *                  3段階フェーズ変化
+ *   'tani_oh'     — 大ボス: 巨大飛行メカ（Wave 8/12/16/20）
+ *                    ホバリング巨大機体、大型レーザー砲、ミサイル斉射
+ *                    3段階フェーズ変化
  *
- *   'hi_do'     — 最終ボス: 巨大攻撃ヘリ（Wave 24/28）
- *                  二重反転メインローター + テールローター、ベリーターレット、
- *                  翼端ミサイルポッド、爆弾倉、双発エンジン。Metal Slug X の
- *                  伝説的最終ボス "Hi-Do" を再現した大型筐体ボス。
+ *   'hi_do'       — 最終ボス: 巨大攻撃ヘリ（Wave 24/28）
+ *                    二重反転メインローター + テールローター、ベリーターレット、
+ *                    翼端ミサイルポッド、爆弾倉、双発エンジン。Metal Slug X の
+ *                    伝説的最終ボス "Hi-Do" を再現した大型筐体ボス。
+ *
+ *   'iron_nokana' — 超大型ボス: 多砲塔重戦車（Wave 32 / Wave 36 最終）
+ *                    8 輪転輪 x 左右、中央主砲塔（連装大口径）、左右副砲塔（4 連機関砲）、
+ *                    後部垂直発射ミサイルサイロ、中央指揮塔（サーチライト）、
+ *                    前面スパイクラム。3 段階フェーズ変化＋突進攻撃。
+ *                    Metal Slug 2/X の Iron Nokana へのオマージュ。
  */
 export class Boss {
     constructor(scene, options = {}) {
@@ -42,6 +48,11 @@ export class Boss {
             this.scoreValue = 80000;
             this.damage = 32;
             this.speed = 3.4;
+        } else if (this.subType === 'iron_nokana') {
+            this.maxHp = options.hp || 5000;
+            this.scoreValue = 150000;
+            this.damage = 40;
+            this.speed = 2.2;
         } else if (this.subType === 'tani_oh') {
             this.maxHp = options.hp || 800;
             this.scoreValue = 50000;
@@ -95,6 +106,8 @@ export class Boss {
         // モデル構築
         if (this.subType === 'hi_do') {
             this._buildHiDo();
+        } else if (this.subType === 'iron_nokana') {
+            this._buildIronNokana();
         } else if (this.subType === 'tani_oh') {
             this._buildTaniOh();
         } else {
@@ -1141,6 +1154,8 @@ export class Boss {
 
         if (this.subType === 'hi_do') {
             this._updateHiDo(dt, playerPos);
+        } else if (this.subType === 'iron_nokana') {
+            this._updateIronNokana(dt, playerPos);
         } else if (this.subType === 'tani_oh') {
             this._updateTaniOh(dt, playerPos);
         } else {
@@ -1152,7 +1167,8 @@ export class Boss {
             this.flashTimer -= dt;
             if (this.flashTimer <= 0) {
                 const baseColor = this.subType === 'hi_do' ? 0x4F5B43
-                    : (this.subType === 'tani_oh' ? 0x47777C : 0x6F8E88);
+                    : (this.subType === 'iron_nokana' ? 0x303A2C
+                    : (this.subType === 'tani_oh' ? 0x47777C : 0x6F8E88));
                 this._setColor(this.hullMesh, baseColor);
             }
         }
@@ -1205,6 +1221,9 @@ export class Boss {
         if (this.subType === 'hi_do') {
             // Hi-Do: メインローター基部 / エンジン / 機尾根元 / 翼端ポッド
             localOffsets = [[-1.5, 2.5, 0], [-1.0, 2.1, -1.6], [-1.0, 2.1, 1.6], [-6, 1.6, 0], [0.3, -0.4, -4.3], [0.3, -0.4, 4.3]];
+        } else if (this.subType === 'iron_nokana') {
+            // Iron Nokana: 主砲塔 / 副砲塔 / 指揮塔 / ミサイルサイロ
+            localOffsets = [[0, 5.4, 0], [3.0, 4.8, -2.6], [3.0, 4.8, 2.6], [-2.6, 6.2, 0], [-4.6, 4.6, -1.4], [-4.6, 4.6, 1.4]];
         } else if (isAir) {
             localOffsets = [[-3, 1.0, -2], [-3, 1.0, 2], [-1, 2.0, 0], [2, 1.5, 1.5]];
         } else {
@@ -2879,5 +2898,652 @@ export class Boss {
             }
         }
         this._spawnedEffects = [];
+    }
+
+    /* ========================================================
+     *  IRON NOKANA - 超大型多砲塔重戦車（Wave 32 / 36）
+     *  Metal Slug 2 / X の Iron Nokana へのオマージュ。
+     *  巨大ハル + 中央主砲塔 + 左右副砲塔 + 後部ミサイルサイロ
+     *  + 指揮塔（サーチライト）+ 前面スパイクラム。
+     * ======================================================== */
+    _buildIronNokana() {
+        const C = {
+            hull:    0x3A4632,   // 暗いオリーブ（市街地迷彩）
+            hullHi:  0x5E6E54,
+            hullDk:  0x1B2018,
+            armor:   0x232A1F,
+            metal:   0x3B3D34,
+            metalDk: 0x18181A,
+            track:   0x0E0F08,
+            rust:    0x6E2A18,
+            spike:   0xC8B898,
+            red:     0xC8261B,
+            yellow:  0xE8C040,
+            light:   0xFFE0A0,
+            glass:   0x88BDDC,
+            sand:    0xB89A6E,
+        };
+
+        const hullMat = new THREE.MeshStandardMaterial({ color: C.hull, roughness: 0.7, metalness: 0.3 });
+        const hullHiMat = new THREE.MeshStandardMaterial({ color: C.hullHi, roughness: 0.55, metalness: 0.28 });
+        const armorMat = new THREE.MeshStandardMaterial({ color: C.armor, roughness: 0.62, metalness: 0.35 });
+        const metalMat = new THREE.MeshStandardMaterial({ color: C.metal, roughness: 0.38, metalness: 0.6 });
+        const metalDkMat = new THREE.MeshStandardMaterial({ color: C.metalDk, roughness: 0.4, metalness: 0.7 });
+
+        // === メインハル（巨大装甲ボックス） ===
+        const hullW = 14, hullH = 3.4, hullD = 6.2;
+        this.hullMesh = new THREE.Mesh(new THREE.BoxGeometry(hullW, hullH, hullD), hullMat);
+        this.hullMesh.position.y = 2.4;
+        this.hullMesh.castShadow = true;
+        this.group.add(this.hullMesh);
+
+        // 上面の傾斜装甲（明色ハイライト）
+        const topDeck = new THREE.Mesh(new THREE.BoxGeometry(hullW * 0.92, 0.55, hullD * 0.85), hullHiMat);
+        topDeck.position.set(0, 4.2, 0);
+        this.group.add(topDeck);
+
+        // 前面の傾斜装甲（クサビ型）
+        const frontGlacis = new THREE.Mesh(new THREE.BoxGeometry(0.85, 2.9, hullD * 0.96), armorMat);
+        frontGlacis.position.set(hullW / 2 + 0.05, 2.3, 0);
+        frontGlacis.rotation.z = -0.22;
+        this.group.add(frontGlacis);
+
+        // 後面ハル装甲
+        const rearArmor = new THREE.Mesh(new THREE.BoxGeometry(0.6, 2.6, hullD * 0.94), armorMat);
+        rearArmor.position.set(-hullW / 2 - 0.1, 2.3, 0);
+        this.group.add(rearArmor);
+
+        // === 巨大キャタピラ（左右） ===
+        for (const sideZ of [-1, 1]) {
+            const pod = new THREE.Group();
+
+            // 外殻トラック
+            const trackOuter = new THREE.Mesh(
+                new THREE.BoxGeometry(hullW + 0.6, 1.6, 1.0),
+                new THREE.MeshStandardMaterial({ color: C.track, roughness: 0.92, metalness: 0.2 })
+            );
+            trackOuter.position.y = 0.8;
+            trackOuter.castShadow = true;
+            pod.add(trackOuter);
+
+            // 内側トラックライン
+            const trackInner = new THREE.Mesh(
+                new THREE.BoxGeometry(hullW + 0.3, 1.1, 0.72),
+                new THREE.MeshStandardMaterial({ color: 0x080A05, roughness: 0.86, metalness: 0.2 })
+            );
+            trackInner.position.y = 0.8;
+            pod.add(trackInner);
+
+            // クローティース（上下に並ぶ）
+            const clawMat = new THREE.MeshStandardMaterial({ color: C.track, roughness: 0.95, metalness: 0.2 });
+            const clawGeo = new THREE.BoxGeometry(0.22, 0.18, 1.1);
+            for (let cx = -hullW / 2; cx <= hullW / 2; cx += 0.32) {
+                const top = new THREE.Mesh(clawGeo, clawMat);
+                top.position.set(cx, 1.66, 0);
+                pod.add(top);
+                const bot = new THREE.Mesh(clawGeo, clawMat);
+                bot.position.set(cx, -0.04, 0);
+                pod.add(bot);
+            }
+
+            // 巨大駆動輪 x 3（端と中央）
+            this.wheels = this.wheels || [];
+            const driveWheelMat = new THREE.MeshStandardMaterial({ color: C.metal, roughness: 0.4, metalness: 0.6 });
+            for (const dx of [-hullW / 2 + 0.6, 0, hullW / 2 - 0.6]) {
+                const wheel = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.85, 0.85, 0.28, 16),
+                    driveWheelMat
+                );
+                wheel.rotation.x = Math.PI / 2;
+                wheel.position.set(dx, 0.85, 0);
+                pod.add(wheel);
+                this.wheels.push(wheel);
+                // 駆動輪のスポーク表現（薄い円板を内側に）
+                const spoke = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.65, 0.65, 0.3, 8),
+                    new THREE.MeshStandardMaterial({ color: C.hullDk, roughness: 0.5, metalness: 0.5 })
+                );
+                spoke.rotation.x = Math.PI / 2;
+                spoke.position.set(dx, 0.85, 0);
+                pod.add(spoke);
+            }
+            // ロードホイール（小型多数）
+            for (let dx = -hullW / 2 + 1.5; dx <= hullW / 2 - 1.5; dx += 1.0) {
+                const rw = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.55, 0.55, 0.22, 12),
+                    driveWheelMat
+                );
+                rw.rotation.x = Math.PI / 2;
+                rw.position.set(dx, 0.65, 0);
+                pod.add(rw);
+                this.wheels.push(rw);
+            }
+
+            // サイドフェンダー（上部装甲スカート、リベット付き）
+            const fender = new THREE.Mesh(
+                new THREE.BoxGeometry(hullW + 0.4, 0.32, 1.05),
+                armorMat
+            );
+            fender.position.set(0, 1.78, 0);
+            pod.add(fender);
+            const rivetMat = new THREE.MeshStandardMaterial({ color: 0x96926A, metalness: 0.6, roughness: 0.4 });
+            for (let rx = -hullW / 2; rx <= hullW / 2; rx += 0.8) {
+                const rv = new THREE.Mesh(new THREE.SphereGeometry(0.07, 5, 4), rivetMat);
+                rv.position.set(rx, 1.9, 0);
+                pod.add(rv);
+            }
+
+            pod.position.set(0, 0, sideZ * (hullD / 2 + 0.3));
+            this.group.add(pod);
+        }
+
+        // === 前面スパイクラム（破壊装甲 = armorGroup に含める） ===
+        this.armorGroup = new THREE.Group();
+        const ramBase = new THREE.Mesh(
+            new THREE.BoxGeometry(0.7, 2.6, hullD * 1.05),
+            armorMat
+        );
+        ramBase.position.set(hullW / 2 + 0.55, 1.8, 0);
+        this.armorGroup.add(ramBase);
+        // スパイク（前方に突き出す円錐）
+        const spikeMat = new THREE.MeshStandardMaterial({ color: C.spike, roughness: 0.6, metalness: 0.18 });
+        for (let z = -2.6; z <= 2.6; z += 0.6) {
+            const spike = new THREE.Mesh(new THREE.ConeGeometry(0.18, 1.0, 6), spikeMat);
+            spike.position.set(hullW / 2 + 1.5, 1.8, z);
+            spike.rotation.z = -Math.PI / 2;
+            this.armorGroup.add(spike);
+        }
+        // 反乱軍の警告ストライプ（黄黒）
+        for (let i = 0; i < 6; i++) {
+            const stripe = new THREE.Mesh(
+                new THREE.PlaneGeometry(0.16, 2.4),
+                i % 2 === 0
+                    ? new THREE.MeshBasicMaterial({ color: 0x18180E })
+                    : new THREE.MeshBasicMaterial({ color: C.yellow })
+            );
+            stripe.position.set(hullW / 2 + 0.93, 1.8, -2.0 + i * 0.8);
+            stripe.rotation.y = -Math.PI / 2;
+            this.armorGroup.add(stripe);
+        }
+        this.group.add(this.armorGroup);
+
+        // === 中央主砲塔（巨大、破壊可能：turretMesh） ===
+        this.turretGroup = new THREE.Group();
+        this.turretGroup.position.set(-1.0, 4.5, 0);
+
+        // 砲塔基部
+        const turretBase = new THREE.Mesh(
+            new THREE.CylinderGeometry(2.2, 2.4, 0.42, 18),
+            armorMat
+        );
+        this.turretGroup.add(turretBase);
+
+        // 砲塔ドーム（破壊可能本体）
+        this.turretMesh = new THREE.Mesh(
+            new THREE.SphereGeometry(2.3, 22, 14, 0, Math.PI * 2, 0, Math.PI * 0.58),
+            new THREE.MeshStandardMaterial({ color: C.armor, roughness: 0.55, metalness: 0.3 })
+        );
+        this.turretMesh.scale.set(1.15, 0.78, 1.0);
+        this.turretMesh.position.y = 0.18;
+        this.turretMesh.castShadow = true;
+        this.turretGroup.add(this.turretMesh);
+
+        // 砲塔上部ハイライト
+        const turretHi = new THREE.Mesh(
+            new THREE.SphereGeometry(2.32, 18, 12, Math.PI * 0.1, Math.PI * 0.4, Math.PI * 0.05, Math.PI * 0.2),
+            new THREE.MeshStandardMaterial({ color: C.hullHi, roughness: 0.32, metalness: 0.25 })
+        );
+        turretHi.scale.copy(this.turretMesh.scale);
+        turretHi.position.copy(this.turretMesh.position);
+        this.turretGroup.add(turretHi);
+
+        // 連装大口径主砲（barrelGroup として保持）
+        this.barrelGroup = new THREE.Group();
+        const bigBarrelMat = new THREE.MeshStandardMaterial({ color: C.metal, roughness: 0.32, metalness: 0.68 });
+        for (const dy of [-0.35, 0.35]) {
+            const barrel = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.30, 0.34, 5.4, 12),
+                bigBarrelMat
+            );
+            barrel.rotation.z = Math.PI / 2;
+            barrel.position.set(3.2, 0.42 + dy, 0);
+            this.barrelGroup.add(barrel);
+            // マズルブレーキ
+            const mb = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.42, 0.34, 0.5, 12),
+                bigBarrelMat
+            );
+            mb.rotation.z = Math.PI / 2;
+            mb.position.set(5.85, 0.42 + dy, 0);
+            this.barrelGroup.add(mb);
+            // 補強リング
+            for (const bx of [1.8, 2.6, 3.4, 4.2]) {
+                const ring = new THREE.Mesh(
+                    new THREE.TorusGeometry(0.34, 0.05, 6, 12),
+                    new THREE.MeshStandardMaterial({ color: C.hullDk, roughness: 0.35, metalness: 0.5 })
+                );
+                ring.rotation.y = Math.PI / 2;
+                ring.position.set(bx, 0.42 + dy, 0);
+                this.barrelGroup.add(ring);
+            }
+        }
+        // リコイルハウジング
+        const recoilHousing = new THREE.Mesh(
+            new THREE.BoxGeometry(1.4, 1.1, 1.6),
+            new THREE.MeshStandardMaterial({ color: C.armor, roughness: 0.55, metalness: 0.32 })
+        );
+        recoilHousing.position.set(1.5, 0.4, 0);
+        this.barrelGroup.add(recoilHousing);
+        this.turretGroup.add(this.barrelGroup);
+
+        // 砲塔上の指揮塔 + サーチライト
+        const cTower = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.5, 0.55, 0.95, 12),
+            armorMat
+        );
+        cTower.position.set(-1.0, 1.0, 0);
+        this.turretGroup.add(cTower);
+        const cWindow = new THREE.Mesh(
+            new THREE.BoxGeometry(0.6, 0.32, 0.92),
+            new THREE.MeshStandardMaterial({ color: C.glass, transparent: true, opacity: 0.7,
+                emissive: 0x112030, emissiveIntensity: 0.4, roughness: 0.15, metalness: 0.15 })
+        );
+        cWindow.position.set(-1.0, 1.15, 0);
+        this.turretGroup.add(cWindow);
+        // サーチライト（プレイヤー側を向く強光）
+        const searchHousing = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.22, 0.28, 0.34, 12),
+            metalDkMat
+        );
+        searchHousing.rotation.z = Math.PI / 2 - 0.2;
+        searchHousing.position.set(-0.4, 1.42, 0);
+        this.turretGroup.add(searchHousing);
+        const searchLens = new THREE.Mesh(
+            new THREE.CircleGeometry(0.20, 14),
+            new THREE.MeshBasicMaterial({ color: C.light, transparent: true, opacity: 0.95,
+                blending: THREE.AdditiveBlending, depthWrite: false })
+        );
+        searchLens.position.set(-0.18, 1.34, 0);
+        searchLens.rotation.y = Math.PI / 2;
+        this.turretGroup.add(searchLens);
+
+        // 反乱軍の白円＋赤三角マーク（砲塔側面）
+        for (const z of [-1.6, 1.6]) {
+            const disc = new THREE.Mesh(
+                new THREE.CircleGeometry(0.7, 22),
+                new THREE.MeshBasicMaterial({ color: 0xE8DEB4, side: THREE.DoubleSide })
+            );
+            disc.position.set(-0.6, 0.5, z);
+            disc.rotation.y = z > 0 ? 0 : Math.PI;
+            this.turretGroup.add(disc);
+            const triShape = new THREE.Shape();
+            triShape.moveTo(-0.5, 0.28);
+            triShape.lineTo(0.5, 0.28);
+            triShape.lineTo(0, -0.5);
+            triShape.closePath();
+            const tri = new THREE.Mesh(
+                new THREE.ShapeGeometry(triShape),
+                new THREE.MeshStandardMaterial({ color: C.red, side: THREE.DoubleSide, roughness: 0.55,
+                    emissive: 0x361010, emissiveIntensity: 0.22 })
+            );
+            tri.position.set(-0.6, 0.5, z + (z > 0 ? 0.005 : -0.005));
+            tri.rotation.y = z > 0 ? 0 : Math.PI;
+            this.turretGroup.add(tri);
+        }
+
+        this.group.add(this.turretGroup);
+
+        // === 左右副砲塔（4 連装機関砲） — 前方寄り、armorGroup に含めて装甲破壊で消える ===
+        this.sideTurrets = [];
+        for (const sz of [-1, 1]) {
+            const sub = new THREE.Group();
+            sub.position.set(2.5, 4.5, sz * (hullD / 2 - 0.3));
+
+            const subBase = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.85, 0.95, 0.32, 14),
+                armorMat
+            );
+            sub.add(subBase);
+            const subDome = new THREE.Mesh(
+                new THREE.SphereGeometry(0.85, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.55),
+                new THREE.MeshStandardMaterial({ color: C.armor, roughness: 0.5, metalness: 0.32 })
+            );
+            subDome.scale.set(1.1, 0.7, 1.0);
+            subDome.position.y = 0.14;
+            sub.add(subDome);
+            // 4 連装機関砲身
+            const subBarrelMat = new THREE.MeshStandardMaterial({ color: C.metal, roughness: 0.3, metalness: 0.7 });
+            for (const dx of [-0.12, 0.12]) {
+                for (const dy of [-0.12, 0.12]) {
+                    const b = new THREE.Mesh(
+                        new THREE.CylinderGeometry(0.06, 0.07, 1.6, 8),
+                        subBarrelMat
+                    );
+                    b.rotation.z = Math.PI / 2;
+                    b.position.set(1.1 + dx, 0.18 + dy, 0);
+                    sub.add(b);
+                }
+            }
+            // 副砲塔のリコイル
+            const sRec = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.4, 0.45), armorMat);
+            sRec.position.set(0.5, 0.18, 0);
+            sub.add(sRec);
+            // マーキング
+            const subDisc = new THREE.Mesh(
+                new THREE.CircleGeometry(0.34, 16),
+                new THREE.MeshBasicMaterial({ color: 0xE8DEB4, side: THREE.DoubleSide })
+            );
+            subDisc.position.set(-0.3, 0.18, sz > 0 ? 0.86 : -0.86);
+            subDisc.rotation.y = sz > 0 ? 0 : Math.PI;
+            sub.add(subDisc);
+
+            this.armorGroup.add(sub);
+            this.sideTurrets.push(sub);
+        }
+
+        // === 後部ミサイルサイロ（6 連） ===
+        this.missileSilos = [];
+        const siloMat = new THREE.MeshStandardMaterial({ color: C.metalDk, roughness: 0.5, metalness: 0.55 });
+        for (let i = 0; i < 6; i++) {
+            const col = i % 3;
+            const row = Math.floor(i / 3);
+            const silo = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.42, 0.42, 1.6, 14),
+                siloMat
+            );
+            silo.position.set(
+                -hullW / 2 + 1.0 + col * 0.95,
+                5.0,
+                (row === 0 ? -1.4 : 1.4)
+            );
+            this.group.add(silo);
+            this.missileSilos.push(silo);
+            // サイロ上部のキャップ（黄色注意マーク）
+            const cap = new THREE.Mesh(
+                new THREE.CircleGeometry(0.42, 14),
+                new THREE.MeshStandardMaterial({ color: C.yellow, side: THREE.DoubleSide,
+                    emissive: 0x382808, emissiveIntensity: 0.15 })
+            );
+            cap.rotation.x = -Math.PI / 2;
+            cap.position.set(silo.position.x, 5.81, silo.position.z);
+            this.group.add(cap);
+        }
+
+        // === 排気煙突（後部両側、橙発光） ===
+        for (const z of [-2.6, 2.6]) {
+            const stack = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.32, 0.4, 1.4, 12),
+                new THREE.MeshStandardMaterial({ color: C.rust, roughness: 0.85, metalness: 0.2 })
+            );
+            stack.position.set(-hullW / 2 + 0.6, 4.6, z);
+            this.group.add(stack);
+            // 排気グロー
+            const glow = new THREE.Mesh(
+                new THREE.SphereGeometry(0.28, 10, 8),
+                new THREE.MeshBasicMaterial({ color: 0xFF6020, transparent: true, opacity: 0.6,
+                    blending: THREE.AdditiveBlending, depthWrite: false })
+            );
+            glow.position.set(-hullW / 2 + 0.6, 5.4, z);
+            this.group.add(glow);
+        }
+
+        // === 車体側面の白い大文字ナンバー（イラスト的） ===
+        for (const sz of [-1, 1]) {
+            const num = new THREE.Mesh(
+                new THREE.BoxGeometry(1.2, 1.0, 0.04),
+                new THREE.MeshBasicMaterial({ color: 0xE8DEB4 })
+            );
+            num.position.set(-3.5, 3.0, sz * (hullD / 2 + 0.05));
+            num.rotation.y = sz > 0 ? 0 : Math.PI;
+            this.group.add(num);
+            // 大型の赤三角マーク
+            const triShape = new THREE.Shape();
+            triShape.moveTo(-0.8, 0.45);
+            triShape.lineTo(0.8, 0.45);
+            triShape.lineTo(0, -0.8);
+            triShape.closePath();
+            const tri = new THREE.Mesh(
+                new THREE.ShapeGeometry(triShape),
+                new THREE.MeshStandardMaterial({ color: C.red, side: THREE.DoubleSide, roughness: 0.5,
+                    emissive: 0x361010, emissiveIntensity: 0.22 })
+            );
+            tri.position.set(0, 3.0, sz * (hullD / 2 + 0.08));
+            tri.rotation.y = sz > 0 ? 0 : Math.PI;
+            this.group.add(tri);
+        }
+
+        // === 砲塔の旗（後部、長い反乱軍旗） ===
+        const flagPole = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.04, 0.06, 2.5, 6),
+            metalMat
+        );
+        flagPole.position.set(-2.4, 6.0, 0);
+        this.group.add(flagPole);
+        const flag = new THREE.Mesh(
+            new THREE.PlaneGeometry(1.4, 0.85),
+            new THREE.MeshStandardMaterial({ color: C.red, side: THREE.DoubleSide, roughness: 0.75 })
+        );
+        flag.position.set(-2.7, 6.6, 0);
+        flag.rotation.y = Math.PI / 2;
+        this.group.add(flag);
+        this._ironFlag = flag;
+
+        // === ヘッドライト（前面装甲、黄色光） ===
+        for (const z of [-2.4, 2.4]) {
+            const hl = new THREE.Mesh(
+                new THREE.SphereGeometry(0.22, 10, 8),
+                new THREE.MeshStandardMaterial({ color: C.light, emissive: C.light,
+                    emissiveIntensity: 0.5, roughness: 0.35 })
+            );
+            hl.position.set(hullW / 2 + 0.4, 2.4, z);
+            this.group.add(hl);
+        }
+    }
+
+    /* ========================================================
+     *  IRON NOKANA - UPDATE
+     * ======================================================== */
+    _updateIronNokana(dt, playerPos) {
+        // 砲塔をプレイヤーに向ける（ローカル）
+        if (this.turretGroup && playerPos && !this.turretDestroyed) {
+            const turretWorldPos = new THREE.Vector3();
+            this.turretGroup.getWorldPosition(turretWorldPos);
+            const dir = new THREE.Vector3().subVectors(playerPos, turretWorldPos);
+            dir.y = 0;
+            if (dir.lengthSq() > 0.1) {
+                const worldAngle = Math.atan2(-dir.z, dir.x);
+                const targetLocal = worldAngle - this.group.rotation.y;
+                this.turretGroup.rotation.y += (targetLocal - this.turretGroup.rotation.y) * 0.04;
+            }
+        }
+
+        // 旗の揺れ
+        if (this._ironFlag) {
+            this._ironFlag.rotation.z = Math.sin(this.bobPhase * 4) * 0.05;
+        }
+
+        // 登場移動（前方から接近）
+        if (!this.entryComplete) {
+            if (this.group.position.z > this.targetZ) {
+                this.group.position.z -= this.speed * 1.8 * dt;
+            } else {
+                this.entryComplete = true;
+            }
+            return;
+        }
+
+        this.bobPhase += dt * 0.8;
+
+        // フェーズ判定
+        const hpRatio = this.hp / this.maxHp;
+        const newPhase = hpRatio > 0.6 ? 1 : (hpRatio > 0.3 ? 2 : 3);
+        this.phase = newPhase;
+
+        // 突進攻撃（フェーズ 3 のみ、HP 30% 未満で頻度上昇）
+        if (this.charging) {
+            this.chargeTimer -= dt;
+            this.group.position.z -= this.chargeSpeed * dt;
+            // 突進中もプレイヤーへ寄せる
+            const aimDx = playerPos.x - this.group.position.x;
+            this.group.position.x += Math.sign(aimDx) * Math.min(Math.abs(aimDx), this.speed * 1.4 * dt);
+            // 転輪を回転
+            this.wheels && this.wheels.forEach(w => { w.rotation.y += dt * 12; });
+            if (this.chargeTimer <= 0 || this.group.position.z < playerPos.z - 16) {
+                this.charging = false;
+                this.targetZ = playerPos.z + 18 + Math.random() * 6;
+            }
+        } else {
+            // 通常: プレイヤー前方を保つ + 横ストレーフ
+            const desiredZ = playerPos.z + 18;
+            const diff = desiredZ - this.group.position.z;
+            if (Math.abs(diff) > 0.5) {
+                const zSpd = diff < 0 ? this.speed * 1.4 : this.speed * 0.4;
+                this.group.position.z += Math.sign(diff) * zSpd * dt;
+            }
+            // 左右ストレイフ
+            const targetX = playerPos.x + Math.sin(this.bobPhase) * 10;
+            const dxX = targetX - this.group.position.x;
+            this.group.position.x += Math.sign(dxX) * Math.min(Math.abs(dxX), this.speed * 1.0 * dt);
+            // 転輪
+            this.wheels && this.wheels.forEach(w => { w.rotation.y += dt * 4; });
+        }
+
+        // 攻撃タイマー
+        this.attackTimer += dt;
+        const cooldown = this.phase >= 3 ? 1.3 : (this.phase >= 2 ? 1.7 : 2.2);
+        if (this.attackTimer >= cooldown && playerPos) {
+            this.attackTimer = 0;
+            this._executeIronNokanaAttack(playerPos);
+        }
+
+        // バースト射撃（副砲塔の機関砲）
+        if (this.burstCount > 0) {
+            this.burstTimer -= dt;
+            if (this.burstTimer <= 0 && playerPos) {
+                this.burstTimer = 0.06;
+                this.burstCount--;
+                this._fireIronNokanaSideTurrets(playerPos);
+            }
+        }
+    }
+
+    _executeIronNokanaAttack(playerPos) {
+        const roll = Math.random();
+        if (this.phase >= 3) {
+            // フェーズ 3: 突進 / 主砲 / ミサイル / バースト 全部
+            if (!this.charging && roll < 0.22) {
+                this.charging = true;
+                this.chargeTimer = 2.2;
+                this.chargeSpeed = 22;
+            } else if (!this.turretDestroyed && roll < 0.5) {
+                this._fireIronNokanaMainCannon(playerPos);
+            } else if (roll < 0.78) {
+                this._fireIronNokanaMissileSalvo(playerPos);
+            } else {
+                this.burstCount = 14 + Math.floor(Math.random() * 6);
+                this.burstTimer = 0;
+            }
+        } else if (this.phase >= 2) {
+            // フェーズ 2: 主砲 / ミサイル / バースト
+            if (!this.turretDestroyed && roll < 0.4) {
+                this._fireIronNokanaMainCannon(playerPos);
+            } else if (roll < 0.7) {
+                this._fireIronNokanaMissileSalvo(playerPos);
+            } else {
+                this.burstCount = 10 + Math.floor(Math.random() * 6);
+                this.burstTimer = 0;
+            }
+        } else {
+            // フェーズ 1: 主砲 + 副砲塔
+            if (!this.turretDestroyed && roll < 0.55) {
+                this._fireIronNokanaMainCannon(playerPos);
+            } else {
+                this.burstCount = 8 + Math.floor(Math.random() * 5);
+                this.burstTimer = 0;
+            }
+        }
+    }
+
+    _fireIronNokanaMainCannon(playerPos) {
+        if (this.turretDestroyed || !this.turretGroup) return;
+        const turretWorldPos = new THREE.Vector3();
+        this.turretGroup.getWorldPosition(turretWorldPos);
+        const dir = new THREE.Vector3().subVectors(playerPos, turretWorldPos);
+        dir.y = 0.04;
+        dir.normalize();
+        const perp = new THREE.Vector3(-dir.z, 0, dir.x).normalize();
+        for (const side of [-0.35, 0.35]) {
+            const muzzlePos = turretWorldPos.clone()
+                .addScaledVector(dir, 6.0)
+                .addScaledVector(perp, side);
+            muzzlePos.y += 0.45 + side;
+            const shell = new Projectile(this.scene, {
+                position: muzzlePos,
+                direction: dir.clone(),
+                speed: 32,
+                damage: 36,
+                owner: 'enemy',
+                type: 'cannon',
+                maxDistance: 110,
+            });
+            this.projectiles.push(shell);
+            this._spawnEffect(new Explosion(this.scene, muzzlePos, { type: 'muzzle', color: 0xFF7020 }));
+        }
+    }
+
+    _fireIronNokanaSideTurrets(playerPos) {
+        if (this.armorDestroyed) return;
+        for (const sub of (this.sideTurrets || [])) {
+            const subWorldPos = new THREE.Vector3();
+            sub.getWorldPosition(subWorldPos);
+            const dir = new THREE.Vector3().subVectors(playerPos, subWorldPos);
+            dir.y = 0.05;
+            dir.x += (Math.random() - 0.5) * 0.1;
+            dir.z += (Math.random() - 0.5) * 0.1;
+            dir.normalize();
+            const muzzlePos = subWorldPos.clone().addScaledVector(dir, 1.4);
+            const bullet = new Projectile(this.scene, {
+                position: muzzlePos,
+                direction: dir,
+                speed: 38,
+                damage: 7,
+                owner: 'enemy',
+                type: 'bullet',
+                maxDistance: 90,
+            });
+            this.projectiles.push(bullet);
+        }
+    }
+
+    _fireIronNokanaMissileSalvo(playerPos) {
+        // 6 連装サイロから時間差で 6 発を撃ち上げ → 弧を描いてプレイヤーへ
+        this._attackTimers = this._attackTimers || [];
+        for (let i = 0; i < 6; i++) {
+            const tid = setTimeout(() => {
+                this._attackTimers && this._attackTimers.splice(this._attackTimers.indexOf(tid), 1);
+                if (!this.alive) return;
+                const silo = this.missileSilos[i];
+                if (!silo) return;
+                const muzzlePos = new THREE.Vector3();
+                silo.getWorldPosition(muzzlePos);
+                muzzlePos.y += 1.0;
+                const dir = new THREE.Vector3().subVectors(playerPos, muzzlePos);
+                dir.y += 2.5; // 上向きアーク
+                dir.normalize();
+                const missile = new Projectile(this.scene, {
+                    position: muzzlePos,
+                    direction: dir,
+                    speed: 16,
+                    damage: 22,
+                    owner: 'enemy',
+                    type: 'rocket',
+                    maxDistance: 90,
+                    gravity: 4,
+                });
+                this.projectiles.push(missile);
+                this._spawnEffect(new Explosion(this.scene, muzzlePos, { type: 'muzzle', color: 0xFFC020 }));
+            }, i * 130);
+            this._attackTimers.push(tid);
+        }
     }
 }

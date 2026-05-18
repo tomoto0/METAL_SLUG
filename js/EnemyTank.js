@@ -4,7 +4,7 @@ import { Projectile } from './Projectile.js';
 
 /**
  * 敵戦車
- * subType: 'light' | 'heavy' | 'flak' | 'siege'
+ * subType: 'light' | 'heavy' | 'flak' | 'siege' | 'urban_tank' (Wave 30+ 中東市街地)
  * 茶色/ダークグレー系、プレイヤー戦車より大きい
  */
 export class EnemyTank extends Enemy {
@@ -16,10 +16,11 @@ export class EnemyTank extends Enemy {
         // Metal Slug 戦車スコア: Di-Cokka 相当の light=1500, heavy/Hairbuster 相当=3000
         // HP: キャノン 3〜4 発、もしくはバルカン連射で処理できる目安
         const SPECS = {
-            light: { hp: 70,  speed: 2.0, scoreValue: 1500, fireRate: 2.0, damage: 15 },
-            heavy: { hp: 140, speed: 1.0, scoreValue: 3000, fireRate: 1.5, damage: 20 },
-            flak:  { hp: 120, speed: 1.35, scoreValue: 2600, fireRate: 0.95, damage: 8  },
-            siege: { hp: 230, speed: 0.75, scoreValue: 4500, fireRate: 2.15, damage: 30 },
+            light:      { hp: 70,  speed: 2.0,  scoreValue: 1500, fireRate: 2.0,  damage: 15 },
+            heavy:      { hp: 140, speed: 1.0,  scoreValue: 3000, fireRate: 1.5,  damage: 20 },
+            flak:       { hp: 120, speed: 1.35, scoreValue: 2600, fireRate: 0.95, damage: 8  },
+            siege:      { hp: 230, speed: 0.75, scoreValue: 4500, fireRate: 2.15, damage: 30 },
+            urban_tank: { hp: 320, speed: 1.10, scoreValue: 6500, fireRate: 1.45, damage: 26 },
         };
         const spec = SPECS[subType] || SPECS.light;
 
@@ -30,7 +31,7 @@ export class EnemyTank extends Enemy {
 
         // AI
         this.aiState = 'advance';
-        this.attackRange = subType === 'siege' ? 72 : (subType === 'heavy' ? 60 : (subType === 'flak' ? 90 : 44));
+        this.attackRange = subType === 'urban_tank' ? 80 : (subType === 'siege' ? 72 : (subType === 'heavy' ? 60 : (subType === 'flak' ? 90 : 44)));
         // Vulcan（散弾型機関砲）はメイン砲より遠くから撃てる
         this.vulcanRange = subType === 'heavy' ? 155 : 0;
         this.movePauseTimer = 0;
@@ -46,24 +47,25 @@ export class EnemyTank extends Enemy {
     }
 
     _buildModel() {
-        const isHeavy = this.subType === 'heavy' || this.subType === 'siege' || this.subType === 'flak';
+        const isUrban = this.subType === 'urban_tank';
+        const isHeavy = isUrban || this.subType === 'heavy' || this.subType === 'siege' || this.subType === 'flak';
         const isSiege = this.subType === 'siege';
         const isFlak = this.subType === 'flak';
-        const scale = isSiege ? 1.62 : (this.subType === 'heavy' ? 1.35 : (isFlak ? 1.18 : 1.0));
+        const scale = isUrban ? 1.75 : (isSiege ? 1.62 : (this.subType === 'heavy' ? 1.35 : (isFlak ? 1.18 : 1.0)));
 
         const C = {
-            hull:       isSiege ? 0x3B3E44 : (isFlak ? 0x4E5A4F : (isHeavy ? 0x4E5530 : 0x6A7548)),
-            hullHi:     isSiege ? 0x777D86 : (isFlak ? 0x8EA07A : (isHeavy ? 0x8A9560 : 0xA0AA72)),
-            hullDark:   isSiege ? 0x22262B : (isFlak ? 0x29382E : (isHeavy ? 0x2C321A : 0x3A4225)),
-            turret:     isSiege ? 0x313640 : (isFlak ? 0x3E513F : (isHeavy ? 0x424A28 : 0x5A6438)),
+            hull:       isUrban ? 0x2D3A2C : (isSiege ? 0x3B3E44 : (isFlak ? 0x4E5A4F : (isHeavy ? 0x4E5530 : 0x6A7548))),
+            hullHi:     isUrban ? 0x5E6E5A : (isSiege ? 0x777D86 : (isFlak ? 0x8EA07A : (isHeavy ? 0x8A9560 : 0xA0AA72))),
+            hullDark:   isUrban ? 0x171F18 : (isSiege ? 0x22262B : (isFlak ? 0x29382E : (isHeavy ? 0x2C321A : 0x3A4225))),
+            turret:     isUrban ? 0x252F25 : (isSiege ? 0x313640 : (isFlak ? 0x3E513F : (isHeavy ? 0x424A28 : 0x5A6438))),
             metal:      0x55584C,
             metalDk:    0x2A2C24,
             track:      0x16180F,
             trackInner: 0x0A0B07,
-            rust:       0x7E4520,
-            accent:     isSiege ? 0xE0A72A : (isFlak ? 0x2F9C64 : (isHeavy ? 0xC42818 : 0xC4A030)),
+            rust:       isUrban ? 0x6A2E18 : 0x7E4520,
+            accent:     isUrban ? 0xCA1F1A : (isSiege ? 0xE0A72A : (isFlak ? 0x2F9C64 : (isHeavy ? 0xC42818 : 0xC4A030))),
             light:      0xFFD860,
-            mark:       0xE8C040,
+            mark:       isUrban ? 0xE8E0C0 : 0xE8C040,
             star:       0xC42020,
             ringW:      0xE8DEB4,
         };
@@ -439,6 +441,136 @@ export class EnemyTank extends Enemy {
             }
         }
 
+        if (isUrban) {
+            // 都市型大型戦車 (Iron Vehicle 風): 砲塔上の二連同軸機関砲 + ハッチ周りの土嚢
+            // + サイドの予備ジェリカン + 煙幕弾発射機 で、市街地戦らしいゴテッとしたシルエットに。
+            const slabMat = new THREE.MeshStandardMaterial({ color: C.hullDark, roughness: 0.62, metalness: 0.38 });
+            const sandMat = new THREE.MeshStandardMaterial({ color: 0xB89A6E, roughness: 0.92, metalness: 0.05 });
+            const canMat  = new THREE.MeshStandardMaterial({ color: 0x4A4A35, roughness: 0.6,  metalness: 0.35 });
+            const tubeMat = new THREE.MeshStandardMaterial({ color: 0x1F1F1A, roughness: 0.45, metalness: 0.55 });
+            const subBarrelMat = new THREE.MeshStandardMaterial({ color: C.metal, roughness: 0.32, metalness: 0.62 });
+
+            // 砲塔上の二連同軸機関砲（プレイヤー側を向く小型砲塔）
+            const miniBase = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.42 * scale, 0.46 * scale, 0.22 * scale, 12),
+                slabMat
+            );
+            miniBase.position.set(-0.05 * scale, 0.72 * scale, 0);
+            this.turretGroup.add(miniBase);
+            const miniDome = new THREE.Mesh(
+                new THREE.SphereGeometry(0.42 * scale, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.55),
+                new THREE.MeshStandardMaterial({ color: C.turret, roughness: 0.5, metalness: 0.28 })
+            );
+            miniDome.position.set(-0.05 * scale, 0.83 * scale, 0);
+            this.turretGroup.add(miniDome);
+            for (const dz of [-0.1, 0.1]) {
+                const barrel = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.05 * scale, 0.06 * scale, 1.1 * scale, 8),
+                    subBarrelMat
+                );
+                barrel.rotation.z = Math.PI / 2;
+                barrel.position.set(0.42 * scale, 0.78 * scale, dz * scale);
+                this.turretGroup.add(barrel);
+            }
+
+            // 砲塔背面の煙幕弾発射機（4 連装）
+            const launcherMount = new THREE.Mesh(
+                new THREE.BoxGeometry(0.34 * scale, 0.22 * scale, 0.68 * scale),
+                slabMat
+            );
+            launcherMount.position.set(-0.6 * scale, 0.42 * scale, 0);
+            this.turretGroup.add(launcherMount);
+            for (let i = 0; i < 4; i++) {
+                const tube = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.07 * scale, 0.07 * scale, 0.34 * scale, 8),
+                    tubeMat
+                );
+                tube.rotation.z = Math.PI / 8;
+                tube.position.set(-0.5 * scale, 0.56 * scale, (-0.24 + i * 0.16) * scale);
+                this.turretGroup.add(tube);
+            }
+
+            // ハッチ周りの土嚢（即席装甲）
+            for (let i = 0; i < 5; i++) {
+                const ang = (i / 5) * Math.PI - Math.PI / 2;
+                const bag = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.16 * scale, 8, 6),
+                    sandMat
+                );
+                bag.scale.set(1.2, 0.6, 1.4);
+                bag.position.set(
+                    -0.4 * scale + Math.cos(ang) * 0.05 * scale,
+                    0.95 * scale,
+                    Math.sin(ang) * 0.5 * scale
+                );
+                this.turretGroup.add(bag);
+            }
+
+            // 車体側面のジェリカン列（左右）
+            for (const sideZ of [-1, 1]) {
+                for (let i = 0; i < 3; i++) {
+                    const can = new THREE.Mesh(
+                        new THREE.BoxGeometry(0.18 * scale, 0.36 * scale, 0.28 * scale),
+                        canMat
+                    );
+                    can.position.set(
+                        (-0.6 + i * 0.45) * scale,
+                        1.32 * scale,
+                        sideZ * 1.18 * scale
+                    );
+                    this.group.add(can);
+                    // ハンドル
+                    const handle = new THREE.Mesh(
+                        new THREE.TorusGeometry(0.05 * scale, 0.014 * scale, 4, 8, Math.PI),
+                        subBarrelMat
+                    );
+                    handle.position.set(
+                        (-0.6 + i * 0.45) * scale,
+                        1.52 * scale,
+                        sideZ * 1.18 * scale
+                    );
+                    handle.rotation.x = Math.PI / 2;
+                    this.group.add(handle);
+                }
+            }
+
+            // 砲塔横の予備車輪（実車にもよくある）
+            for (const sz of [-1, 1]) {
+                const spareWheel = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.32 * scale, 0.32 * scale, 0.12 * scale, 14),
+                    new THREE.MeshStandardMaterial({ color: 0x18180F, roughness: 0.85, metalness: 0.1 })
+                );
+                spareWheel.position.set(-0.45 * scale, 0.05 * scale, sz * 0.88 * scale);
+                this.turretGroup.add(spareWheel);
+            }
+
+            // 機体側面の白い指揮ナンバー（市街地戦らしいマーク）
+            const numMat = new THREE.MeshBasicMaterial({ color: C.ringW });
+            for (const z of [-1.12, 1.12]) {
+                const num = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.3 * scale, 0.32 * scale, 0.02 * scale),
+                    numMat
+                );
+                num.position.set(0.95 * scale, 1.5 * scale, z * scale);
+                num.rotation.y = z > 0 ? 0 : Math.PI;
+                this.group.add(num);
+            }
+
+            // 車体前面の追加スラットアーマー（細い縦バー、RPG防御用）
+            for (let i = 0; i < 6; i++) {
+                const bar = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.04 * scale, 0.85 * scale, 0.06 * scale),
+                    new THREE.MeshStandardMaterial({ color: C.metalDk, roughness: 0.6, metalness: 0.5 })
+                );
+                bar.position.set(
+                    2.05 * scale,
+                    1.45 * scale,
+                    (-0.55 + i * 0.22) * scale
+                );
+                this.group.add(bar);
+            }
+        }
+
         const accent = new THREE.Mesh(
             new THREE.BoxGeometry(0.08 * scale, 0.22 * scale, 0.92 * scale),
             new THREE.MeshStandardMaterial({ color: C.accent, roughness: 0.52, metalness: 0.1 })
@@ -744,6 +876,8 @@ export class EnemyTank extends Enemy {
             this._aiFlak(dt, dist, dirToCross, playerPos, elapsedTime);
         } else if (this.subType === 'siege') {
             this._aiSiege(dt, dist, dirToCross, playerPos, elapsedTime);
+        } else if (this.subType === 'urban_tank') {
+            this._aiUrban(dt, dist, dirToCross, playerPos, elapsedTime);
         } else {
             this._aiHeavy(dt, dist, dirToCross, playerPos, elapsedTime);
         }
@@ -836,6 +970,77 @@ export class EnemyTank extends Enemy {
                 this.movePhase = 'move';
                 this.movePauseTimer = 0;
             }
+        }
+    }
+
+    /**
+     * 都市型重戦車: 主砲 + 砲塔上の二連同軸機関砲を同時運用。
+     * heavy より長射程・低機動。主砲発射の合間に同軸機関砲のバースト射撃を入れる。
+     */
+    _aiUrban(dt, dist, dirCross, playerPos, elapsed) {
+        const bodyAngle = Math.atan2(-dirCross.z, dirCross.x);
+        this.group.rotation.y = bodyAngle;
+
+        // 距離別に動き分け
+        if (dist > this.attackRange * 0.9) {
+            this.aiState = 'advance';
+            this.group.position.add(dirCross.clone().multiplyScalar(this.speed * dt));
+        } else if (dist > this.attackRange * 0.45) {
+            // 砲撃ポジションキープ: ゆっくり横断
+            this.aiState = 'advance';
+            this.group.position.add(dirCross.clone().multiplyScalar(this.speed * 0.55 * dt));
+        } else {
+            // 至近距離: 一歩下がりつつ猛攻
+            this.aiState = 'attack';
+            this.group.position.add(dirCross.clone().multiplyScalar(-this.speed * 0.35 * dt));
+        }
+
+        if (dist < this.attackRange) {
+            // 主砲
+            this._fireCannon(playerPos, elapsed);
+            // 同軸機関砲（短い 3 発バースト、短いクールダウン）
+            this._fireUrbanCoaxBurst(playerPos, elapsed);
+        }
+    }
+
+    _fireUrbanCoaxBurst(playerPos, elapsed) {
+        // 1.0s 周期の同軸機関砲バースト
+        if (elapsed - (this._lastCoaxTime || 0) < 1.0) return;
+        this._lastCoaxTime = elapsed;
+        this._coaxBurstRemain = 3;
+        this._coaxBurstTimer = 0;
+        this._coaxBurstFire(playerPos);
+    }
+
+    _coaxBurstFire(playerPos) {
+        if ((this._coaxBurstRemain || 0) <= 0) return;
+        const muzzlePos = this.group.position.clone();
+        muzzlePos.y += 3.6;
+        const dir = new THREE.Vector3().subVectors(playerPos, muzzlePos);
+        dir.y = 0;
+        dir.x += (Math.random() - 0.5) * 0.08;
+        dir.z += (Math.random() - 0.5) * 0.08;
+        dir.normalize();
+        for (const dy of [-0.18, 0.18]) {
+            const pos = muzzlePos.clone();
+            pos.y += dy;
+            const bullet = new Projectile(this.scene, {
+                position: pos,
+                direction: dir.clone(),
+                speed: 36,
+                damage: 6,
+                owner: 'enemy',
+                type: 'bullet',
+                maxDistance: 90,
+            });
+            this.projectiles.push(bullet);
+        }
+        this._coaxBurstRemain--;
+        // 連射用に次バーストを少し後にスケジュール
+        if (this._coaxBurstRemain > 0) {
+            this._urbanTimers = this._urbanTimers || [];
+            const tid = setTimeout(() => this.alive && this._coaxBurstFire(playerPos), 110);
+            this._urbanTimers.push(tid);
         }
     }
 

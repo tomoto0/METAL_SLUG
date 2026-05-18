@@ -478,9 +478,9 @@ export class GameManager {
                     { type: 'aircraft', subType: 'tomahawk',       weight: 1 },
                 ],
             },
-            // --- Wave 29: 無限地獄（全敵種ランダム）---
+            // --- Wave 29: 無限地獄（全敵種ランダム）— 第二幕への橋渡しで 90s に短縮 ---
             {
-                duration: 999, spawnInterval: 0.6, maxSimultaneous: 26,
+                duration: 90, spawnInterval: 0.6, maxSimultaneous: 26,
                 pool: [
                     { type: 'infantry', subType: 'rifle',        weight: 1 },
                     { type: 'infantry', subType: 'knife',        weight: 1 },
@@ -511,6 +511,177 @@ export class GameManager {
                     { type: 'aircraft', subType: 'interceptor',  weight: 2 },
                     { type: 'aircraft', subType: 'gunship',      weight: 1 },
                     { type: 'aircraft', subType: 'tomahawk',     weight: 2 },
+                ],
+            },
+            // ============================================================
+            //  第二幕: URBAN MIDDLE-EAST stage（Wave 30〜40）
+            //  中東風市街地。新ユニット urban_tank / heavy_heli / combat_drone
+            //  と既存ユニットを編成し、Wave 32 / 36 で iron_nokana（超大型重戦車）が登場。
+            // ============================================================
+            // --- Wave 30: 市街地進入（軽歩兵中心、ドローン偵察） ---
+            {
+                duration: 48, spawnInterval: 0.85, maxSimultaneous: 16,
+                pool: [
+                    { type: 'infantry', subType: 'rifle',        weight: 5 },
+                    { type: 'infantry', subType: 'knife',        weight: 3 },
+                    { type: 'infantry', subType: 'rocket',       weight: 2 },
+                    { type: 'infantry', subType: 'machinegun',   weight: 3 },
+                    { type: 'infantry', subType: 'shield',       weight: 2 },
+                    { type: 'aircraft', subType: 'combat_drone', weight: 3 },
+                    { type: 'aircraft', subType: 'drone',        weight: 2 },
+                    { type: 'tank',     subType: 'light',        weight: 2 },
+                ],
+            },
+            // --- Wave 31: 商業地区（重歩兵 + 戦車 + ドローン群） ---
+            {
+                duration: 50, spawnInterval: 0.80, maxSimultaneous: 18,
+                pool: [
+                    { type: 'infantry', subType: 'rocket',       weight: 3 },
+                    { type: 'infantry', subType: 'grenade',      weight: 3 },
+                    { type: 'infantry', subType: 'flamethrower', weight: 2 },
+                    { type: 'infantry', subType: 'juggernaut',   weight: 2 },
+                    { type: 'tank',     subType: 'light',        weight: 3 },
+                    { type: 'tank',     subType: 'urban_tank',   weight: 3 },
+                    { type: 'aircraft', subType: 'combat_drone', weight: 4 },
+                    { type: 'aircraft', subType: 'scout_heli',   weight: 2 },
+                ],
+            },
+            // --- Wave 32: 超大型重戦車 Iron Nokana 出現 ---
+            {
+                duration: 60, spawnInterval: 1.05, maxSimultaneous: 14,
+                pool: [
+                    { type: 'infantry', subType: 'rocket',       weight: 3 },
+                    { type: 'infantry', subType: 'demolition',   weight: 2 },
+                    { type: 'infantry', subType: 'juggernaut',   weight: 2 },
+                    { type: 'tank',     subType: 'urban_tank',   weight: 2 },
+                    { type: 'aircraft', subType: 'combat_drone', weight: 3 },
+                ],
+            },
+            // --- Wave 33: 復興地区（戦車 + ヘリ大型） ---
+            {
+                duration: 48, spawnInterval: 0.80, maxSimultaneous: 18,
+                pool: [
+                    { type: 'infantry', subType: 'commando',     weight: 3 },
+                    { type: 'infantry', subType: 'machinegun',   weight: 3 },
+                    { type: 'infantry', subType: 'sniper',       weight: 2 },
+                    { type: 'tank',     subType: 'urban_tank',   weight: 3 },
+                    { type: 'tank',     subType: 'heavy',        weight: 2 },
+                    { type: 'aircraft', subType: 'heavy_heli',   weight: 2 },
+                    { type: 'aircraft', subType: 'combat_drone', weight: 3 },
+                ],
+            },
+            // --- Wave 34: 高架戦（飛行ユニット中心 + 屋根上スナイパー） ---
+            {
+                duration: 52, spawnInterval: 0.75, maxSimultaneous: 20,
+                pool: [
+                    { type: 'infantry', subType: 'perched_sniper', weight: 3 },
+                    { type: 'infantry', subType: 'jetpack_raider', weight: 3 },
+                    { type: 'aircraft', subType: 'heavy_heli',     weight: 3 },
+                    { type: 'aircraft', subType: 'combat_drone',   weight: 4 },
+                    { type: 'aircraft', subType: 'attack_heli',    weight: 2 },
+                    { type: 'aircraft', subType: 'bomber',         weight: 2 },
+                    { type: 'tank',     subType: 'flak',           weight: 2 },
+                ],
+            },
+            // --- Wave 35: 旧市街（高密度の歩兵 + 戦車混成） ---
+            {
+                duration: 50, spawnInterval: 0.70, maxSimultaneous: 22,
+                pool: [
+                    { type: 'infantry', subType: 'rifle',        weight: 3 },
+                    { type: 'infantry', subType: 'knife',        weight: 3 },
+                    { type: 'infantry', subType: 'shield',       weight: 3 },
+                    { type: 'infantry', subType: 'ninja',        weight: 2 },
+                    { type: 'infantry', subType: 'commando',     weight: 3 },
+                    { type: 'infantry', subType: 'flamethrower', weight: 2 },
+                    { type: 'tank',     subType: 'light',        weight: 2 },
+                    { type: 'tank',     subType: 'urban_tank',   weight: 2 },
+                    { type: 'aircraft', subType: 'combat_drone', weight: 3 },
+                ],
+            },
+            // --- Wave 36: 第二幕中間決戦 — Iron Nokana 改（強化型） ---
+            {
+                duration: 75, spawnInterval: 1.00, maxSimultaneous: 14,
+                pool: [
+                    { type: 'infantry', subType: 'demolition',   weight: 3 },
+                    { type: 'infantry', subType: 'juggernaut',   weight: 2 },
+                    { type: 'infantry', subType: 'rocket',       weight: 2 },
+                    { type: 'tank',     subType: 'urban_tank',   weight: 2 },
+                    { type: 'aircraft', subType: 'heavy_heli',   weight: 2 },
+                    { type: 'aircraft', subType: 'combat_drone', weight: 3 },
+                ],
+            },
+            // --- Wave 37: 廃モスク戦（歩兵 + ミイラ + ヘリ大型） ---
+            {
+                duration: 46, spawnInterval: 0.75, maxSimultaneous: 20,
+                pool: [
+                    { type: 'infantry', subType: 'mummy',        weight: 4 },
+                    { type: 'infantry', subType: 'commando',     weight: 3 },
+                    { type: 'infantry', subType: 'juggernaut',   weight: 2 },
+                    { type: 'infantry', subType: 'flamethrower', weight: 2 },
+                    { type: 'tank',     subType: 'urban_tank',   weight: 2 },
+                    { type: 'aircraft', subType: 'heavy_heli',   weight: 3 },
+                    { type: 'aircraft', subType: 'combat_drone', weight: 2 },
+                ],
+            },
+            // --- Wave 38: 屋上戦線（スナイパー + ジェットパック + 大型ヘリ） ---
+            {
+                duration: 48, spawnInterval: 0.72, maxSimultaneous: 20,
+                pool: [
+                    { type: 'infantry', subType: 'perched_sniper', weight: 4 },
+                    { type: 'infantry', subType: 'jetpack_raider', weight: 4 },
+                    { type: 'infantry', subType: 'sniper',         weight: 3 },
+                    { type: 'aircraft', subType: 'heavy_heli',     weight: 3 },
+                    { type: 'aircraft', subType: 'attack_heli',    weight: 2 },
+                    { type: 'aircraft', subType: 'combat_drone',   weight: 4 },
+                    { type: 'aircraft', subType: 'interceptor',    weight: 2 },
+                ],
+            },
+            // --- Wave 39: ドローン群（飛行高密度） ---
+            {
+                duration: 50, spawnInterval: 0.55, maxSimultaneous: 24,
+                pool: [
+                    { type: 'aircraft', subType: 'combat_drone', weight: 8 },
+                    { type: 'aircraft', subType: 'drone',        weight: 3 },
+                    { type: 'aircraft', subType: 'tomahawk',     weight: 3 },
+                    { type: 'aircraft', subType: 'heavy_heli',   weight: 2 },
+                    { type: 'infantry', subType: 'rocket',       weight: 2 },
+                    { type: 'infantry', subType: 'commando',     weight: 2 },
+                    { type: 'tank',     subType: 'flak',         weight: 2 },
+                ],
+            },
+            // --- Wave 40: 無限市街地（全敵種 + 新ユニット） ---
+            {
+                duration: 999, spawnInterval: 0.55, maxSimultaneous: 28,
+                pool: [
+                    { type: 'infantry', subType: 'rifle',          weight: 1 },
+                    { type: 'infantry', subType: 'knife',          weight: 1 },
+                    { type: 'infantry', subType: 'rocket',         weight: 2 },
+                    { type: 'infantry', subType: 'grenade',        weight: 1 },
+                    { type: 'infantry', subType: 'machinegun',     weight: 1 },
+                    { type: 'infantry', subType: 'officer',        weight: 1 },
+                    { type: 'infantry', subType: 'shield',         weight: 1 },
+                    { type: 'infantry', subType: 'flamethrower',   weight: 1 },
+                    { type: 'infantry', subType: 'mummy',          weight: 1 },
+                    { type: 'infantry', subType: 'sniper',         weight: 1 },
+                    { type: 'infantry', subType: 'ninja',          weight: 1 },
+                    { type: 'infantry', subType: 'juggernaut',     weight: 1 },
+                    { type: 'infantry', subType: 'commando',       weight: 2 },
+                    { type: 'infantry', subType: 'demolition',     weight: 2 },
+                    { type: 'infantry', subType: 'perched_sniper', weight: 2 },
+                    { type: 'infantry', subType: 'jetpack_raider', weight: 2 },
+                    { type: 'tank',     subType: 'heavy',          weight: 1 },
+                    { type: 'tank',     subType: 'flak',           weight: 1 },
+                    { type: 'tank',     subType: 'siege',          weight: 1 },
+                    { type: 'tank',     subType: 'urban_tank',     weight: 3 },
+                    { type: 'aircraft', subType: 'attack_heli',    weight: 1 },
+                    { type: 'aircraft', subType: 'bomber',         weight: 1 },
+                    { type: 'aircraft', subType: 'fighter',        weight: 1 },
+                    { type: 'aircraft', subType: 'gunship',        weight: 1 },
+                    { type: 'aircraft', subType: 'interceptor',    weight: 1 },
+                    { type: 'aircraft', subType: 'drone',          weight: 2 },
+                    { type: 'aircraft', subType: 'tomahawk',       weight: 2 },
+                    { type: 'aircraft', subType: 'heavy_heli',     weight: 3 },
+                    { type: 'aircraft', subType: 'combat_drone',   weight: 4 },
                 ],
             },
         ];
@@ -598,9 +769,9 @@ export class GameManager {
             if (timersDone && groupGone) this.defeatedBosses.splice(i, 1);
         }
 
-        // ボススポーン（Wave 4/8/12/16/20/24/28）
+        // ボススポーン（Wave 4/8/12/16/20/24/28/32/36）
         const waveNum = this.waveIndex + 1;
-        if ((waveNum === 4 || waveNum === 8 || waveNum === 12 || waveNum === 16 || waveNum === 20 || waveNum === 24 || waveNum === 28) && !this.bossSpawnedWaves.has(waveNum)) {
+        if ((waveNum === 4 || waveNum === 8 || waveNum === 12 || waveNum === 16 || waveNum === 20 || waveNum === 24 || waveNum === 28 || waveNum === 32 || waveNum === 36) && !this.bossSpawnedWaves.has(waveNum)) {
             if (this.waveElapsed > 5 && !this.boss) {
                 this._spawnBoss(waveNum, scrollZ);
                 this.bossSpawnedWaves.add(waveNum);
@@ -1082,6 +1253,29 @@ export class GameManager {
             this._setSphereCenter(arr[0], 0, 0.2, 0, q, pos);    arr[0].radius = 4.8;
             this._setSphereCenter(arr[1], 2.2, 1.2, 0, q, pos);  arr[1].radius = 2.2;
             this._setSphereCenter(arr[2], -2.6, -0.4, 0, q, pos);arr[2].radius = 2.4;
+            return arr;
+        }
+
+        if (boss.subType === 'iron_nokana') {
+            // Iron Nokana: 全長 14m の超大型重戦車（中央主砲塔 + 2 基の副砲塔）
+            const hasTurret = !!boss.turretGroup;
+            const arr = this._ensureSphereCache(boss, hasTurret ? 7 : 6);
+            // ハル前部
+            this._setSphereCenter(arr[0], 5.5, 1.5, 0, q, pos);    arr[0].radius = 2.6;
+            // ハル中央
+            this._setSphereCenter(arr[1], 0, 1.6, 0, q, pos);      arr[1].radius = 3.0;
+            // ハル後部
+            this._setSphereCenter(arr[2], -5.5, 1.5, 0, q, pos);   arr[2].radius = 2.6;
+            // 左サイドサブ砲塔
+            this._setSphereCenter(arr[3], 2.0, 3.0, 2.5, q, pos);  arr[3].radius = 1.4;
+            // 右サイドサブ砲塔
+            this._setSphereCenter(arr[4], 2.0, 3.0, -2.5, q, pos); arr[4].radius = 1.4;
+            // コマンドタワー（後部上部）
+            this._setSphereCenter(arr[5], -3.5, 4.2, 0, q, pos);   arr[5].radius = 1.5;
+            if (hasTurret) {
+                boss.turretGroup.getWorldPosition(arr[6].center);
+                arr[6].radius = 2.2;
+            }
             return arr;
         }
 
@@ -2124,7 +2318,13 @@ export class GameManager {
     // ============================================
     _spawnBoss(waveNum, scrollZ) {
         let hp, subType;
-        if (waveNum === 28) {
+        if (waveNum === 36) {
+            hp = 6500;
+            subType = 'iron_nokana'; // 第二幕最終決戦: 超大型重戦車 Iron Nokana 改
+        } else if (waveNum === 32) {
+            hp = 5000;
+            subType = 'iron_nokana'; // 中東市街地 中間ボス: 超大型重戦車 Iron Nokana
+        } else if (waveNum === 28) {
             hp = 2800;
             subType = 'hi_do';   // 最終決戦: 巨大攻撃ヘリ Hi-Do 改
         } else if (waveNum === 24) {
