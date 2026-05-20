@@ -730,40 +730,29 @@ export class UIManager {
     }
 
     _initAimArc() {
-        if (!this.aimArcBg) return;
-
-        const cx = 60;
-        const cy = 66;
-        const r = 46;
-        const startAngle = 205 * Math.PI / 180;
-        const endAngle = 335 * Math.PI / 180;
-        const steps = 28;
-        let d = '';
-
-        for (let i = 0; i <= steps; i++) {
-            const t = startAngle + (endAngle - startAngle) * (i / steps);
-            const x = cx + Math.cos(t) * r;
-            const y = cy + Math.sin(t) * r;
-            d += `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
-        }
-
-        this.aimArcBg.setAttribute('d', d);
+        // Compass is composed of static SVG primitives — no dynamic path init needed.
     }
 
     _updateAimIndicator(player) {
         if (!this.aimLine || !this.aimDot || !this.aimAngleText || !this.aimModeText) return;
 
-        const angleDeg = player.aimAngleDeg || 0;
-        const aimMode = player.aimMode || 'mouse';
-        const facingRight = !!player.facingRight;
+        // Read the actual rendered turret pose so the indicator tracks what the player sees.
+        // turretGroup.rotation.y: world yaw (0 = +Z forward, +π/2 = +X right, ±π = -Z back).
+        // barrelGroup.rotation.z: pitch (positive = barrel up).
+        let yawRad = 0;
+        let pitchRad = 0;
+        if (player && player.turretGroup) yawRad = player.turretGroup.rotation.y;
+        if (player && player.barrelGroup) pitchRad = player.barrelGroup.rotation.z;
 
         const cx = 60;
-        const cy = 66;
-        const lineLen = 42;
-        const angleRad = angleDeg * Math.PI / 180;
-        const dir = facingRight ? 1 : -1;
-        const ex = cx + Math.cos(angleRad) * lineLen * dir;
-        const ey = cy - Math.sin(angleRad) * lineLen;
+        const cy = 60;
+        const r = 44;
+
+        // Top-down projection: needle direction = world yaw, length = |cos(pitch)| so a
+        // near-vertical shot collapses the needle toward the center (still visible via min cap).
+        const horizScale = Math.max(0.18, Math.cos(pitchRad));
+        const ex = cx + Math.sin(yawRad) * r * horizScale;
+        const ey = cy - Math.cos(yawRad) * r * horizScale;
 
         this.aimLine.setAttribute('x1', cx);
         this.aimLine.setAttribute('y1', cy);
@@ -772,7 +761,15 @@ export class UIManager {
         this.aimDot.setAttribute('cx', ex.toFixed(1));
         this.aimDot.setAttribute('cy', ey.toFixed(1));
 
-        this.aimAngleText.textContent = `${facingRight ? 'R' : 'L'} ${angleDeg}\u00b0`;
+        const RAD2DEG = 180 / Math.PI;
+        let yawDeg = Math.round(yawRad * RAD2DEG);
+        // Normalize yaw to (-180, 180]
+        yawDeg = ((yawDeg + 180) % 360 + 360) % 360 - 180;
+        const elvDeg = Math.round(pitchRad * RAD2DEG);
+        const yawStr = (yawDeg > 0 ? '+' : '') + yawDeg;
+        const elvStr = (elvDeg > 0 ? '+' : '') + elvDeg;
+        this.aimAngleText.textContent = `${yawStr}\u00b0 / ${elvStr}\u00b0`;
+
         const locked = !!(player && player.lockTarget);
         this.aimModeText.textContent = locked ? 'LOCK ON' : 'SCAN';
 

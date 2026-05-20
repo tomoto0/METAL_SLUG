@@ -508,8 +508,9 @@ body {
 
 #aim-angle-text {
     color: #fff2d3;
-    font-size: 30px;
-    letter-spacing: 0.05em;
+    font-size: 22px;
+    letter-spacing: 0.04em;
+    font-variant-numeric: tabular-nums;
 }
 
 #aim-mode-text {
